@@ -1,0 +1,21 @@
+{
+	"name": "playwright-worker",
+	"version": "0.0.0",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest"
+	},
+	"devDependencies": {
+		"@cloudflare/playwright": "^1.0.0",
+		"@cloudflare/vitest-pool-workers": "^0.8.19",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.45.3"
+	},
+	"dependencies": {
+		"@google/generative-ai": "^0.24.1"
+	}
+}
