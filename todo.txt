@@ -1,0 +1,1 @@
+ I want a job to check the status of the trade at some point and along with the delta value ss from that time. 

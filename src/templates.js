@@ -179,20 +179,71 @@ export function getLogsHTML() {
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M3 21v-5h5"></path></svg>
                     Sync Trades
                 </button>
-                <button class="refresh-btn" onclick="analyzePerformance()" id="analyze-btn" title="Analyze last 7 days and update strategy">
+                <button class="refresh-btn" onclick="forceCheck()" id="force-btn" title="Forcefully trigger the trade status check scheduler">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                    Force Check
+                </button>
+                <button class="refresh-btn" onclick="openStrategyModal()" id="strategy-btn" title="View and edit current trading strategy">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                    Strategy
+                </button>
+                <button class="refresh-btn" onclick="openAnalyzeModal()" id="analyze-btn" title="Analyze performance and improve strategy">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
                     Analyze & Improve
                 </button>
-                <button class="refresh-btn" onclick="checkStatus()" id="check-status-btn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-                    Check Status
+                <div style="width: 1px; background-color: var(--border-color); margin: 0 0.5rem;"></div>
+                <button class="refresh-btn" onclick="clearLogs()" id="clear-btn" title="Delete all trade logs" style="color: #f87171; border-color: rgba(248, 113, 113, 0.3);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    Clear
                 </button>
+                <button class="refresh-btn" onclick="backupLogs()" id="backup-btn" title="Download backup of all logs">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    Backup
+                </button>
+                <button class="refresh-btn" onclick="document.getElementById('restore-input').click()" id="restore-btn" title="Restore logs from backup file">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    Restore
+                </button>
+                <input type="file" id="restore-input" style="display: none;" accept=".json" onchange="restoreLogs(this)">
                 <button class="refresh-btn" onclick="fetchLogs()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg>
                     Refresh
                 </button>
             </div>
         </header>
+
+        <!-- Strategy Modal -->
+        <div id="strategy-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 1000; padding: 2rem;">
+            <div style="max-width: 900px; margin: 0 auto; background: var(--card-bg); border-radius: 1rem; border: 1px solid var(--border-color); max-height: 90vh; display: flex; flex-direction: column;">
+                <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                    <h2 style="font-size: 1.25rem;">Trading Strategy</h2>
+                    <button onclick="closeStrategyModal()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.5rem;">&times;</button>
+                </div>
+                <textarea id="strategy-editor" style="flex: 1; padding: 1rem; background: var(--bg-color); border: none; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: none; min-height: 400px;"></textarea>
+                <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button onclick="closeStrategyModal()" style="padding: 0.5rem 1rem; background: var(--border-color); border: none; border-radius: 0.375rem; color: var(--text-primary); cursor: pointer;">Cancel</button>
+                    <button onclick="saveStrategy()" style="padding: 0.5rem 1rem; background: var(--accent-blue); border: none; border-radius: 0.375rem; color: white; cursor: pointer;">Save Strategy</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analyze Modal -->
+        <div id="analyze-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 1000; padding: 2rem;">
+            <div style="max-width: 700px; margin: 0 auto; background: var(--card-bg); border-radius: 1rem; border: 1px solid var(--border-color);">
+                <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                    <h2 style="font-size: 1.25rem;">Analyze & Improve Strategy</h2>
+                    <button onclick="closeAnalyzeModal()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.5rem;">&times;</button>
+                </div>
+                <div style="padding: 1.5rem;">
+                    <label style="display: block; margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">Additional context or instructions for analysis (optional):</label>
+                    <textarea id="analyze-input" placeholder="e.g., Focus on reducing stop loss hits, improve entry timing during London session..." style="width: 100%; height: 120px; padding: 0.75rem; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; color: var(--text-primary); font-size: 0.875rem; resize: vertical;"></textarea>
+                </div>
+                <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button onclick="closeAnalyzeModal()" style="padding: 0.5rem 1rem; background: var(--border-color); border: none; border-radius: 0.375rem; color: var(--text-primary); cursor: pointer;">Cancel</button>
+                    <button onclick="runAnalyze()" id="run-analyze-btn" style="padding: 0.5rem 1rem; background: var(--accent-purple); border: none; border-radius: 0.375rem; color: white; cursor: pointer;">Run Analysis</button>
+                </div>
+            </div>
+        </div>
 
         <div class="stats-grid">
             <div class="stat-card">
@@ -226,6 +277,7 @@ export function getLogsHTML() {
                         <th>PnL</th>
                         <th>Order ID</th>
                         <th>Reason</th>
+                        <th>Close Reason</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -264,41 +316,161 @@ export function getLogsHTML() {
             }
         }
         
-        async function analyzePerformance() {
-            const btn = document.getElementById('analyze-btn');
+        // Strategy Modal Functions
+        async function forceCheck() {
+            const btn = document.getElementById('force-btn');
             const originalText = btn.innerHTML;
+            btn.innerHTML = 'Triggering...';
+            btn.disabled = true;
+            try {
+                const response = await fetch('/api/force-scheduler');
+                const data = await response.json();
+                if (data.success) {
+                    console.log('Scheduler signal sent');
+                }
+            } catch (e) {
+                console.error('Failed to force check:', e);
+            } finally {
+                setTimeout(() => {
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }, 1000);
+            }
+        }
+
+        async function openStrategyModal() {
+            document.getElementById('strategy-modal').style.display = 'block';
+            document.getElementById('strategy-editor').value = 'Loading...';
+            try {
+                const response = await fetch('/api/download-strategy');
+                const strategy = await response.text();
+                document.getElementById('strategy-editor').value = strategy;
+            } catch (e) {
+                document.getElementById('strategy-editor').value = 'Failed to load strategy.';
+            }
+        }
+
+        function closeStrategyModal() {
+            document.getElementById('strategy-modal').style.display = 'none';
+        }
+
+        async function saveStrategy() {
+            const strategy = document.getElementById('strategy-editor').value;
+            try {
+                const response = await fetch('/api/save-strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: strategy
+                });
+                const data = await response.json();
+                if (data.success) {
+                    alert('Strategy saved successfully!');
+                    closeStrategyModal();
+                } else {
+                    alert('Failed to save: ' + data.error);
+                }
+            } catch (e) {
+                alert('Failed to save strategy.');
+            }
+        }
+
+        // Analyze Modal Functions
+        function openAnalyzeModal() {
+            document.getElementById('analyze-modal').style.display = 'block';
+            document.getElementById('analyze-input').value = '';
+        }
+
+        function closeAnalyzeModal() {
+            document.getElementById('analyze-modal').style.display = 'none';
+        }
+
+        async function runAnalyze() {
+            const btn = document.getElementById('run-analyze-btn');
+            const customInput = document.getElementById('analyze-input').value;
             btn.innerHTML = 'Analyzing...';
             btn.disabled = true;
             try {
-                const response = await fetch('/api/analyze-performance');
+                const response = await fetch('/api/analyze-performance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ customInput })
+                });
                 const data = await response.json();
-                alert('Analysis started in background. The strategy will be updated based on the last 7 days of performance.');
+                alert('Analysis started in background. The strategy will be updated.');
+                closeAnalyzeModal();
             } catch (e) {
                 console.error('Failed to start analysis:', e);
                 alert('Failed to start analysis.');
             } finally {
-                setTimeout(() => {
-                    btn.innerHTML = originalText;
-                    btn.disabled = false;
-                }, 5000);
+                btn.innerHTML = 'Run Analysis';
+                btn.disabled = false;
             }
         }
-        async function checkStatus() {
-            const btn = document.getElementById('check-status-btn');
+
+        async function clearLogs() {
+            if (!confirm("Are you sure you want to DELETE ALL trade logs? This cannot be undone.")) return;
+            
+            const btn = document.getElementById('clear-btn');
             const originalText = btn.innerHTML;
-            btn.innerHTML = 'Checking...';
+            btn.innerHTML = 'Clearing...';
             btn.disabled = true;
             try {
-                await fetch('/api/check-status');
-                setTimeout(fetchLogs, 2000); // Wait a bit for DB update
+                const response = await fetch('/api/clear-logs');
+                const data = await response.json();
+                if (data.error) {
+                    alert('Clear failed: ' + data.error);
+                } else {
+                    alert("All logs cleared!");
+                    fetchLogs();
+                }
             } catch (e) {
-                console.error('Failed to check status:', e);
+                console.error('Failed to clear logs:', e);
+                alert('Failed to clear logs.');
             } finally {
                 setTimeout(() => {
                     btn.innerHTML = originalText;
                     btn.disabled = false;
-                }, 2000);
+                }, 1000);
             }
+        }
+
+        async function backupLogs() {
+            window.location.href = '/api/backup-logs';
+        }
+
+        async function restoreLogs(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            if (!confirm('WARNING: Restoring will DELETE all current logs and replace them with the backup. Continue?')) {
+                input.value = '';
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const json = JSON.parse(e.target.result);
+                    const response = await fetch('/api/restore-logs', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(json)
+                    });
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        alert(data.message);
+                        fetchLogs();
+                    } else {
+                        alert('Restore failed: ' + data.error);
+                    }
+                } catch (err) {
+                    console.error('Error parsing backup file:', err);
+                    alert('Invalid backup file.');
+                }
+                input.value = '';
+            };
+            reader.readAsText(file);
         }
 
         async function fetchLogs() {
@@ -324,9 +496,6 @@ export function getLogsHTML() {
             let sells = 0;
 
             logs.forEach(log => {
-                // Skip exit-only records to collapse the view (they are linked to parents)
-                if (log.parent_trade_id) return;
-
                 if (log.decision === 'BUY') buys++;
                 if (log.decision === 'SELL') sells++;
 
@@ -347,9 +516,21 @@ export function getLogsHTML() {
                     '<td style="font-weight: 600; color: ' + pnlColor + ';">' + pnlText + '</td>' +
                     '<td style="font-family: monospace; font-size: 0.75rem; color: var(--text-secondary);">' + (log.order_id || '-') + '</td>' +
                     '<td class="reason-cell" title="' + (log.reason || '') + '">' + (log.reason || '-') + '</td>' +
-                    '<td><span class="badge ' + (log.status === 'OPEN' ? 'badge-open' : '') + '">' + log.status + '</span></td>';
+                    '<td class="reason-cell" title="' + (log.close_reason || '') + '">' + (log.close_reason || '-') + '</td>' +
+                    '<td><span class="badge ' + (log.status === 'OPEN' ? 'badge-open' : (log.status === 'CLOSED' ? 'badge-buy' : '')) + '">' + log.status + '</span></td>';
                 
-                body.appendChild(row);
+                // Add summary row if it exists
+                if (log.summary) {
+                    const summaryRow = document.createElement('tr');
+                    summaryRow.innerHTML = '<td colspan="11" style="padding: 0.5rem 1rem 1rem 1rem; background-color: rgba(56, 189, 248, 0.03); border-bottom: 1px solid var(--border-color);">' +
+                        '<div style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 0.25rem;">AI ANALYSIS:</div>' +
+                        '<div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.4;">' + log.summary + '</div>' +
+                    '</td>';
+                    body.appendChild(row);
+                    body.appendChild(summaryRow);
+                } else {
+                    body.appendChild(row);
+                }
             });
 
             document.getElementById('total-logs').textContent = logs.length;
@@ -359,8 +540,6 @@ export function getLogsHTML() {
         }
 
         fetchLogs();
-        // Auto refresh every 30 seconds
-        setInterval(fetchLogs, 30000);
     </script>
 </body>
 </html>

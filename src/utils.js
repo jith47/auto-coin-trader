@@ -103,13 +103,13 @@ AVOID:
 ## 5. EXIT STRATEGY (The "Profit Guard")
 
 ### Take Profit (TP):
-- **TP1**: 0.5% - 0.7% (Close 50% of position)
-- **TP2**: 1.2% - 1.5% (Close remaining 50%)
+- **TP1**: 0.3% - 0.5% (Close 50% of position)
+- **TP2**: 0.8% - 1.0% (Close remaining 50%)
 - **Dynamic TP**: If BTC delta flips from +500K to -100K, exit all immediately.
 
 ### Stop Loss (SL):
-- **Hard SL**: 0.6% below entry (No exceptions)
-- **Time SL**: If trade hasn't hit TP1 within 45 minutes, exit at market.
+- **Hard SL**: 0.4% below entry (No exceptions)
+- **Time SL**: If trade hasn't hit TP1 within 20 minutes, exit at market.
 - **Break-even SL**: Move SL to entry once TP1 is hit.
 
 ---
@@ -301,19 +301,24 @@ export async function getLatestStrategy(env) {
 }
 
 export async function checkTradeStatus(env) {
-    if (!env.DB) return;
+    if (!env.DB) return [];
+    const closedTradeIds = [];
     try {
         // Get all OPEN or FILLED trades from DB (both need exit detection)
         const { results: activeTrades } = await env.DB.prepare(
-            "SELECT * FROM trade_logs WHERE (status = 'OPEN' OR status = 'FILLED') AND order_id IS NOT NULL"
+            "SELECT * FROM trade_logs WHERE (status = 'OPEN' OR status = 'FILLED') AND parent_trade_id IS NULL AND order_id IS NOT NULL"
         ).all();
 
+        console.log(`📊 [Status Check] Found ${activeTrades.length} active trades in DB.`);
+
         if (activeTrades.length === 0) {
-            console.log("No open trades to check.");
-            return;
+            // Signal to stop the scheduler if no active trades
+            console.log(">>> STOP_SCHEDULER <<<");
+            console.log("🛑 [Status Check] No active trades. Emitted STOP signal.");
+            return [];
         }
 
-        console.log(`🔍 Checking status for ${activeTrades.length} active trades...`);
+        console.log(`🔍 Checking status for ${activeTrades.length} active trade(s)...`);
 
         // Fetch latest orders and trade history (fills) from CoinDCX
         const [ordersData, tradesData] = await Promise.all([
@@ -324,136 +329,112 @@ export async function checkTradeStatus(env) {
         const orders = Array.isArray(ordersData) ? ordersData : (ordersData.orders || []);
         const fills = Array.isArray(tradesData) ? tradesData : (tradesData.trades || []);
 
-        console.log(`📊 Fetched ${orders.length} orders and ${fills.length} fills from CoinDCX`);
+        // Aggregate fills by order_id to handle partial fills
+        const aggregatedFills = [];
+        const fillsByOrderId = {};
+
+        for (const fill of fills) {
+            const orderId = fill.order_id || fill.id;
+            if (!orderId) continue;
+            if (!fillsByOrderId[orderId]) {
+                let asset = fill.symbol || fill.market || fill.pair || 'B-DOGE_USDT';
+                if (asset.includes('DOGE') && !asset.startsWith('B-')) {
+                    asset = 'B-' + asset;
+                }
+
+                fillsByOrderId[orderId] = {
+                    order_id: orderId,
+                    symbol: asset,
+                    side: fill.side ? fill.side.toLowerCase() : '',
+                    timestamp: fill.timestamp,
+                    quantity: 0,
+                    weightedPriceSum: 0
+                };
+            }
+            const qty = parseFloat(fill.quantity || fill.size || 0);
+            const price = parseFloat(fill.price || 0);
+            fillsByOrderId[orderId].quantity += qty;
+            fillsByOrderId[orderId].weightedPriceSum += (qty * price);
+            // Keep the latest timestamp for the order
+            if (fill.timestamp > fillsByOrderId[orderId].timestamp) {
+                fillsByOrderId[orderId].timestamp = fill.timestamp;
+            }
+        }
+
+        for (const id in fillsByOrderId) {
+            const f = fillsByOrderId[id];
+            aggregatedFills.push({
+                ...f,
+                price: f.weightedPriceSum / f.quantity
+            });
+        }
+
+        console.log(`📊 Aggregated into ${aggregatedFills.length} unique orders from fills.`);
 
         for (const trade of activeTrades) {
             console.log(`\n🔎 Checking trade ${trade.id} (${trade.decision} ${trade.asset})`);
 
-            // Step 1: Check entry order status
-            const entryOrder = orders.find(o => o.id === trade.order_id || o.order_id === trade.order_id);
-
             let newStatus = trade.status;
-            let exitPrice = null;
-            let pnl = null;
-
-            if (entryOrder) {
-                console.log(`  ✓ Entry order found: ${entryOrder.status}`);
-
-                // Update status if entry order changed
-                if (entryOrder.status === 'filled' && trade.status === 'OPEN') {
-                    newStatus = 'FILLED';
-                    console.log(`  ➜ Status updated: OPEN → FILLED`);
-                } else if (['cancelled', 'rejected'].includes(entryOrder.status)) {
-                    newStatus = entryOrder.status.toUpperCase();
-                    console.log(`  ➜ Status updated: ${newStatus}`);
-                }
-            }
+            let exitPrice = trade.exit_price;
+            let pnl = trade.pnl;
+            let exitTradeFound = null;
 
             // Step 2: Look for EXIT trades (opposite side)
             const exitSide = trade.decision === 'BUY' ? 'sell' : 'buy';
-
-            const exitCandidates = fills.filter(fill => {
-                const fillSymbol = fill.symbol || fill.market || '';
+            const matchingExit = aggregatedFills.find(fill => {
+                const fillSymbol = fill.symbol || '';
                 const symbolMatch = fillSymbol === trade.asset ||
                     fillSymbol === trade.asset.replace('B-', '') ||
                     trade.asset === fillSymbol.replace('B-', '');
 
-                const sideMatch = fill.side && fill.side.toLowerCase() === exitSide;
-                const timeMatch = fill.timestamp > (trade.timestamp - 5000); // 5s buffer
+                const sideMatch = fill.side === exitSide;
+                const timeMatch = fill.timestamp > trade.timestamp;
+                const qtyMatch = Math.abs(fill.quantity - Math.abs(trade.quantity)) < Math.max(2, Math.abs(trade.quantity) * 0.1);
 
-                if (sideMatch && timeMatch && !symbolMatch) {
-                    console.log(`  ⚠️ Symbol mismatch? Trade: ${trade.asset}, Fill: ${fillSymbol}`);
-                }
-
-                return symbolMatch && sideMatch && timeMatch;
+                return symbolMatch && sideMatch && timeMatch && qtyMatch;
             });
 
-            console.log(`  📍 Found ${exitCandidates.length} potential exit trades`);
-
-            if (exitCandidates.length > 0) {
-                let totalExitQty = 0;
-                let weightedPriceSum = 0;
-
-                for (const exit of exitCandidates) {
-                    const qty = parseFloat(exit.quantity || exit.size || 0);
-                    const price = parseFloat(exit.price || 0);
-                    totalExitQty += qty;
-                    weightedPriceSum += qty * price;
-                }
-
-                const entryQty = Math.abs(trade.quantity);
-                const exitQty = Math.abs(totalExitQty);
-
-                console.log(`  📊 Entry: ${entryQty}, Exit: ${exitQty}`);
-
-                // Relaxed quantity matching: allow 10% difference or 2 units (whichever is larger)
-                const qtyDiff = Math.abs(exitQty - entryQty);
-                const maxAllowedDiff = Math.max(2, entryQty * 0.1);
-
-                if (qtyDiff <= maxAllowedDiff || exitQty >= entryQty * 0.95) {
-                    exitPrice = weightedPriceSum / totalExitQty;
-                    const entryPrice = trade.price;
-                    if (trade.decision === 'BUY') {
-                        pnl = (exitPrice - entryPrice) * entryQty;
-                    } else {
-                        pnl = (entryPrice - exitPrice) * entryQty;
-                    }
-
-                    newStatus = 'CLOSED';
-
-                    console.log(`  💰 Position CLOSED!`);
-                    console.log(`     PnL: ${pnl.toFixed(2)}`);
-
-                    // Create a separate exit trade record linked to this parent if it doesn't exist
-                    const exitDecision = trade.decision === 'BUY' ? 'SELL' : 'BUY';
-                    const exitTimestamp = exitCandidates[0].timestamp || Date.now();
-                    const exitOrderId = exitCandidates[0].order_id || exitCandidates[0].id;
-
-                    try {
-                        const { results: existingExits } = await env.DB.prepare(
-                            "SELECT id FROM trade_logs WHERE parent_trade_id = ?"
-                        ).bind(trade.id).all();
-
-                        if (existingExits.length === 0) {
-                            await env.DB.prepare(`
-                                INSERT INTO trade_logs (
-                                    timestamp, decision, reason, asset, price, quantity,
-                                    leverage, stop_loss, take_profit, raw_response, status, order_id, parent_trade_id, exit_price, pnl
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            `).bind(
-                                exitTimestamp,
-                                exitDecision,
-                                pnl >= 0 ? `Exit - WIN (Parent trade #${trade.id})` : `Exit - LOSS (Parent trade #${trade.id})`,
-                                trade.asset,
-                                exitPrice,
-                                exitQty,
-                                trade.leverage || 0,
-                                trade.stop_loss || 0,
-                                trade.take_profit || 0,
-                                JSON.stringify(exitCandidates),
-                                'CLOSED',
-                                exitOrderId,
-                                trade.id,
-                                exitPrice,
-                                pnl
-                            ).run();
-                        }
-                    } catch (e) {
-                        console.error(`  ❌ Failed to create exit record:`, e);
-                    }
-                }
+            if (matchingExit) {
+                console.log(`    ✅ Found matching exit trade on exchange: ${matchingExit.order_id}`);
+                newStatus = 'CLOSED';
+                exitPrice = matchingExit.price;
+                pnl = trade.decision === 'BUY'
+                    ? (exitPrice - trade.price) * Math.abs(trade.quantity)
+                    : (trade.price - exitPrice) * Math.abs(trade.quantity);
+                exitTradeFound = matchingExit;
+            } else {
+                console.log(`    ⏳ No matching exit trade found yet. (Looking for ${exitSide} of ~${Math.abs(trade.quantity)} ${trade.asset})`);
             }
 
-            if (newStatus !== trade.status || exitPrice !== null) {
+            // Update the parent record if anything changed
+            if (newStatus !== trade.status || exitPrice !== trade.exit_price) {
                 await env.DB.prepare(
                     "UPDATE trade_logs SET status = ?, exit_price = ?, pnl = ? WHERE id = ?"
                 ).bind(newStatus, exitPrice, pnl, trade.id).run();
+
+                if (newStatus === 'CLOSED') {
+                    closedTradeIds.push(trade.id);
+                    console.log(`  ✅ Trade #${trade.id} marked as CLOSED. PnL: ${pnl.toFixed(2)}`);
+                }
             }
         }
+
+        // Final check: If all active trades were just closed, signal to stop the scheduler
+        const { results: remainingTrades } = await env.DB.prepare(
+            "SELECT id FROM trade_logs WHERE (status = 'OPEN' OR status = 'FILLED') AND parent_trade_id IS NULL AND order_id IS NOT NULL"
+        ).all();
+
+        if (remainingTrades.length === 0) {
+            console.log(">>> STOP_SCHEDULER <<<");
+        }
+
+        return closedTradeIds;
     } catch (e) {
         console.error("❌ Error checking trade status:", e);
+        return [];
     }
 }
+
 
 export async function syncTradesFromExchange(env) {
     if (!env.DB || !env.COINDCX_API_KEY) return;
@@ -510,27 +491,58 @@ export async function syncTradesFromExchange(env) {
 
             console.log(`\n🔎 Processing synced trade: ${decision} ${asset} x ${totalQty} @ ${avgPrice.toFixed(6)} (Order: ${orderId})`);
 
-            // Step 1: Check for same-side OPEN trade
-            // Try matching with and without B- prefix
-            const { results: sameSideOpen } = await env.DB.prepare(
-                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND status = 'OPEN' AND timestamp < ? ORDER BY timestamp DESC LIMIT 1"
-            ).bind(asset, asset.replace('B-', ''), decision, timestamp + 5000).all();
+            // Step 1: Check if this order_id already exists in ANY status
+            const { results: existingByOrderId } = await env.DB.prepare(
+                "SELECT id FROM trade_logs WHERE order_id = ?"
+            ).bind(orderId).all();
 
-            if (sameSideOpen.length > 0) {
-                const openTrade = sameSideOpen[0];
-                console.log(`  🏠 Matches existing OPEN trade #${openTrade.id}. Updating to FILLED.`);
+            if (existingByOrderId.length > 0) {
+                console.log(`  ⏭️ Order ID ${orderId} already exists. Skipping.`);
+                continue;
+            }
+
+            // Step 2: Check for same-side OPEN or FILLED trade to update
+            // Priority A: Check for trade with SAME order_id (already done in Step 1)
+            // Priority B: Check for trade with NULL order_id (orphaned bot trade)
+            const { results: orphanTrade } = await env.DB.prepare(
+                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND (status = 'OPEN' OR status = 'FILLED') AND order_id IS NULL AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT 1"
+            ).bind(asset, asset.replace('B-', ''), decision, timestamp - 60000, timestamp + 60000).all();
+
+            if (orphanTrade.length > 0) {
+                const openTrade = orphanTrade[0];
+                console.log(`  🏠 Matches existing ORPHAN trade #${openTrade.id} (No Order ID). Updating with Order ID ${orderId}.`);
                 await env.DB.prepare(
-                    "UPDATE trade_logs SET status = 'FILLED', order_id = ?, price = ?, quantity = ? WHERE id = ?"
+                    "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ? WHERE id = ?"
                 ).bind(orderId, avgPrice, totalQty, openTrade.id).run();
                 newTradesAdded++;
                 continue;
             }
 
-            // Step 2: Check for exit (opposite side)
+            // Priority C: Check for trade with DIFFERENT order_id (legacy logic, maybe keep for safety but prioritize B)
+            const { results: sameSideOpen } = await env.DB.prepare(
+                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND (status = 'OPEN' OR status = 'FILLED') AND timestamp < ? ORDER BY timestamp DESC LIMIT 1"
+            ).bind(asset, asset.replace('B-', ''), decision, timestamp + 5000).all();
+
+            if (sameSideOpen.length > 0) {
+                const openTrade = sameSideOpen[0];
+                // Only update if it doesn't already have a different order_id (unless we want to overwrite?)
+                // Better to be safe: if it has an order_id, it might be a different trade.
+                if (!openTrade.order_id) {
+                    // This should have been caught by Priority B, but just in case
+                    console.log(`  🏠 Matches existing OPEN trade #${openTrade.id}. Updating to OPEN.`);
+                    await env.DB.prepare(
+                        "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ? WHERE id = ?"
+                    ).bind(orderId, avgPrice, totalQty, openTrade.id).run();
+                    newTradesAdded++;
+                    continue;
+                }
+            }
+
+            // Step 3: Check for exit (opposite side)
             const exitSide = decision === 'BUY' ? 'SELL' : 'BUY';
-            // Robust search: fetch last 5 potential parents to find the best quantity match
+            // Robust search: fetch last 5 potential parents (including CLOSED to avoid duplicates)
             const { results: potentialParents } = await env.DB.prepare(
-                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND (status = 'OPEN' OR status = 'FILLED') AND timestamp < ? ORDER BY timestamp DESC LIMIT 5"
+                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT 5"
             ).bind(asset, asset.replace('B-', ''), exitSide, timestamp).all();
 
             if (potentialParents.length > 0) {
@@ -553,6 +565,19 @@ export async function syncTradesFromExchange(env) {
 
                 if (bestParent) {
                     const parent = bestParent;
+
+                    // If the parent is already CLOSED, check if this exit is already linked
+                    if (parent.status === 'CLOSED') {
+                        const { results: alreadyLinked } = await env.DB.prepare(
+                            "SELECT id FROM trade_logs WHERE parent_trade_id = ? AND order_id = ?"
+                        ).bind(parent.id, orderId).all();
+
+                        if (alreadyLinked.length > 0) {
+                            console.log(`  ⏭️ Exit trade already linked to Parent #${parent.id}. Skipping.`);
+                            continue;
+                        }
+                    }
+
                     console.log(`  🔗 LINKED! Best match is Parent trade #${parent.id}.`);
                     let pnl = 0;
                     if (parent.decision === 'BUY') {
@@ -565,54 +590,61 @@ export async function syncTradesFromExchange(env) {
                         "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ? WHERE id = ?"
                     ).bind(avgPrice, pnl, parent.id).run();
 
-                    await env.DB.prepare(`
-                        INSERT INTO trade_logs (
-                            timestamp, decision, reason, asset, price, quantity,
-                            leverage, stop_loss, take_profit, raw_response, status, order_id, parent_trade_id, exit_price, pnl
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    `).bind(
-                        timestamp, decision, `Exit - ${pnl >= 0 ? 'WIN' : 'LOSS'} (Synced from CoinDCX, Parent #${parent.id})`,
-                        asset, avgPrice, totalQty, parent.leverage || 0, parent.stop_loss || 0, parent.take_profit || 0,
-                        JSON.stringify(orderFills), 'CLOSED', orderId, parent.id, avgPrice, pnl
-                    ).run();
-
-                    newTradesAdded++;
+                    console.log(`  ✅ Synced exit updated Parent #${parent.id}. PnL: ${pnl.toFixed(2)}`);
+                    // Single-row architecture: Do NOT insert a new record for the exit.
                     continue;
                 }
             }
 
-            // Otherwise, new trade
-            await env.DB.prepare(`
-                INSERT INTO trade_logs (
-                    timestamp, decision, reason, asset, price, quantity,
-                    leverage, stop_loss, take_profit, raw_response, status, order_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).bind(
-                timestamp, decision, "Trade synced from CoinDCX", asset, avgPrice, totalQty,
-                0, 0, 0, JSON.stringify(orderFills), 'FILLED', orderId
-            ).run();
-            newTradesAdded++;
-            console.log(`  ➕ Added as new FILLED trade.`);
+            // Otherwise, skip (Strict Sync: Do not create new trades from history)
+            console.log(`  ⏭️ Trade ${orderId} does not match any existing OPEN trade. Skipping to prevent duplicates.`);
         }
 
-        console.log(`✅ Sync complete: ${newTradesAdded} new trades added`);
-        return { newTradesAdded };
+        console.log(`✅ Sync complete: ${newTradesAdded} trades updated/linked.`);
+
+        // If we found any active trades (even if not new, but just matched), we should ensure scheduler is running.
+        // But syncTradesFromExchange doesn't return the total active count.
+        // Let's just trigger START if we processed any trades, or maybe always trigger START on sync to be safe?
+        // Better: Trigger START if we found potential parents or orphans.
+        if (newTradesAdded > 0 || fills.length > 0) {
+            console.log(">>> START_SCHEDULER <<<");
+        }
+
+        // Find trades that are CLOSED but missing analysis (close_reason is NULL)
+        // This covers both newly closed trades and old ones that were missed.
+        let closedTradeIds = [];
+        try {
+            const { results: unanalyzedTrades } = await env.DB.prepare(
+                "SELECT id FROM trade_logs WHERE status = 'CLOSED' AND (close_reason IS NULL OR close_reason = '') ORDER BY timestamp DESC LIMIT 5"
+            ).all();
+            closedTradeIds = unanalyzedTrades.map(t => t.id);
+        } catch (err) {
+            console.warn("⚠️ Could not fetch unanalyzed trades (close_reason column might be missing):", err.message);
+            // Ignore error and proceed, just won't trigger analysis this time
+        }
+
+        return { newTradesAdded, closedTradeIds };
     } catch (e) {
         console.error("❌ Error syncing trades:", e);
         throw e;
     }
 }
 
-export async function analyzePerformanceAndUpdateStrategy(env) {
+export async function analyzePerformanceAndUpdateStrategy(env, customInput = "") {
     if (!env.DB || !env.GEMINI_API_KEY) return;
 
     try {
-        console.log("📊 Analyzing weekly performance...");
+        console.log("📊 Analyzing new performance data...");
 
+        // Fetch only unanalyzed trades. We still limit to last 7 days to keep context relevant, 
+        // but the primary filter is is_analyzed = 0.
         const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
-        const { results: logs } = await env.DB.prepare("SELECT * FROM trade_logs WHERE timestamp > ? ORDER BY timestamp DESC").bind(sevenDaysAgo).all();
+        const { results: logs } = await env.DB.prepare("SELECT * FROM trade_logs WHERE is_analyzed = 0 AND status != 'OPEN' AND timestamp > ? ORDER BY timestamp DESC").bind(sevenDaysAgo).all();
 
-        if (logs.length === 0) return;
+        if (logs.length === 0) {
+            console.log("ℹ️ No new unanalyzed trades found for analysis.");
+            return;
+        }
 
         const totalTrades = logs.length;
         const buyTrades = logs.filter(l => l.decision === 'BUY').length;
@@ -649,6 +681,7 @@ export async function analyzePerformanceAndUpdateStrategy(env) {
         const currentStrategy = await getLatestStrategy(env) || TRADE_INSTRUCTIONS;
         const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+        console.log("model loaded");
 
         const analysisPrompt = `
 You are an expert trading strategist. Your task is to analyze the performance of a trading bot over the last 7 days and suggest improvements to its strategy.
@@ -672,7 +705,8 @@ ${tradeRelationships.slice(0, 15).map(rel =>
             `- [${new Date(rel.entry.timestamp).toLocaleString()}] ${rel.entry.decision} @ ${rel.entry.price} (SL: ${rel.entry.stop_loss}, TP: ${rel.entry.take_profit}) 
       → [${new Date(rel.exit.timestamp).toLocaleString()}] ${rel.exit.decision} @ ${rel.exit.price} 
       = ${rel.outcome} (${rel.pnl >= 0 ? '+' : ''}${rel.pnl.toFixed(2)})
-      Reason: ${rel.entry.reason}`
+      Entry Reason: ${rel.entry.reason}
+      Close Reason: ${rel.exit.close_reason || 'N/A'}`
         ).join('\n')}
 
 **CURRENT STRATEGY:**
@@ -688,6 +722,7 @@ ${JSON.stringify(recentLogs.map(l => ({
             qty: l.quantity,
             pnl: l.pnl,
             reason: l.reason,
+            close_reason: l.close_reason,
             status: l.status,
             sl: l.stop_loss,
             tp: l.take_profit
@@ -696,12 +731,17 @@ ${JSON.stringify(recentLogs.map(l => ({
 **INSTRUCTIONS:**
 1. Analyze the performance summary and the detailed logs.
 2. Identify patterns where the strategy succeeded or failed (e.g., too many rejections, wrong timing, correlation issues).
-3. Pay close attention to the "Reason" field to understand the logic behind each trade.
+3. Pay close attention to the "Reason" and "close_reason" fields to understand entry and exit logic.
 4. Rewrite the strategy to address the weaknesses identified.
 5. **CRITICAL**: Maintain the same structure and requirements (like the JSON output format) in the rewritten strategy.
 6. **CRITICAL**: Ensure the strategy remains actionable for an AI that analyzes screenshots.
 7. Output ONLY the full rewritten strategy in markdown format. Do not include any other text or explanations outside the markdown.
+${customInput ? `
+**ADDITIONAL USER INSTRUCTIONS:**
+${customInput}
+` : ''}
 `;
+
         const result = await model.generateContent(analysisPrompt);
         const response = await result.response;
         const newStrategyText = response.text();
@@ -710,7 +750,19 @@ ${JSON.stringify(recentLogs.map(l => ({
             await env.DB.prepare("INSERT INTO strategy_config (strategy_text, version) SELECT ?, MAX(version) + 1 FROM strategy_config")
                 .bind(newStrategyText)
                 .run();
+
+            // Mark these trades as analyzed so they aren't used again
+            const logIds = logs.map(l => l.id);
+            if (logIds.length > 0) {
+                // SQLite doesn't support arrays in IN clause easily with bind, so we build the query
+                const placeholders = logIds.map(() => "?").join(",");
+                await env.DB.prepare(`UPDATE trade_logs SET is_analyzed = 1 WHERE id IN (${placeholders})`)
+                    .bind(...logIds)
+                    .run();
+                console.log(`✅ Marked ${logIds.length} trades as analyzed.`);
+            }
         }
+        console.log('new strategy inserted.');
     } catch (e) {
         console.error("Error in performance analysis:", e);
     }
@@ -721,94 +773,83 @@ export async function repairTradeLogs(env) {
 
     try {
         console.log("🛠️ Starting trade log repair...");
-
-        // 1. Find all FILLED trades that are not linked to a parent
-        const { results: unlinkedTrades } = await env.DB.prepare(
-            "SELECT * FROM trade_logs WHERE status = 'FILLED' AND parent_trade_id IS NULL ORDER BY timestamp DESC"
-        ).all();
-
-        console.log(`🔍 Found ${unlinkedTrades.length} unlinked FILLED trades to check.`);
         let repairedCount = 0;
 
-        for (const child of unlinkedTrades) {
-            const decision = child.decision;
-            const asset = child.asset;
-            const timestamp = child.timestamp;
-            const totalQty = Math.abs(child.quantity);
-            const avgPrice = child.price;
+        // 1. Deduplicate by order_id
+        console.log("🧹 Step 1: Deduplicating by order_id...");
+        const { results: duplicates } = await env.DB.prepare(`
+            SELECT order_id, COUNT(*) as count 
+            FROM trade_logs 
+            WHERE order_id IS NOT NULL AND order_id != ''
+            GROUP BY order_id 
+            HAVING count > 1
+        `).all();
 
-            console.log(`\n🧐 Checking child trade #${child.id}: ${decision} ${asset} x ${totalQty}`);
+        for (const dup of duplicates) {
+            const { results: entries } = await env.DB.prepare(
+                "SELECT id, status, pnl, exit_price FROM trade_logs WHERE order_id = ? ORDER BY pnl DESC, exit_price DESC"
+            ).bind(dup.order_id).all();
 
-            // Step 2: Check if this is an exit for an existing OPEN or FILLED trade
-            const exitSide = decision === 'BUY' ? 'SELL' : 'BUY';
-
-            // Robust search: fetch last 5 potential parents
-            const { results: potentialParents } = await env.DB.prepare(
-                "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND (status = 'OPEN' OR status = 'FILLED') AND timestamp < ? AND id != ? ORDER BY timestamp DESC LIMIT 5"
-            ).bind(asset, asset.replace('B-', ''), exitSide, timestamp, child.id).all();
-
-            if (potentialParents.length > 0) {
-                console.log(`  🎯 Found ${potentialParents.length} potential parents. Checking for quantity match...`);
-
-                let bestParent = null;
-                let minDiff = Infinity;
-
-                for (const parent of potentialParents) {
-                    const qtyDiff = Math.abs(totalQty - Math.abs(parent.quantity));
-                    const maxAllowedDiff = Math.max(2, Math.abs(parent.quantity) * 0.1);
-
-                    console.log(`    - Checking Parent #${parent.id}: Qty ${Math.abs(parent.quantity)}, Diff ${qtyDiff.toFixed(2)} (Max Allowed: ${maxAllowedDiff.toFixed(2)})`);
-
-                    if (qtyDiff <= maxAllowedDiff && qtyDiff < minDiff) {
-                        minDiff = qtyDiff;
-                        bestParent = parent;
-                    }
-                }
-
-                if (bestParent) {
-                    const parent = bestParent;
-                    console.log(`  🔗 REPAIRED! Linking child #${child.id} to parent #${parent.id}.`);
-
-                    // Calculate PnL
-                    let pnl = 0;
-                    if (parent.decision === 'BUY') {
-                        pnl = (avgPrice - parent.price) * totalQty;
-                    } else {
-                        pnl = (parent.price - avgPrice) * totalQty;
-                    }
-
-                    // Update parent trade
-                    await env.DB.prepare(
-                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ? WHERE id = ?"
-                    ).bind(avgPrice, pnl, parent.id).run();
-
-                    // Update child trade to be a linked exit
-                    await env.DB.prepare(`
-                        UPDATE trade_logs SET 
-                            status = 'CLOSED', 
-                            parent_trade_id = ?, 
-                            exit_price = ?, 
-                            pnl = ?,
-                            reason = ?
-                        WHERE id = ?
-                    `).bind(
-                        parent.id,
-                        avgPrice,
-                        pnl,
-                        `Exit - ${pnl >= 0 ? 'WIN' : 'LOSS'} (Repaired, Parent #${parent.id})`,
-                        child.id
-                    ).run();
-
-                    repairedCount++;
-                } else {
-                    console.log(`  ❌ No quantity match found among potential parents.`);
-                }
-            } else {
-                console.log(`  ❓ No potential parents found.`);
+            // Keep the first one (best one), delete the rest
+            const keepId = entries[0].id;
+            for (let i = 1; i < entries.length; i++) {
+                console.log(`  🗑️ Deleting duplicate trade #${entries[i].id} (Order ID: ${dup.order_id})`);
+                await env.DB.prepare("DELETE FROM trade_logs WHERE id = ?").bind(entries[i].id).run();
+                repairedCount++;
             }
         }
 
-        console.log(`✅ Repair complete: ${repairedCount} trades linked.`);
+        // 2. Fix FILLED entries that should be OPEN or CLOSED
+        console.log("🔧 Step 2: Fixing FILLED entries...");
+        const { results: filledEntries } = await env.DB.prepare(
+            "SELECT * FROM trade_logs WHERE status = 'FILLED' AND parent_trade_id IS NULL"
+        ).all();
+
+        for (const trade of filledEntries) {
+            // Check if this trade has any children (exits)
+            const { results: children } = await env.DB.prepare(
+                "SELECT id FROM trade_logs WHERE parent_trade_id = ?"
+            ).bind(trade.id).all();
+
+            if (children.length > 0) {
+                console.log(`  ✅ Trade #${trade.id} has children. Marking as CLOSED.`);
+                await env.DB.prepare("UPDATE trade_logs SET status = 'CLOSED' WHERE id = ?").bind(trade.id).run();
+                repairedCount++;
+            } else {
+                // No children. Is there a potential exit trade that isn't linked?
+                const exitSide = trade.decision === 'BUY' ? 'SELL' : 'BUY';
+                const { results: potentialExits } = await env.DB.prepare(
+                    "SELECT * FROM trade_logs WHERE (asset = ? OR asset = ?) AND decision = ? AND timestamp > ? AND parent_trade_id IS NULL ORDER BY timestamp ASC LIMIT 1"
+                ).bind(trade.asset, trade.asset.replace('B-', ''), exitSide, trade.timestamp).all();
+
+                if (potentialExits.length > 0) {
+                    const exit = potentialExits[0];
+                    console.log(`  🔗 Linking entry #${trade.id} to exit #${exit.id}.`);
+
+                    const pnl = trade.decision === 'BUY'
+                        ? (exit.price - trade.price) * Math.abs(trade.quantity)
+                        : (trade.price - exit.price) * Math.abs(trade.quantity);
+
+                    await env.DB.prepare(
+                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ? WHERE id = ?"
+                    ).bind(exit.price, pnl, trade.id).run();
+
+                    await env.DB.prepare(
+                        "UPDATE trade_logs SET status = 'CLOSED', parent_trade_id = ?, exit_price = ?, pnl = ?, reason = ? WHERE id = ?"
+                    ).bind(trade.id, exit.price, pnl, `Exit - ${pnl >= 0 ? 'WIN' : 'LOSS'} (Repaired)`, exit.id).run();
+
+                    repairedCount++;
+                } else {
+                    // No exit found. If it's older than 2 hours, it's probably a missed exit or sync error.
+                    // But let's just mark it as OPEN so the status checker can try to find its exit.
+                    console.log(`  🕒 Trade #${trade.id} has no exit. Marking as OPEN.`);
+                    await env.DB.prepare("UPDATE trade_logs SET status = 'OPEN' WHERE id = ?").bind(trade.id).run();
+                    repairedCount++;
+                }
+            }
+        }
+
+        console.log(`✅ Repair complete: ${repairedCount} actions taken.`);
         return { repairedCount };
 
     } catch (e) {

@@ -5,8 +5,9 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
-		"dev": "wrangler dev",
+		"dev": "node start.js",
 		"start": "wrangler dev",
+		"cron": "node local-scheduler.js",
 		"test": "vitest"
 	},
 	"devDependencies": {

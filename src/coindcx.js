@@ -249,8 +249,8 @@ export async function getTradeHistory(env) {
 
     const body = {
         "timestamp": timestamp,
-        "page": "1",
-        "size": "50"
+        // "page": "1",
+        "size": "10"
     };
 
     const payload = JSON.stringify(body);

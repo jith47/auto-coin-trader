@@ -42,15 +42,35 @@ export default {
 
     // Route: /api/check-status
     if (pathname === "/api/check-status") {
-      ctx.waitUntil(checkTradeStatus(env));
+      console.log("🔍 [API] Manual status check triggered.");
+      ctx.waitUntil((async () => {
+        try {
+          const closedIds = await checkTradeStatus(env);
+          if (closedIds && closedIds.length > 0) {
+            console.log(`🎯 [API] Detected ${closedIds.length} closed trade(s). Triggering analysis...`);
+            await runPostTradeAnalysis(env, closedIds);
+          } else {
+            console.log("ℹ️ [API] No new closures detected.");
+          }
+        } catch (err) {
+          console.error("❌ [API] Error in status check:", err);
+        }
+      })());
       return new Response(JSON.stringify({ status: "checking" }), {
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    // Route: /api/analyze-performance
+    // Route: /api/analyze-performance (GET or POST)
     if (pathname === "/api/analyze-performance") {
-      ctx.waitUntil(analyzePerformanceAndUpdateStrategy(env));
+      let customInput = "";
+      if (request.method === "POST") {
+        try {
+          const body = await request.json();
+          customInput = body.customInput || "";
+        } catch (e) { }
+      }
+      ctx.waitUntil(analyzePerformanceAndUpdateStrategy(env, customInput));
       return new Response(JSON.stringify({ status: "analysis_started" }), {
         headers: { "Content-Type": "application/json" }
       });
@@ -60,10 +80,188 @@ export default {
     if (pathname === "/api/sync-trades") {
       try {
         const result = await syncTradesFromExchange(env);
+
+        // Trigger analysis for any closed trades found during sync
+        if (result.closedTradeIds && result.closedTradeIds.length > 0) {
+          ctx.waitUntil(runPostTradeAnalysis(env, result.closedTradeIds));
+        }
+
         return new Response(JSON.stringify(result), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/download-strategy
+    if (pathname === "/api/download-strategy") {
+      try {
+        const { getLatestStrategy, TRADE_INSTRUCTIONS } = await import('./utils.js');
+        const strategy = await getLatestStrategy(env) || TRADE_INSTRUCTIONS;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        return new Response(strategy, {
+          headers: {
+            "Content-Type": "text/markdown",
+            "Content-Disposition": `attachment; filename="strategy_${timestamp}.md"`
+          }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/save-strategy (POST - Save edited strategy)
+    if (pathname === "/api/save-strategy" && request.method === "POST") {
+      try {
+        const strategyText = await request.text();
+        if (!strategyText || strategyText.trim().length === 0) {
+          return new Response(JSON.stringify({ error: "Strategy cannot be empty" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+
+        // Check if strategy_config table exists and has rows
+        const { results: existingConfig } = await env.DB.prepare("SELECT id, version FROM strategy_config ORDER BY version DESC LIMIT 1").all();
+
+        if (existingConfig.length > 0) {
+          // Insert new version instead of updating
+          const newVersion = (existingConfig[0].version || 0) + 1;
+          await env.DB.prepare("INSERT INTO strategy_config (strategy_text, version) VALUES (?, ?)")
+            .bind(strategyText, newVersion).run();
+        } else {
+          await env.DB.prepare("INSERT INTO strategy_config (strategy_text, version) VALUES (?, 1)")
+            .bind(strategyText).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message: "Strategy saved" }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/repair
+    if (pathname === "/api/repair") {
+      const { repairTradeLogs } = await import('./utils.js');
+      try {
+        const result = await repairTradeLogs(env);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/clear-logs
+    if (pathname === "/api/clear-logs") {
+      try {
+        await env.DB.prepare("DELETE FROM trade_logs").run();
+        // Reset auto-increment if sqlite
+        try {
+          await env.DB.prepare("DELETE FROM sqlite_sequence WHERE name='trade_logs'").run();
+        } catch (e) {
+          // ignore if sequence doesn't exist or other error
+        }
+        return new Response(JSON.stringify({ success: true, message: "Logs cleared" }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/force-scheduler (Manually trigger the event-driven scheduler)
+    if (pathname === "/api/force-scheduler") {
+      console.log(">>> START_SCHEDULER <<<");
+      return new Response(JSON.stringify({ success: true, message: "Scheduler signal emitted." }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    // Route: /api/force-migrate (Temporary fix for missing column)
+    if (pathname === "/api/force-migrate") {
+      try {
+        // Check if close_reason exists
+        try {
+          await env.DB.prepare("SELECT close_reason FROM trade_logs LIMIT 1").run();
+        } catch (e) {
+          await env.DB.prepare("ALTER TABLE trade_logs ADD COLUMN close_reason TEXT").run();
+        }
+
+        // Check if is_analyzed exists
+        try {
+          await env.DB.prepare("SELECT is_analyzed FROM trade_logs LIMIT 1").run();
+        } catch (e) {
+          await env.DB.prepare("ALTER TABLE trade_logs ADD COLUMN is_analyzed INTEGER DEFAULT 0").run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message: "Migrations checked and applied." }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/backup-logs (Full Dump)
+    if (pathname === "/api/backup-logs") {
+      if (!env.DB) return new Response("Database not bound", { status: 500 });
+      try {
+        const { results } = await env.DB.prepare("SELECT * FROM trade_logs ORDER BY timestamp DESC").all();
+        return new Response(JSON.stringify(results, null, 2), {
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Disposition": `attachment; filename="trade_logs_backup_${Date.now()}.json"`
+          }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/restore-logs
+    if (pathname === "/api/restore-logs" && request.method === "POST") {
+      try {
+        const logs = await request.json();
+        if (!Array.isArray(logs)) {
+          throw new Error("Invalid backup file format. Expected an array of logs.");
+        }
+
+        // 1. Clear existing logs
+        await env.DB.prepare("DELETE FROM trade_logs").run();
+        try {
+          await env.DB.prepare("DELETE FROM sqlite_sequence WHERE name='trade_logs'").run();
+        } catch (e) { }
+
+        // 2. Insert backed up logs
+        let restoredCount = 0;
+        const stmt = env.DB.prepare(`
+          INSERT INTO trade_logs (
+            id, timestamp, decision, reason, asset, price, quantity,
+            leverage, stop_loss, take_profit, raw_response, status, 
+            order_id, parent_trade_id, exit_price, pnl, summary
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        // Batch insert could be better but loop is safer for D1 limits per query
+        for (const log of logs) {
+          await stmt.bind(
+            log.id, log.timestamp, log.decision, log.reason, log.asset, log.price, log.quantity,
+            log.leverage, log.stop_loss, log.take_profit, log.raw_response, log.status,
+            log.order_id, log.parent_trade_id, log.exit_price, log.pnl, log.summary
+          ).run();
+          restoredCount++;
+        }
+
+        return new Response(JSON.stringify({ success: true, message: `Restored ${restoredCount} logs successfully.` }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        console.error("Restore failed:", e);
         return new Response(JSON.stringify({ error: e.message }), { status: 500 });
       }
     }
@@ -121,8 +319,23 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    console.log("⏰ Running scheduled trade status check...");
-    ctx.waitUntil(checkTradeStatus(env));
+    console.log("⏰ [Scheduled Event] Triggered at", new Date().toLocaleTimeString());
+    ctx.waitUntil((async () => {
+      try {
+        console.log("🔍 [Scheduled] Calling checkTradeStatus...");
+        const closedIds = await checkTradeStatus(env);
+        if (closedIds && closedIds.length > 0) {
+          console.log(`🎯 [Scheduled] Detected ${closedIds.length} closed trade(s). Triggering analysis...`);
+          await runPostTradeAnalysis(env, closedIds);
+        } else {
+          console.log("ℹ️ [Scheduled] No active trades to check or no new closures.");
+        }
+      } catch (err) {
+        console.error("❌ [Scheduled] Error in scheduled task:", err);
+      } finally {
+        console.log("🏁 [Scheduled] Task completed.");
+      }
+    })());
   },
 };
 
@@ -217,6 +430,7 @@ async function runAnalysisAndTrade(env, trade) {
       const { GoogleGenerativeAI } = await import("@google/generative-ai");
       const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+      console.log("model loaded");
 
       // FETCH ACCOUNT DATA BEFORE AI ANALYSIS
       let positions = [];
@@ -393,7 +607,23 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
 
           console.log("📦 placeOrder returned:", JSON.stringify(tradeResult, null, 2));
 
-          const extractedOrderId = tradeResult?.id || tradeResult?.order_id || null;
+          // Robust Order ID Extraction
+          let extractedOrderId = null;
+          if (tradeResult) {
+            // Handle array response (most common from CoinDCX)
+            if (Array.isArray(tradeResult) && tradeResult.length > 0) {
+              extractedOrderId = tradeResult[0].id || tradeResult[0].order_id;
+            } else if (tradeResult.id) {
+              extractedOrderId = tradeResult.id;
+            } else if (tradeResult.order_id) {
+              extractedOrderId = tradeResult.order_id;
+            } else if (tradeResult.orders && Array.isArray(tradeResult.orders) && tradeResult.orders.length > 0) {
+              extractedOrderId = tradeResult.orders[0].id || tradeResult.orders[0].order_id;
+            } else if (tradeResult.data && (tradeResult.data.id || tradeResult.data.order_id)) {
+              extractedOrderId = tradeResult.data.id || tradeResult.data.order_id;
+            }
+          }
+
           console.log("🔑 Extracted Order ID:", extractedOrderId);
 
           await logTradeToDB(env, {
@@ -408,6 +638,9 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
             status: "OPEN",
             orderId: extractedOrderId
           });
+
+          // Signal to start the scheduler
+          console.log(">>> START_SCHEDULER <<<");
         } else {
           await logTradeToDB(env, {
             decision,
@@ -454,7 +687,95 @@ async function switchTimeframe(page, timeframe) {
   }
 }
 
-export async function scheduled(event, env, ctx) {
-  console.log("⏰ Scheduled task triggered...");
-  ctx.waitUntil(checkTradeStatus(env));
+async function runPostTradeAnalysis(env, closedTradeIds) {
+  try {
+    console.log(`📊 Starting immediate post-trade analysis for trades: ${closedTradeIds.join(", ")}`);
+
+    if (!env.GEMINI_API_KEY) {
+      console.error("❌ Missing GEMINI_API_KEY. Cannot run post-trade analysis.");
+      return;
+    }
+
+    // Filter trades that actually need analysis (LOSSES)
+    const tradesToAnalyze = [];
+    for (const tradeId of closedTradeIds) {
+      const { results } = await env.DB.prepare("SELECT * FROM trade_logs WHERE id = ?").bind(tradeId).all();
+      if (results.length > 0) {
+        const trade = results[0];
+        if (trade.pnl <= 0) {
+          tradesToAnalyze.push(trade);
+        } else {
+          console.log(`✅ Trade #${tradeId} was a WIN (PnL: ${trade.pnl.toFixed(2)}). Skipping detailed analysis.`);
+          await env.DB.prepare("UPDATE trade_logs SET close_reason = 'WIN', summary = 'Trade closed with profit.' WHERE id = ?").bind(tradeId).run();
+        }
+      }
+    }
+
+    if (tradesToAnalyze.length === 0) {
+      console.log("ℹ️ No losing trades to analyze. Skipping browser launch.");
+      return;
+    }
+
+    console.log(`📸 Launching browser to analyze ${tradesToAnalyze.length} losing trade(s)...`);
+    const browser = await launch(env.MYBROWSER);
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+
+    // Capture IMMEDIATE screenshots of BTC and DOGE for delta context
+    const captureConfig = [
+      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m"] },
+      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m"] }
+    ];
+
+    const screenshots = [];
+    for (const asset of captureConfig) {
+      console.log(`📸 Capturing immediate delta for ${asset.name}...`);
+      await page.goto(asset.url);
+      await page.waitForTimeout(5000); // Wait for chart to render
+      const buffer = await page.screenshot({ fullPage: true });
+      screenshots.push({
+        inlineData: {
+          data: Buffer.from(buffer).toString("base64"),
+          mimeType: "image/png",
+        },
+      });
+    }
+    await browser.close();
+
+    const { GoogleGenerativeAI } = await import("@google/generative-ai");
+    const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+    console.log("model loaded");
+
+    for (const trade of tradesToAnalyze) {
+      const tradeId = trade.id;
+      const analysisPrompt = `
+Analyze the outcome of this trade based on the provided screenshots and consolidated trade data.
+The screenshots were captured IMMEDIATELY after the trade was closed to provide the exact market context (Delta/CVD).
+
+TRADE DATA:
+- Decision: ${trade.decision}
+- Entry Price: ${trade.price}
+- Exit Price: ${trade.exit_price}
+- PnL: ${trade.pnl}
+- Reason for Entry: ${trade.reason}
+- Status: ${trade.status}
+
+INSTRUCTIONS:
+1. Explain why the trade was a WIN or LOSS.
+2. Analyze the BTC/DOGE Delta and CVD data from the screenshots at the time of exit.
+3. Determine the specific trigger that caused the exit (e.g., Stop Loss hit, Take Profit hit, Delta flip, Momentum faded, Manual close).
+4. Provide a detailed analysis (3-5 sentences) explaining the market conditions that led to this outcome.
+5. Output ONLY the analysis text. No JSON, no formatting.
+`;
+
+      const result = await model.generateContent([analysisPrompt, ...screenshots]);
+      const closeReason = (await result.response).text().trim();
+
+      await env.DB.prepare("UPDATE trade_logs SET close_reason = ?, summary = ? WHERE id = ?").bind(closeReason, closeReason, tradeId).run();
+      console.log(`✅ Immediate analysis saved for trade #${tradeId}`);
+    }
+  } catch (e) {
+    console.error("❌ Error in post-trade analysis:", e);
+  }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE trade_logs ADD COLUMN is_analyzed INTEGER DEFAULT 0;
