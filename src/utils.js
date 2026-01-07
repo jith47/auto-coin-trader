@@ -700,20 +700,12 @@ You are an expert trading strategist. Your task is to analyze the performance of
 - **Average PnL: ${avgPnL}**
 - **Win Rate: ${winRate}% (${winningTrades} wins / ${losingTrades} losses)**
 
-**TRADE RELATIONSHIPS (Entry → Exit):**
-${tradeRelationships.slice(0, 15).map(rel =>
-            `- [${new Date(rel.entry.timestamp).toLocaleString()}] ${rel.entry.decision} @ ${rel.entry.price} (SL: ${rel.entry.stop_loss}, TP: ${rel.entry.take_profit}) 
-      → [${new Date(rel.exit.timestamp).toLocaleString()}] ${rel.exit.decision} @ ${rel.exit.price} 
-      = ${rel.outcome} (${rel.pnl >= 0 ? '+' : ''}${rel.pnl.toFixed(2)})
-      Entry Reason: ${rel.entry.reason}
-      Close Reason: ${rel.exit.close_reason || 'N/A'}`
-        ).join('\n')}
-
 **CURRENT STRATEGY:**
 ${currentStrategy}
 
+Analyze the following trade logs and suggest improvements to the strategy.
 **DETAILED TRADE LOGS (Most Recent 20):**
-${JSON.stringify(recentLogs.map(l => ({
+${JSON.stringify(recentLogs.filter(l => l.is_analyzed === 0 && l.decision != 'HOLD').map(l => ({
             time: new Date(l.timestamp).toLocaleString(),
             decision: l.decision,
             asset: l.asset,
@@ -732,15 +724,19 @@ ${JSON.stringify(recentLogs.map(l => ({
 1. Analyze the performance summary and the detailed logs.
 2. Identify patterns where the strategy succeeded or failed (e.g., too many rejections, wrong timing, correlation issues).
 3. Pay close attention to the "Reason" and "close_reason" fields to understand entry and exit logic.
-4. Rewrite the strategy to address the weaknesses identified.
-5. **CRITICAL**: Maintain the same structure and requirements (like the JSON output format) in the rewritten strategy.
-6. **CRITICAL**: Ensure the strategy remains actionable for an AI that analyzes screenshots.
-7. Output ONLY the full rewritten strategy in markdown format. Do not include any other text or explanations outside the markdown.
+4. Update the strategy to address the weaknesses identified.
+5. **CRITICAL**: Ensure the strategy remains actionable for an AI that analyzes screenshots.
+6. Output ONLY the updated strategy in markdown format. Do not include any other text or explanations outside the markdown.
+7. Do not include any avoid-trade-time in the strategy.
+8. **CRITICAL**: The "important" section about the output format(JSON body and related info) from the current strategy should be exactly the same in the updated strategy.
 ${customInput ? `
 **ADDITIONAL USER INSTRUCTIONS:**
 ${customInput}
 ` : ''}
+**IMPORTANT:**
+***Only update the necessary changes. Do not change the structure or rewrite the full strategy. If any changes are required, only update the necessary parts.***
 `;
+        console.log("analysisPrompt", analysisPrompt);
 
         const result = await model.generateContent(analysisPrompt);
         const response = await result.response;

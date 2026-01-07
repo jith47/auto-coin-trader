@@ -143,6 +143,34 @@ export default {
       }
     }
 
+    // Route: /api/restore-strategy (POST)
+    if (pathname === "/api/restore-strategy" && request.method === "POST") {
+      try {
+        // Get the second latest version
+        const { results: versions } = await env.DB.prepare("SELECT strategy_text, version FROM strategy_config ORDER BY version DESC LIMIT 2").all();
+
+        if (versions.length < 2) {
+          return new Response(JSON.stringify({ error: "No previous strategy version found to restore." }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+
+        const previousStrategy = versions[1]; // Index 1 is the second latest
+        const newVersion = versions[0].version + 1;
+
+        await env.DB.prepare("INSERT INTO strategy_config (strategy_text, version) VALUES (?, ?)")
+          .bind(previousStrategy.strategy_text, newVersion).run();
+
+        return new Response(JSON.stringify({ success: true, message: "Restored previous strategy version " + previousStrategy.version }), {
+          headers: { "Content-Type": "application/json" }
+        });
+
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
     // Route: /api/repair
     if (pathname === "/api/repair") {
       const { repairTradeLogs } = await import('./utils.js');

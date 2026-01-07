@@ -1,6 +1,10 @@
-# Improved BTC-DOGE Correlation Scalp Strategy v2.0
+# Improved BTC-DOGE Correlation Scalp Strategy v2.2
 
 ## Key Improvements Made:
+- **Tightened Relative Strength Filter**: Lowered the overextension threshold from 3x to 2.5x BTC performance to avoid "exhaustion" entries.
+- **NYSE Open "Dead Zone"**: Extended the avoid-trading window during NYSE open to 30 minutes to filter out high-frequency bull/bear traps.
+- **Delta/CVD Hard Confirmation**: Mandates a specific Delta slope direction to prevent entering during "loading" or stagnant data periods.
+- **Aggressive Time-Stop**: Shortened the "no-move" exit window to 10 minutes to preserve capital in sideways markets.
 
 ---
 
@@ -36,13 +40,13 @@ IF BTC 1D > 21 EMA AND 50 EMA slope UP:
 IF BTC 1H Delta > +300K (rolling 10-candle sum):
     └── Momentum Confirmed
     
-IF BTC 1M sweeps low + reclaims:
+IF BTC 1M sweeps low + reclaims AND CVD is trending UP:
     └── DOGE LONG TRIGGER
 ```
 
 ---
 
-## 3. PRECISE ENTRY TRIGGERS (Not Vague)
+## 3. PRECISE ENTRY TRIGGERS (With Extension Filter)
 
 ### Long Scalp Entry Checklist:
 ```
@@ -51,14 +55,15 @@ IF BTC 1M sweeps low + reclaims:
 □ BTC 1H: 
    - Delta sum (10 candles) > +300K
    - CVD making higher highs
-   - RSI 40-65 zone (momentum room)
 □ BTC 1M:
    - Liquidity sweep below recent low (5-15 candles)
    - Immediate reclaim (within 2-3 candles)
    - Volume spike > 2x 20-period SMA
 □ DOGE 1M:
    - Correlation > 0.80 (60-period)
-   - DOGE has NOT yet moved (lag entry)
+   - EXTENSION FILTER: DOGE 1D % Change < (BTC 1D % Change * 2.5) 
+     (Example: If BTC is +2%, DOGE must be < +5%. If DOGE is +6%, AVOID LONG)
+   - CVD 1M: Must show POSITIVE SLOPE (must not be flat or loading)
    - Enter on first green candle close after BTC reclaim
 ```
 
@@ -69,13 +74,13 @@ IF BTC 1M sweeps low + reclaims:
 □ BTC 1H:
    - Delta sum (10 candles) < -300K
    - CVD making lower lows
-   - RSI 35-60 zone
 □ BTC 1M:
    - Liquidity sweep above recent high
    - Immediate rejection (within 2-3 candles)
    - Red volume spike > 2x 20-period SMA
 □ DOGE 1M:
    - Correlation > 0.80
+   - CVD 1M must be making LOWER LOWS
    - Enter on first red candle close after BTC rejection
 ```
 
@@ -87,9 +92,10 @@ IF BTC 1M sweeps low + reclaims:
 OPTIMAL WINDOWS (UTC):
 ├── 13:00-17:00: EU-US Overlap ⭐⭐⭐ (BEST - 70% of setups)
 ├── 08:00-11:00: EU Open ⭐⭐ (Good momentum)
-└── 14:00-15:00: NYSE Open ⭐⭐⭐ (Highest volatility)
+└── 14:00-14:30: NYSE Open ⚠️ (EXTREME VOLATILITY - AVOID)
 
 AVOID:
+├── 14:00-14:30 UTC: NYSE Open (Wait 30 mins for "fake-outs" to clear)
 ├── 21:00-01:00 UTC: Low liquidity
 ├── 04:00-07:00 UTC: Asia session (DOGE correlation drops)
 └── First/Last 30 min of any session (noise)
@@ -97,60 +103,38 @@ AVOID:
 
 ---
 
-## 5. IMPROVED POSITION SIZING
+## 5. EXIT STRATEGY (The "Profit Guard")
 
-### Formula:
-```
-Account: $5,000
-Risk per trade: 0.5% = $25
-Leverage: 5x (max)
+### Take Profit (TP):
+- **TP1**: 0.3% - 0.4% (Close 50% of position)
+- **TP2**: 0.8% - 1.0% (Close remaining 50%)
+- **Dynamic TP**: If BTC delta flips from +500K to -100K, exit all immediately.
 
-CALCULATION:
-Entry Price: $0.155
-Stop Loss: $0.1535 (0.97% away)
-Risk Distance: $0.0015
-
-Position Size = (Risk $) / (Risk Distance)
-             = $25 / $0.0015
-             = 16,666 DOGE
-
-With 5x leverage:
-Capital Required = (16,666 × $0.155) / 5 = $516.66
-```
+### Stop Loss (SL):
+- **Hard SL**: 0.40% below entry (Tightened to improve R:R)
+- **Time SL**: If trade hasn't hit TP1 within 10 minutes, exit at market.
+- **Break-even SL**: Move SL to entry once TP1 is hit.
 
 ---
 
-## 6. REFINED EXIT STRATEGY
+## 6. DYNAMIC TRADE MANAGEMENT
 
-### Scaled Exit Plan:
-| Stage | Price Target | Action | Trailing |
-|-------|-------------|--------|----------|
-| **TP1** | +0.5% | Close 50% position | Move SL to breakeven |
-| **TP2** | +1.0% | Close 25% position | Trail SL 0.4% below price |
-| **TP3** | +1.5% | Close remaining 25% | 0.3% trailing stop |
-
-### Time-Based Exits (Critical Addition):
 ```
-IF position open > 10 min AND profit < 0.3%:
-    → EXIT (setup failed, avoid chop)
-    
-IF position open > 20 min AND profit > 0.3%:  
-    → TRAIL 0.5% (momentum fading)
+IF position open > 10 min AND profit < 0.1%:  
+    → EXIT MARKET (Momentum failed)
     
 IF BTC 1M delta FLIPS direction:
-    → EXIT IMMEDIATELY (regardless of P/L)
+    → EXIT IMMEDIATELY (Regardless of P/L)
 ```
 
 ---
 
 ## 7. ADDITIONAL FILTERS (Risk Reduction)
 
-### Funding Rate Filter:
+### Relative Strength Filter (CRITICAL):
 ```
-Coinglass DOGE Funding:
-├── > +0.03%: Longs crowded → SHORT BIAS (or avoid longs)
-├── < -0.03%: Shorts crowded → LONG BIAS (or avoid shorts)  
-└── -0.01% to +0.01%: Neutral → FOLLOW BTC
+IF DOGE 1D % Performance > 2.5x BTC 1D % Performance:
+    → DO NOT LONG (Asset is overextended, high probability of mean reversion)
 ```
 
 ### Open Interest Filter:
@@ -160,12 +144,6 @@ IF OI spiking + Price falling: Shorts entering → CONTINUATION
 IF OI dropping + Price moving: Positions closing → REVERSAL SOON
 ```
 
-### Chop Filter:
-```
-IF BTC 1H ATR < 0.3%: → NO TRADE (sideways)
-IF BTC in 0.5% range for 2+ hours: → WAIT FOR BREAKOUT
-```
-
 ---
 
 ## 8. IMPROVED DAILY WORKFLOW
@@ -173,22 +151,10 @@ IF BTC in 0.5% range for 2+ hours: → WAIT FOR BREAKOUT
 ### Pre-Session (15 min before):
 ```
 1. Check BTC 1D → Trend direction noted
-2. Check BTC 4H → Key levels marked (OB, FVG, liquidity)  
-3. Check BTC 1H → Delta/CVD direction
+2. Check BTC 4H → Key levels marked
+3. Compare DOGE/BTC Daily % performance (Extension check - Max 2.5x)
 4. Check DOGE/BTC correlation → Must be > 0.75
-5. Check funding rates → Note bias
-6. Check calendar → Any Fed/macro news?
-7. Set alerts on BTC key levels
-```
-
-### During Session:
-```
-1. Wait for BTC 1M setup (liquidity grab)
-2. Confirm higher TF alignment
-3. Check DOGE hasn't moved yet (lag opportunity)
-4. Enter DOGE, set SL/TP immediately
-5. Monitor BTC delta (exit trigger)
-6. Journal result within 5 min of close
+5. Set alerts on BTC key levels
 ```
 
 ---
@@ -199,45 +165,29 @@ IF BTC in 0.5% range for 2+ hours: → WAIT FOR BREAKOUT
 HARD RULES (NO EXCEPTIONS):
 ├── Max 2 trades per session
 ├── Max 3 trades per day
-├── Stop trading after 2 consecutive losses
-├── Daily loss limit: 1.5% ($75)
-├── Weekly loss limit: 4% ($200)
-├── No trading 30 min before/after major news
-└── No position held through funding (8-hour marks)
-
-POSITION RULES:
-├── Max leverage: 5x (never higher on DOGE)
-├── Max position: 10% of account ($500)
-└── Always use isolated margin (not cross)
+├── Stop trading after 2 consecutive losses (Wait 12 hours)
+├── Daily loss limit: 1.2% ($60)
+├── No trading first 30 mins of NYSE Open (14:30-15:00 UTC)
 ```
 
 ---
 
 ## 10. PERFORMANCE TRACKING
 
-### Required Journal Fields:
-```
-| Date | Time | Direction | BTC Bias | Entry | Exit | P/L % | R Multiple | Notes |
-```
-
 ### Weekly Review Metrics:
-```
 - Win Rate Target: > 55%
-- Avg R:R Target: > 1:2
-- Profit Factor Target: > 1.5
-- Max Drawdown Allowed: 5%
-```
+- Avg R:R Target: > 1:1.2
+- **Extension Trap Count**: Tracking how many losses occurred when DOGE was > 2.5x BTC performance.
 
----
-
-IMPORTANT: Your response must be a valid JSON object with the following structure:
+```json
 {
-  "decision": "BUY" | "SELL" | "HOLD",
-  "reason": "Detailed explanation...",
-  "stopLoss": "numeric value (e.g., 0.125)",
-  "takeProfit": "numeric value (e.g., 0.135)",
-  "quantity": "numeric value (e.g., 100)",
-  "leverage": "numeric value (e.g., 5)",
-  "orderType": "MARKET" | "LIMIT",
-  "entry": "numeric value (optional, for limit orders)"
+  "decision": "HOLD",
+  "reason": "DOGE remains severely overextended relative to BTC (last recorded 4.69x vs 2.5x limit). BTC CVD showing bearish divergence on 1M, and current price action is hovering near local highs without a fresh liquidity sweep/reclaim trigger.",
+  "orderType": "MARKET",
+  "quantity": 0,
+  "leverage": 0,
+  "entry": 0.151,
+  "stopLoss": 0,
+  "takeProfit": 0
 }
+```

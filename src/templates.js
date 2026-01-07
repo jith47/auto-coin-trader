@@ -221,6 +221,7 @@ export function getLogsHTML() {
                 </div>
                 <textarea id="strategy-editor" style="flex: 1; padding: 1rem; background: var(--bg-color); border: none; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: none; min-height: 400px;"></textarea>
                 <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button onclick="restoreStrategy()" style="padding: 0.5rem 1rem; background: var(--accent-yellow); border: none; border-radius: 0.375rem; color: black; cursor: pointer; margin-right: auto;">Restore Previous</button>
                     <button onclick="closeStrategyModal()" style="padding: 0.5rem 1rem; background: var(--border-color); border: none; border-radius: 0.375rem; color: var(--text-primary); cursor: pointer;">Cancel</button>
                     <button onclick="saveStrategy()" style="padding: 0.5rem 1rem; background: var(--accent-blue); border: none; border-radius: 0.375rem; color: white; cursor: pointer;">Save Strategy</button>
                 </div>
@@ -247,16 +248,24 @@ export function getLogsHTML() {
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-label">Total Logs</div>
-                <div id="total-logs" class="stat-value">-</div>
+                <div class="stat-label">Win Rate</div>
+                <div id="win-rate" class="stat-value" style="color: var(--accent-green);">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Buy Decisions</div>
-                <div id="buy-count" class="stat-value">-</div>
+                <div class="stat-label">Total PnL</div>
+                <div id="total-pnl" class="stat-value">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Sell Decisions</div>
-                <div id="sell-count" class="stat-value">-</div>
+                <div class="stat-label">Closed Trades</div>
+                <div id="closed-trades" class="stat-value">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Avg PnL</div>
+                <div id="avg-pnl" class="stat-value">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Buy/Sell</div>
+                <div id="buy-sell-ratio" class="stat-value" style="font-size: 1.25rem;">-</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Last Update</div>
@@ -371,6 +380,23 @@ export function getLogsHTML() {
                 }
             } catch (e) {
                 alert('Failed to save strategy.');
+            }
+        }
+
+        async function restoreStrategy() {
+            if (!confirm("Are you sure you want to restore the previous strategy? This will create a new version based on the previous one.")) return;
+            
+            try {
+                const response = await fetch('/api/restore-strategy', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    alert(data.message);
+                    openStrategyModal(); // Reload to show restored strategy
+                } else {
+                    alert('Failed to restore: ' + data.error);
+                }
+            } catch (e) {
+                alert('Failed to restore strategy.');
             }
         }
 
@@ -494,10 +520,20 @@ export function getLogsHTML() {
 
             let buys = 0;
             let sells = 0;
+            let totalPnL = 0;
+            let wins = 0;
+            let closedTrades = 0;
 
             logs.forEach(log => {
                 if (log.decision === 'BUY') buys++;
                 if (log.decision === 'SELL') sells++;
+                
+                if (log.status === 'CLOSED') {
+                    closedTrades++;
+                    const pnl = parseFloat(log.pnl || 0);
+                    totalPnL += pnl;
+                    if (pnl > 0) wins++;
+                }
 
                 const row = document.createElement('tr');
                 const date = new Date(log.timestamp).toLocaleString();
@@ -533,9 +569,16 @@ export function getLogsHTML() {
                 }
             });
 
-            document.getElementById('total-logs').textContent = logs.length;
-            document.getElementById('buy-count').textContent = buys;
-            document.getElementById('sell-count').textContent = sells;
+            const winRate = closedTrades > 0 ? (wins / closedTrades * 100).toFixed(1) : 0;
+            const avgPnL = closedTrades > 0 ? (totalPnL / closedTrades).toFixed(2) : 0;
+
+            document.getElementById('win-rate').textContent = winRate + '%';
+            document.getElementById('total-pnl').textContent = (totalPnL >= 0 ? '+' : '') + totalPnL.toFixed(2);
+            document.getElementById('total-pnl').style.color = totalPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+            document.getElementById('closed-trades').textContent = closedTrades;
+            document.getElementById('avg-pnl').textContent = avgPnL;
+            document.getElementById('avg-pnl').style.color = avgPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+            document.getElementById('buy-sell-ratio').textContent = buys + 'B / ' + sells + 'S';
             document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         }
 
