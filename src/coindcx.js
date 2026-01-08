@@ -269,3 +269,32 @@ export async function getTradeHistory(env) {
     const data = await response.json();
     return data;
 }
+
+export async function getMarketPrice(pair) {
+    // pair example: "B-DOGE_USDT"
+    const baseUrl = "https://public.coindcx.com";
+    const endpoint = "/market_data/candlesticks";
+
+    // Get last 1 minute candle
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 120; // 2 minutes ago to be safe
+
+    const url = `${baseUrl}${endpoint}?pair=${pair}&from=${from}&to=${to}&resolution=1&pcode=f`;
+
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (Array.isArray(data) && data.length > 0) {
+            // Data is usually sorted by time desc, but let's be safe
+            // Format: { open, high, low, close, volume, time }
+            // We want the latest 'close'
+            const latest = data[0];
+            return parseFloat(latest.close);
+        }
+        return null;
+    } catch (e) {
+        console.error("Error fetching market price:", e);
+        return null;
+    }
+}

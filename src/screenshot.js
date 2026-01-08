@@ -6,7 +6,8 @@ import {
   getOpenPositions,
   getFuturesWallets,
   getOrders,
-  getTradeHistory
+  getTradeHistory,
+  getMarketPrice
 } from './coindcx.js';
 import { getLogsHTML } from './templates.js';
 import {
@@ -620,14 +621,71 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
 
           finalQuantity = Math.floor(finalQuantity);
 
+          // --- VALIDATION LOGIC START ---
+          let finalStopLoss = stopLoss;
+          let finalTakeProfit = takeProfit;
+
+          try {
+            console.log("🔍 Validating SL/TP against real-time market price...");
+            const currentPrice = await getMarketPrice("B-DOGE_USDT");
+
+            if (currentPrice) {
+              console.log(`📊 Current Market Price: ${currentPrice}`);
+              let slInvalid = false;
+
+              if (decision === "BUY" && finalStopLoss >= currentPrice) {
+                console.warn(`⚠️ Invalid SL for BUY: ${finalStopLoss} >= ${currentPrice}`);
+                slInvalid = true;
+              } else if (decision === "SELL" && finalStopLoss <= currentPrice) {
+                console.warn(`⚠️ Invalid SL for SELL: ${finalStopLoss} <= ${currentPrice}`);
+                slInvalid = true;
+              }
+
+              if (slInvalid) {
+                console.log("🔄 Adjusting SL/TP to maintain risk management...");
+
+                // Calculate original R:R if possible, else default to 1:2
+                let riskRewardRatio = 2;
+                if (entry && stopLoss && takeProfit) {
+                  const risk = Math.abs(entry - stopLoss);
+                  const reward = Math.abs(takeProfit - entry);
+                  if (risk > 0) riskRewardRatio = reward / risk;
+                }
+
+                // Set SL to 0.5% risk
+                const riskPercent = 0.005; // 0.5%
+                const riskAmount = currentPrice * riskPercent;
+
+                if (decision === "BUY") {
+                  finalStopLoss = parseFloat((currentPrice - riskAmount).toFixed(5));
+                  const rewardAmount = riskAmount * riskRewardRatio;
+                  finalTakeProfit = parseFloat((currentPrice + rewardAmount).toFixed(5));
+                } else {
+                  finalStopLoss = parseFloat((currentPrice + riskAmount).toFixed(5));
+                  const rewardAmount = riskAmount * riskRewardRatio;
+                  finalTakeProfit = parseFloat((currentPrice - rewardAmount).toFixed(5));
+                }
+
+                console.log(`✅ Adjusted SL: ${finalStopLoss}, TP: ${finalTakeProfit} (Risk: 0.5%, R:R: 1:${riskRewardRatio.toFixed(1)})`);
+              } else {
+                console.log("✅ SL/TP are valid.");
+              }
+            } else {
+              console.warn("⚠️ Could not fetch market price for validation. Proceeding with AI values.");
+            }
+          } catch (e) {
+            console.error("❌ Error during SL/TP validation:", e);
+          }
+          // --- VALIDATION LOGIC END ---
+
           tradeResult = await placeOrder(
             env,
             "B-DOGE_USDT",
             decision,
             finalQuantity,
             leverage || 5,
-            stopLoss,
-            takeProfit,
+            finalStopLoss,
+            finalTakeProfit,
             orderType,
             entry,
             marginCurrency
@@ -660,8 +718,8 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
             entry,
             quantity: finalQuantity,
             leverage,
-            stopLoss,
-            takeProfit,
+            stopLoss: finalStopLoss,
+            takeProfit: finalTakeProfit,
             rawResponse: text,
             status: "OPEN",
             orderId: extractedOrderId

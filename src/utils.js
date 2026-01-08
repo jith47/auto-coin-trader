@@ -678,7 +678,7 @@ export async function analyzePerformanceAndUpdateStrategy(env, customInput = "")
             }
         }
 
-        const currentStrategy = await getLatestStrategy(env) || TRADE_INSTRUCTIONS;
+        const currentStrategy = await getLatestStrategy(env);
         const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
         console.log("model loaded");
@@ -723,12 +723,13 @@ ${JSON.stringify(recentLogs.filter(l => l.is_analyzed === 0 && l.decision != 'HO
 **INSTRUCTIONS:**
 1. Analyze the performance summary and the detailed logs.
 2. Identify patterns where the strategy succeeded or failed (e.g., too many rejections, wrong timing, correlation issues).
-3. Pay close attention to the "Reason" and "close_reason" fields to understand entry and exit logic.
-4. Update the strategy to address the weaknesses identified.
-5. **CRITICAL**: Ensure the strategy remains actionable for an AI that analyzes screenshots.
-6. Output ONLY the updated strategy in markdown format. Do not include any other text or explanations outside the markdown.
-7. Do not include any avoid-trade-time in the strategy.
-8. **CRITICAL**: The "important" section about the output format(JSON body and related info) from the current strategy should be exactly the same in the updated strategy.
+3. Pay close attention to the "Reason" and "close_reason" fields to understand entry and exit logic and find out where each trade lost and what won.
+4. Update the strategy to address the weaknesses identified without conflicting the win reasons.
+5. You can add more points if they are cruicial.
+6. **CRITICAL**: Ensure the strategy remains actionable for an AI that analyzes screenshots.
+7. Output ONLY the updated strategy in markdown format. Do not include any other text or explanations outside the markdown.
+8. Do not include any avoid-trade-time in the strategy.
+9. **CRITICAL**: The "important" section about the output format(JSON body and related info) from the current strategy should be exactly the same in the updated strategy.
 ${customInput ? `
 **ADDITIONAL USER INSTRUCTIONS:**
 ${customInput}
