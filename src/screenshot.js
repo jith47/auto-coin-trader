@@ -5,13 +5,10 @@ import {
   cancelAllOrders,
   getOpenPositions,
   getFuturesWallets,
-  getOrders,
-  getTradeHistory,
   getMarketPrice
 } from './coindcx.js';
 import { getLogsHTML } from './templates.js';
 import {
-  TRADE_INSTRUCTIONS,
   logTradeToDB,
   getLatestStrategy,
   checkTradeStatus,
@@ -135,8 +132,8 @@ export default {
     // Route: /api/download-strategy
     if (pathname === "/api/download-strategy") {
       try {
-        const { getLatestStrategy, TRADE_INSTRUCTIONS } = await import('./utils.js');
-        const strategy = await getLatestStrategy(env) || TRADE_INSTRUCTIONS;
+        const { getLatestStrategy } = await import('./utils.js');
+        const strategy = await getLatestStrategy(env);
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         return new Response(strategy, {
           headers: {
@@ -438,7 +435,7 @@ async function runAnalysisAndTrade(env, trade) {
 
     // Fetch latest strategy from DB
     const strategyText = await getLatestStrategy(env);
-    const currentStrategy = strategyText || TRADE_INSTRUCTIONS;
+    const currentStrategy = strategyText
 
     const browser = await launch(env.MYBROWSER);
     const page = await browser.newPage();
@@ -897,6 +894,10 @@ INSTRUCTIONS:
       await env.DB.prepare("UPDATE trade_logs SET close_reason = ?, summary = ? WHERE id = ?").bind(closeReason, closeReason, tradeId).run();
       console.log(`✅ Immediate analysis saved for trade #${tradeId}`);
     }
+
+    // Re-trigger market analysis for next trade opportunity
+    console.log("🔄 Trade closed. Triggering new market analysis for next opportunity...");
+    await runAnalysisAndTrade(env, true);
   } catch (e) {
     console.error("❌ Error in post-trade analysis:", e);
   }
