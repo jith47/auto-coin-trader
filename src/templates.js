@@ -501,12 +501,45 @@ export function getLogsHTML() {
 
         async function fetchLogs() {
             try {
-                const response = await fetch('/api/logs');
-                const logs = await response.json();
+                // Fetch logs and stats in parallel
+                const [logsResponse, statsResponse] = await Promise.all([
+                    fetch('/api/logs'),
+                    fetch('/api/stats')
+                ]);
+                
+                const logs = await logsResponse.json();
+                const stats = await statsResponse.json();
+                
                 renderLogs(logs);
+                renderStats(stats);
             } catch (e) {
-                console.error('Failed to fetch logs:', e);
+                console.error('Failed to fetch data:', e);
             }
+        }
+
+        function renderStats(stats) {
+            if (!stats) return;
+            
+            document.getElementById('win-rate').textContent = stats.win_rate + '%';
+            
+            const totalPnL = parseFloat(stats.total_pnl);
+            const totalROI = parseFloat(stats.total_roi);
+            const roiColor = totalROI >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+            
+            document.getElementById('total-pnl').innerHTML = 
+                (totalPnL >= 0 ? '+' : '') + stats.total_pnl + 
+                '<span style="font-size: 0.8em; color: ' + roiColor + '; margin-left: 0.5rem;">(' + (totalROI >= 0 ? '+' : '') + stats.total_roi + '%)</span>';
+            
+            document.getElementById('total-pnl').style.color = totalPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+            
+            document.getElementById('closed-trades').textContent = stats.closed_trades;
+            
+            const avgPnL = parseFloat(stats.avg_pnl);
+            document.getElementById('avg-pnl').textContent = stats.avg_pnl;
+            document.getElementById('avg-pnl').style.color = avgPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+            
+            document.getElementById('buy-sell-ratio').textContent = (stats.buys || 0) + 'B / ' + (stats.sells || 0) + 'S';
+            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         }
 
         function renderLogs(logs) {
@@ -514,27 +547,11 @@ export function getLogsHTML() {
             body.innerHTML = '';
 
             if (logs.length === 0) {
-                body.innerHTML = '<tr><td colspan="10" style="text-align: center; padding: 3rem; color: var(--text-secondary);">No logs found</td></tr>';
+                body.innerHTML = '<tr><td colspan="11" style="text-align: center; padding: 3rem; color: var(--text-secondary);">No logs found</td></tr>';
                 return;
             }
 
-            let buys = 0;
-            let sells = 0;
-            let totalPnL = 0;
-            let wins = 0;
-            let closedTrades = 0;
-
             logs.forEach(log => {
-                if (log.decision === 'BUY') buys++;
-                if (log.decision === 'SELL') sells++;
-                
-                if (log.status === 'CLOSED') {
-                    closedTrades++;
-                    const pnl = parseFloat(log.pnl || 0);
-                    totalPnL += pnl;
-                    if (pnl > 0) wins++;
-                }
-
                 const row = document.createElement('tr');
                 const date = new Date(log.timestamp).toLocaleString();
                 
@@ -543,13 +560,21 @@ export function getLogsHTML() {
                 const pnlColor = pnl === null ? 'var(--text-secondary)' : (pnl >= 0 ? '#4ade80' : '#f87171');
                 const pnlText = pnl === null ? '-' : (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
                 
+                // PnL % Calculation
+                let pnlPercentText = '-';
+                if (pnl !== null && log.price && log.quantity && log.leverage) {
+                    const margin = (log.price * log.quantity) / log.leverage;
+                    const pnlPercent = (pnl / margin) * 100;
+                    pnlPercentText = (pnlPercent >= 0 ? '+' : '') + pnlPercent.toFixed(2) + '%';
+                }
+                
                 row.innerHTML = '<td>' + date + '</td>' +
                     '<td><span class="badge badge-' + log.decision.toLowerCase() + '">' + log.decision + '</span></td>' +
                     '<td>' + (log.asset || '-') + '</td>' +
                     '<td>' + (log.price ? log.price.toFixed(4) : '-') + '</td>' +
                     '<td>' + (log.exit_price ? log.exit_price.toFixed(4) : '-') + '</td>' +
                     '<td>' + (log.quantity || '-') + '</td>' +
-                    '<td style="font-weight: 600; color: ' + pnlColor + ';">' + pnlText + '</td>' +
+                    '<td style="font-weight: 600; color: ' + pnlColor + ';">' + pnlText + ' <span style="font-size: 0.8em; opacity: 0.8;">' + (pnlPercentText !== '-' ? '(' + pnlPercentText + ')' : '') + '</span></td>' +
                     '<td style="font-family: monospace; font-size: 0.75rem; color: var(--text-secondary);">' + (log.order_id || '-') + '</td>' +
                     '<td class="reason-cell" title="' + (log.reason || '') + '">' + (log.reason || '-') + '</td>' +
                     '<td class="reason-cell" title="' + (log.close_reason || '') + '">' + (log.close_reason || '-') + '</td>' +
@@ -568,18 +593,8 @@ export function getLogsHTML() {
                     body.appendChild(row);
                 }
             });
-
-            const winRate = closedTrades > 0 ? (wins / closedTrades * 100).toFixed(1) : 0;
-            const avgPnL = closedTrades > 0 ? (totalPnL / closedTrades).toFixed(2) : 0;
-
-            document.getElementById('win-rate').textContent = winRate + '%';
-            document.getElementById('total-pnl').textContent = (totalPnL >= 0 ? '+' : '') + totalPnL.toFixed(2);
-            document.getElementById('total-pnl').style.color = totalPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
-            document.getElementById('closed-trades').textContent = closedTrades;
-            document.getElementById('avg-pnl').textContent = avgPnL;
-            document.getElementById('avg-pnl').style.color = avgPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
-            document.getElementById('buy-sell-ratio').textContent = buys + 'B / ' + sells + 'S';
-            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            
+            // Stats are now handled by renderStats() via /api/stats
         }
 
         fetchLogs();

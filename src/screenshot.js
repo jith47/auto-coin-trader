@@ -16,7 +16,8 @@ import {
   getLatestStrategy,
   checkTradeStatus,
   analyzePerformanceAndUpdateStrategy,
-  syncTradesFromExchange
+  syncTradesFromExchange,
+  callGemini
 } from './utils.js';
 
 
@@ -34,6 +35,42 @@ export default {
       try {
         const { results } = await env.DB.prepare("SELECT * FROM trade_logs ORDER BY timestamp DESC LIMIT 100").all();
         return new Response(JSON.stringify(results), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/stats
+    if (pathname === "/api/stats") {
+      if (!env.DB) return new Response("Database not bound", { status: 500 });
+      try {
+        const query = `
+          SELECT 
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN decision = 'BUY' THEN 1 ELSE 0 END) as buys,
+            SUM(CASE WHEN decision = 'SELL' THEN 1 ELSE 0 END) as sells,
+            SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closed_trades,
+            SUM(CASE WHEN status = 'CLOSED' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN status = 'CLOSED' THEN pnl ELSE 0 END) as total_pnl,
+            SUM(
+              CASE WHEN status = 'CLOSED' AND price > 0 AND quantity > 0 AND leverage > 0 THEN
+                (pnl / (price * quantity / leverage)) * 100
+              ELSE 0 END
+            ) as total_roi
+          FROM trade_logs
+        `;
+        const { results } = await env.DB.prepare(query).all();
+        const stats = results[0];
+
+        // Calculate derived stats
+        stats.win_rate = stats.closed_trades > 0 ? ((stats.wins / stats.closed_trades) * 100).toFixed(1) : 0;
+        stats.avg_pnl = stats.closed_trades > 0 ? (stats.total_pnl / stats.closed_trades).toFixed(2) : 0;
+        stats.total_pnl = (stats.total_pnl || 0).toFixed(2);
+        stats.total_roi = (stats.total_roi || 0).toFixed(2);
+
+        return new Response(JSON.stringify(stats), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (e) {
@@ -409,8 +446,8 @@ async function runAnalysisAndTrade(env, trade) {
 
     // Define assets to capture with their timeframes
     const captureConfig = [
-      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m", "5m", "30m", "1d"] },
-      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m"] }
+      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m", "3m"] },
+      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m", "5m"] }
     ];
 
     const screenshots = [];
@@ -456,10 +493,10 @@ async function runAnalysisAndTrade(env, trade) {
       // But since we need it here for the main flow, let's import it at the top or use a helper
       // Actually, let's keep the import at the top of screenshot.js if we use it here.
       // Wait, I removed it from the top. Let me add it back.
-      const { GoogleGenerativeAI } = await import("@google/generative-ai");
-      const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
-      console.log("model loaded");
+      // const { GoogleGenerativeAI } = await import("@google/generative-ai");
+      // const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+      // const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+      // console.log("model loaded");
 
       // FETCH ACCOUNT DATA BEFORE AI ANALYSIS
       let positions = [];
@@ -544,7 +581,7 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
 
       while (attempts < maxAttempts) {
         try {
-          const result = await model.generateContent([dynamicInstructions, ...screenshots]);
+          const result = await callGemini(env, [dynamicInstructions, ...screenshots]);
           const response = await result.response;
           text = response.text();
           console.log(`AI Response (Attempt ${attempts + 1}):`, text);
@@ -711,7 +748,6 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
           }
 
           console.log("🔑 Extracted Order ID:", extractedOrderId);
-
           await logTradeToDB(env, {
             decision,
             reason,
@@ -728,17 +764,17 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
           // Signal to start the scheduler
           console.log(">>> START_SCHEDULER <<<");
         } else {
-          await logTradeToDB(env, {
-            decision,
-            reason,
-            entry: 0,
-            quantity: 0,
-            leverage: 0,
-            stopLoss: 0,
-            takeProfit: 0,
-            rawResponse: text,
-            status: "SKIPPED"
-          });
+          // await logTradeToDB(env, {
+          //   decision,
+          //   reason,
+          //   entry: 0,
+          //   quantity: 0,
+          //   leverage: 0,
+          //   stopLoss: 0,
+          //   takeProfit: 0,
+          //   rawResponse: text,
+          //   status: "SKIPPED"
+          // });
         }
       }
     } catch (error) {
@@ -828,10 +864,10 @@ async function runPostTradeAnalysis(env, closedTradeIds) {
     }
     await browser.close();
 
-    const { GoogleGenerativeAI } = await import("@google/generative-ai");
-    const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
-    console.log("model loaded");
+    // const { GoogleGenerativeAI } = await import("@google/generative-ai");
+    // const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+    // const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+    // console.log("model loaded");
 
     for (const trade of tradesToAnalyze) {
       const tradeId = trade.id;
@@ -855,7 +891,7 @@ INSTRUCTIONS:
 5. Output ONLY the analysis text. No JSON, no formatting.
 `;
 
-      const result = await model.generateContent([analysisPrompt, ...screenshots]);
+      const result = await callGemini(env, [analysisPrompt, ...screenshots]);
       const closeReason = (await result.response).text().trim();
 
       await env.DB.prepare("UPDATE trade_logs SET close_reason = ?, summary = ? WHERE id = ?").bind(closeReason, closeReason, tradeId).run();

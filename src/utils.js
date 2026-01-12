@@ -1,6 +1,31 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getOrders, getTradeHistory, getOpenPositions } from "./coindcx.js";
 
+export async function callGemini(env, promptParts, modelName = "gemini-3-flash-preview") {
+    const keys = [env.GEMINI_API_KEY, env.GEMINI_API_KEY_2].filter(k => k);
+    if (keys.length === 0) throw new Error("No GEMINI_API_KEY found");
+
+    let lastError;
+    for (const key of keys) {
+        try {
+            const genAI = new GoogleGenerativeAI(key);
+            const model = genAI.getGenerativeModel({ model: modelName });
+            console.log(`Calling Gemini with key ending in ...${key.slice(-4)}`);
+            const result = await model.generateContent(promptParts);
+            return result;
+        } catch (e) {
+            console.error(`Gemini call failed with key ...${key.slice(-4)}:`, e.message);
+            if (e.message.includes("429") || e.status === 429 || e.message.includes("Quota exceeded")) {
+                console.log("Rate limit hit, trying next key if available...");
+                lastError = e;
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastError;
+}
+
 export const TRADE_INSTRUCTIONS = `# Improved BTC-DOGE Correlation Scalp Strategy v2.0
 
 ## Key Improvements Made:
@@ -679,9 +704,9 @@ export async function analyzePerformanceAndUpdateStrategy(env, customInput = "")
         }
 
         const currentStrategy = await getLatestStrategy(env);
-        const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
-        console.log("model loaded");
+        // const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+        // const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+        // console.log("model loaded");
 
         const analysisPrompt = `
 You are an expert trading strategist. Your task is to analyze the performance of a trading bot over the last 7 days and suggest improvements to its strategy.
@@ -739,7 +764,7 @@ ${customInput}
 `;
         console.log("analysisPrompt", analysisPrompt);
 
-        const result = await model.generateContent(analysisPrompt);
+        const result = await callGemini(env, analysisPrompt);
         const response = await result.response;
         const newStrategyText = response.text();
 
