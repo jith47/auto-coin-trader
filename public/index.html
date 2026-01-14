@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strategy Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0a0b10;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --accent-color: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 2rem;
+            background-image:
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 50%),
+                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #6366f1, #10b981);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: var(--card-bg);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+        }
+
+        .status-scanning .status-dot {
+            background: var(--accent-color);
+            box-shadow: 0 0 10px var(--accent-color);
+        }
+
+        .status-in_trade .status-dot {
+            background: var(--warning);
+            box-shadow: 0 0 10px var(--warning);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(99, 102, 241, 0.2);
+        }
+
+        .card-title {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .card-value {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .active-trade {
+            grid-column: span 2;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(16, 185, 129, 0.05));
+        }
+
+        .trade-info {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .info-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .info-value {
+            font-weight: 600;
+        }
+
+        .table-container {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 1.5rem;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            padding: 1rem 1.5rem;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        td {
+            padding: 1rem 1.5rem;
+            font-size: 0.875rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .pnl-positive {
+            color: var(--success);
+        }
+
+        .pnl-negative {
+            color: var(--danger);
+        }
+
+        .badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-buy {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+        }
+
+        .badge-sell {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        .live-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Strategy Dashboard</h1>
+                <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem;">
+                    <span class="live-indicator"></span>Real-time Dashboard
+                </p>
+            </div>
+            <div id="bot-status" class="status-badge">
+                <span class="status-dot"></span>
+                <span id="status-text">INITIALIZING</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-title">Trades Today</div>
+                <div id="trades-today" class="card-value">0 / 5</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Win Rate</div>
+                <div id="win-rate" class="card-value">0%</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Total PnL</div>
+                <div id="total-pnl" class="card-value">0.00%</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Market Context</div>
+                <div id="market-context" class="card-value" style="font-size: 1rem; color: var(--text-secondary);">
+                    Waiting for data...
+                </div>
+            </div>
+            <div id="active-trade-card" class="card active-trade" style="display: none;">
+                <div class="card-title">Active Trade</div>
+                <div id="active-side" class="card-value">BUY</div>
+                <div class="trade-info">
+                    <div class="info-item">
+                        <span class="info-label">Entry</span>
+                        <span id="active-entry" class="info-value">0.00</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Current PnL</span>
+                        <span id="active-pnl" class="info-value">0.00%</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Stop Loss</span>
+                        <span id="active-sl" class="info-value">0.00</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>PnL</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody id="trade-history">
+                    <!-- Trades will be injected here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function updateDashboard() {
+            try {
+                const [statusRes, tradesRes] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/trades')
+                ]);
+
+                const status = await statusRes.json();
+                const trades = await tradesRes.json();
+
+                // Update Status
+                const statusBadge = document.getElementById('bot-status');
+                const statusText = document.getElementById('status-text');
+                statusBadge.className = `status-badge status-${status.engine.state.toLowerCase()}`;
+                statusText.innerText = status.engine.state;
+
+                document.getElementById('trades-today').innerText = `${status.engine.tradesToday} / 5`;
+
+                if (status.stats) {
+                    document.getElementById('win-rate').innerText = `${status.stats.winRate.toFixed(1)}%`;
+                    document.getElementById('total-pnl').innerText = `${status.stats.totalPnL >= 0 ? '+' : ''}${status.stats.totalPnL.toFixed(2)}%`;
+                    document.getElementById('total-pnl').className = `card-value ${status.stats.totalPnL >= 0 ? 'pnl-positive' : 'pnl-negative'}`;
+                }
+
+                if (status.engine.currentStatus) {
+                    document.getElementById('market-context').innerText = status.engine.currentStatus;
+                }
+
+                // Update Active Trade
+                const activeCard = document.getElementById('active-trade-card');
+                if (status.activeTrade) {
+                    activeCard.style.display = 'block';
+                    document.getElementById('active-side').innerText = status.activeTrade.side;
+                    document.getElementById('active-side').className = `card-value pnl-${status.activeTrade.side === 'BUY' ? 'positive' : 'negative'}`;
+                    document.getElementById('active-entry').innerText = status.activeTrade.entry.toFixed(5);
+                    document.getElementById('active-sl').innerText = status.activeTrade.sl.toFixed(5);
+
+                    // PnL calculation would need current price, which we can get from lastStatus
+                    // For now, just showing placeholder or static info
+                } else {
+                    activeCard.style.display = 'none';
+                }
+
+                // Update History
+                const historyBody = document.getElementById('trade-history');
+                historyBody.innerHTML = trades.map(t => `
+                    <tr>
+                        <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
+                        <td><span class="badge badge-${t.decision.toLowerCase()}">${t.decision}</span></td>
+                        <td>${t.price.toFixed(5)}</td>
+                        <td>${t.exit_price ? t.exit_price.toFixed(5) : '-'}</td>
+                        <td class="${t.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">
+                            ${t.pnl ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) : '-'}
+                        </td>
+                        <td style="color: var(--text-secondary); font-size: 0.75rem;">${t.reason || t.close_reason || '-'}</td>
+                    </tr>
+                `).join('');
+
+            } catch (e) {
+                console.error('Dashboard update failed:', e);
+            }
+        }
+
+        setInterval(updateDashboard, 5000);
+        updateDashboard();
+    </script>
+</body>
+
+</html>

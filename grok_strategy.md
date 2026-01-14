@@ -1,3 +1,7 @@
+We need the delta data of BTC and DOGE to implement this strategy in the following timeframes:
+BTC: 1m, 3m
+DOGE: 1m, 5m
+
 1. UPGRADED CORRELATION + LAG ENGINE v4.0 (This is the nuclear edge now)
 
 DOGE Lag Score (last 4 minutes only) = BTC % move ÷ DOGE % move
