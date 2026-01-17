@@ -1,64 +1,237 @@
-We need the delta data of BTC and DOGE to implement this strategy in the following timeframes:
-BTC: 1m, 3m
-DOGE: 1m, 5m
+1. DOGE LAG SCORE
+Window: Last 4 completed 1m candles
 
-1. UPGRADED CORRELATION + LAG ENGINE v4.0 (This is the nuclear edge now)
+BTC_move = ((BTC_close_now - BTC_close_4min_ago) / BTC_close_4min_ago) * 100
+DOGE_move = ((DOGE_close_now - DOGE_close_4min_ago) / DOGE_close_4min_ago) * 100
 
-DOGE Lag Score (last 4 minutes only) = BTC % move ÷ DOGE % move
+RULES:
+IF abs(DOGE_move) < 0.02:
+    Lag_Score = NULL
+ELIF (DOGE_move > 0 AND BTC_move > 0) OR (DOGE_move < 0 AND BTC_move < 0):
+    Lag_Score = abs(BTC_move) / abs(DOGE_move)
+ELSE:
+    Lag_Score = NULL
 
-LONG  → Lag Score ≥ 2.65
-SHORT → Lag Score ≤ 0.37
+THRESHOLD: Lag_Score >= 2.65 required for entry
 
-Correlation Coefficient (60-period on 1m) must do this exact move in last 9 candles:
-Dipped to ≤ 0.865 → then spiked hard to ≥ 0.938 in ≤ 9 candles
-→ This micro-reversion is the single highest-probability signal in all of crypto right now
+2. CORRELATION COEFFICIENT
+Method: 60-period Pearson correlation on 1m closes between BTC and DOGE
 
-2. MULTI-TIMEFRAME MATRIX v4.0 (Stripped to absolute bone)
-TF	Rule (ALL mandatory)	Weight
-1H	BTC close > 21 EMA (long) / < 21 EMA (short)	40%
-1M	Liquidity sweep + FVG created + Delta explosion	60%
+Track over last 9 candles:
+Corr_Min_9 = MIN(Correlation) over last 9 periods
+Corr_Max_9 = MAX(Correlation) over last 9 periods
+Corr_Current = Current correlation value
 
-→ 1D, 4H, 15m, 5m all permanently deleted. They only add noise.
-3. PRECISE ENTRY TRIGGERS v4.0 – Non-Negotiable (all in same 60–120 sec window)
-LONG – The Perfect Storm (happens 1–3 times per week, wins 91% when it does)
+LONG SIGNAL: Corr_Min_9 <= 0.865 AND Corr_Current >= 0.938
+SHORT SIGNAL: Corr_Max_9 >= 0.938 AND Corr_Current <= 0.865
 
-□ BTC 1H close > 21 EMA
-□ BTC 1m: Sweeps low by ≥14 pips → reclaim with ≥3.4x volume 20-MA
-□ BTC Delta last 3 candles ≥ +580K (massive green bar visible)
-□ DOGE Lag Score ≥ 2.65 (DOGE still sleeping hard)
-□ Correlation just spiked from ≤0.865 → ≥0.938 in last 9 candles
-□ DOGE has NOT yet made a 1m candle ≥0.28% (must be dead flat)
-□ Funding rate ≤ +0.038% (not overcrowded)
-→ ENTER MARKET on the FIRST strong DOGE 1m green candle that closes ≥0.31%
+3. DELTA PERCENTILE
+Raw_Delta_3 = SUM(BTC buy volume - BTC sell volume) over last 3 candles
+Delta_Percentile = Percentile rank of Raw_Delta_3 against last 500 candle readings
 
-SHORT – Mirror Image (equally lethal)
+LONG: Delta_Percentile >= 92
+SHORT: Delta_Percentile <= 8
 
-□ BTC 1H close < 21 EMA
-□ BTC 1m: Sweeps high → rejection with ≥3.4x volume
-□ BTC Delta last 3 candles ≤ -580K
-□ DOGE Lag Score ≤ 0.37
-□ Correlation spiked from ≤0.865 → ≥0.938 in last 9 candles
-□ DOGE price ≥ 0.26% above daily/session low
-□ Funding rate ≥ -0.008% (not extreme short squeeze imminent)
-→ ENTER MARKET on first strong DOGE 1m red candle ≥0.31%
+4. VOLUME SPIKE
+Volume_MA20 = SMA(Volume, 20)
+Volume_Ratio = Current_1m_Volume / Volume_MA20
 
-4. EXIT STRATEGY v4.0 – The Reaper 2.0 (maximum greed with zero mercy)
+REQUIRED: Volume_Ratio >= 3.4
 
-TP1 → +0.44% → close 78% position
-TP2 → +1.18% → close remaining 22% (let it run, these go to +2–4% very often)
+5. LIQUIDITY SWEEP DETECTION
+Lookback = 20 candles
 
-Instant Full Exit Triggers:
-├ DOGE catches up ≥ 79% of BTC's move since entry
-├ BTC breaks the FVG low/high against you
-├ BTC Delta flips ≥ 720K against position
-├ Holding time = 9 minutes 30 seconds → full exit at market if not at TP1
+BULLISH SWEEP:
+├── Current candle low < MIN(lows, last 20 candles)
+├── Current candle close > that previous low
+├── Current candle close > open
+└── Volume_Ratio >= 3.4
 
-Break-even → move SL to entry + fees at +0.26%
-Hard SL → -0.29% (tightened again)
+BEARISH SWEEP:
+├── Current candle high > MAX(highs, last 20 candles)
+├── Current candle close < that previous high
+├── Current candle close < open
+└── Volume_Ratio >= 3.4
 
-5. FINAL LOCKED RISK RULES (no exceptions ever)
-No trade if DOGE 1-minute ATR (14) < 0.00075 (market dead = no edge)
+6. FAIR VALUE GAP (FVG)
+BULLISH FVG:
+├── Candle[-2].High < Candle[0].Low
+├── Gap_Size = (Candle[0].Low - Candle[-2].High) / Candle[0].Close * 100
+└── Gap_Size >= 0.04%
 
+BEARISH FVG:
+├── Candle[-2].Low > Candle[0].High
+├── Gap_Size = (Candle[-2].Low - Candle[0].High) / Candle[0].Close * 100
+└── Gap_Size >= 0.04%
+
+STORE: FVG_Low and FVG_High boundaries at entry for exit logic
+
+7. ATR FILTER
+DOGE_ATR_14 = ATR(DOGE 1m, 14 periods)
+ATR_Percent = (DOGE_ATR_14 / DOGE_Price) * 100
+
+REQUIRED: ATR_Percent >= 0.08
+
+8. TREND FILTER
+BTC_21EMA_1H = EMA(BTC 1H close, 21)
+
+LONG: BTC_1H_Close > BTC_21EMA_1H
+SHORT: BTC_1H_Close < BTC_21EMA_1H
+
+ENTRY CONDITIONS
+LONG ENTRY
+ALL conditions must be TRUE within 3-candle window:
+
+1. BTC 1H close > 21 EMA
+2. BTC 1m: Bullish sweep detected
+3. BTC 1m: Bullish FVG created on sweep candle
+4. BTC Delta_Percentile >= 92
+5. DOGE Lag_Score >= 2.65 AND Lag_Score != NULL
+6. Correlation: Corr_Min_9 <= 0.865 AND Corr_Current >= 0.938
+7. DOGE max single candle move over last 4 candles < 0.28%
+8. Funding rate <= +0.04%
+9. ATR_Percent >= 0.08
+10. Current spread <= 0.015%
+
+EXECUTION TRIGGER:
+Wait for DOGE 1m candle to CLOSE with:
+├── (Close - Open) / Open * 100 >= 0.31%
+├── Close > Open
+└── Body / (High - Low) >= 0.60
+
+ACTION: Market order LONG at next candle open
+
+SHORT ENTRY
+ALL conditions must be TRUE within 3-candle window:
+
+1. BTC 1H close < 21 EMA
+2. BTC 1m: Bearish sweep detected
+3. BTC 1m: Bearish FVG created on sweep candle
+4. BTC Delta_Percentile <= 8
+5. DOGE Lag_Score >= 2.65 AND Lag_Score != NULL
+6. Correlation: Corr_Max_9 >= 0.938 AND Corr_Current <= 0.865
+7. DOGE max single candle move over last 4 candles < 0.28%
+8. Funding rate >= -0.02%
+9. ATR_Percent >= 0.08
+10. Current spread <= 0.015%
+
+
+EXECUTION TRIGGER:
+Wait for DOGE 1m candle to CLOSE with:
+├── (Open - Close) / Open * 100 >= 0.31%
+├── Close < Open
+└── Body / (High - Low) >= 0.60
+
+ACTION: Market order SHORT at next candle open
+
+EXIT STRATEGY
+TAKE PROFIT
+TP1:
+├── Target: Entry +0.44% (long) / Entry -0.44% (short)
+├── Action: Close 78% position
+└── Order: Limit
+
+TP2:
+├── Target: Entry +1.18% (long) / Entry -1.18% (short)
+├── Action: Close remaining 22%
+└── Order: Limit
+
+STOP LOSS
+INITIAL:
+├── Long: Entry - 0.29%
+├── Short: Entry + 0.29%
+└── Order: Stop-market
+
+BREAK-EVEN ADJUSTMENT:
+├── Trigger: Unrealized profit reaches +0.26%
+└── Action: Move stop to Entry + 0.03%
+
+FORCED EXIT CONDITIONS
+Check every 10 seconds. Exit 100% at market if ANY condition TRUE:
+
+1. TIME EXIT:
+   Holding_Time >= 9 minutes 30 seconds AND TP1 not hit
+
+2. DELTA FLIP:
+   Delta moves against position by >= 720K raw value
+
+3. FVG INVALIDATION:
+   Long: Any 1m close < FVG_Low
+   Short: Any 1m close > FVG_High
+
+4. DOGE CATCH-UP:
+   BTC_Move = (BTC_now - BTC_entry) / BTC_entry * 100
+   DOGE_Move = (DOGE_now - DOGE_entry) / DOGE_entry * 100
+   
+   IF BTC_Move != 0:
+       Catch_Up_Ratio = DOGE_Move / BTC_Move
+       IF Catch_Up_Ratio >= 0.79: EXIT
+
+POSITION SIZING
+Risk_Per_Trade = 1.5% of Account_Balance
+Stop_Distance = 0.29%
+Position_Size = (Account_Balance * 0.015) / 0.0029
+Leverage = Position_Size / Account_Balance
+
+CAP: Maximum leverage = 10x
+
+SESSION FILTERS
+DO NOT TRADE (UTC):
+├── 21:00 - 23:59
+├── 04:00 - 05:30
+├── FOMC/CPI/NFP announcements ± 30 minutes
+└── First 5 minutes of any hour
+
+DAILY LIMITS
+├── Max daily loss: -3.0% → Stop all trading
+├── Max trades per day: 5
+├── 3 consecutive losses → Pause 4 hours
+└── Daily profit +3.5% → Stop trading (protect gains)
+
+TRADE LOGGING
+Record for every trade:
+├── Entry_Timestamp
+├── Exit_Timestamp
+├── Direction (LONG/SHORT)
+├── Entry_Price
+├── Exit_Price
+├── BTC_Price_At_Entry
+├── Lag_Score
+├── Correlation_Value
+├── Corr_Min_9
+├── Corr_Max_9
+├── Delta_Percentile
+├── Volume_Ratio
+├── Funding_Rate
+├── ATR_Percent
+├── FVG_Low
+├── FVG_High
+├── Exit_Reason (TP1/TP2/SL/BE/TIME/DELTA_FLIP/FVG_BREAK/CATCHUP)
+├── Holding_Time_Seconds
+├── PnL_Percent
+└── PnL_USD
+
+ERROR HANDLING
+IF data feed interrupted > 5 seconds:
+    Close any open position at market
+    Pause new entries until feed restored for 60 seconds
+
+IF spread > 0.03%:
+    Do not enter new positions
+    
+IF exchange latency > 500ms:
+    Pause trading until latency < 200ms for 30 seconds
+
+IF position fill differs from expected by > 0.05%:
+    Log slippage event
+    Adjust TP/SL from actual fill price
+
+EXECUTION PRIORITY
+1. Check forced exit conditions (every 10 sec while in position)
+2. Monitor TP/SL levels
+3. Check for new entry signals (only if no position open)
+4. Never hold more than 1 position simultaneously
+5. Complete exit before considering new entry
 
 IMPORTANT:
 At the end of your analysis, you MUST provide a JSON block with the final trade decision.

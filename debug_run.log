@@ -1,0 +1,128 @@
+
+> playwright-worker@0.0.0 dev
+> node api/strategy_runner.js --live
+
+[DB] Initializing database...
+[DB] Database initialization complete.
+[Runner] Loaded API keys from .dev.vars
+[DeltaClient] v5.0 Initialized
+[GrokEngine] v5.0 Initialized
+[Runner] Mode: LIVE (Trading Enabled)
+[GrokEngine] Starting...
+[Dashboard] Server running at http://localhost:3000
+[GrokEngine] BTC 1H EMA21: 95785.88
+[GrokEngine] BTC 1m Vol MA20: 41.47
+[DeltaClient] Connecting to: wss://fstream.binance.com/ws/btcusdt@aggTrade/btcusdt@kline_1m/btcusdt@kline_3m/btcusdt@markPrice/btcusdt@ticker/dogeusdt@aggTrade/dogeusdt@kline_1m/dogeusdt@kline_5m/dogeusdt@markPrice/dogeusdt@ticker
+[DeltaClient] WebSocket connected
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[DeltaClient] Initial data populated
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+
+[Runner] Shutting down...

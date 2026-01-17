@@ -1,0 +1,59 @@
+
+> playwright-worker@0.0.0 dev
+> node api/strategy_runner.js --live
+
+[DB] Initializing database...
+[DB] Database initialization complete.
+[Runner] Loaded API keys from .dev.vars
+[DeltaClient] v5.0 Initialized
+[GrokEngine] v5.0 Initialized
+[Runner] Mode: LIVE (Trading Enabled)
+[GrokEngine] Starting...
+[Dashboard] Server running at http://localhost:3000
+[GrokEngine] BTC 1H EMA21: 95787.28
+[GrokEngine] BTC 1m Vol MA20: 42.28
+[DeltaClient] Connecting to: wss://fstream.binance.com/ws/btcusdt@aggTrade/btcusdt@kline_1m/btcusdt@kline_3m/btcusdt@markPrice/btcusdt@ticker/dogeusdt@aggTrade/dogeusdt@kline_1m/dogeusdt@kline_5m/dogeusdt@markPrice/dogeusdt@ticker
+[DeltaClient] WebSocket connected
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[DeltaClient] Initial data populated
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] WARNING: No data for 5.3s
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] WARNING: No data for 6.3s
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] WARNING: No data for 7.3s
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] Checking session and daily limits
+[Status] 2026-01-16T06:33:54.269Z | LOW_ATR | BTC: $95623.2 | DOGE: $0.14020 | Corr: 0.7929 | Lag: N/A | Trades: 0/4
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+[GrokEngine] New data received
+
+[Runner] Shutting down...

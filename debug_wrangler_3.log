@@ -1,0 +1,51 @@
+nohup: ignoring input
+
+ ⛅️ wrangler 4.45.3 (update available 4.59.2)
+─────────────────────────────────────────────
+Using vars defined in .dev.vars
+Your Worker has access to the following bindings:
+Binding                                  Resource                  Mode
+env.DB (trade_db)                        D1 Database               local
+env.trade_db (trade_db)                  D1 Database               remote
+env.MYBROWSER                            Browser                   local
+env.ASSETS                               Assets                    local
+env.GEMINI_API_KEY ("(hidden)")          Environment Variable      local
+env.GEMINI_API_KEY_2 ("(hidden)")        Environment Variable      local
+env.GEMINI_API_KEY_3 ("(hidden)")        Environment Variable      local
+env.COINDCX_API_KEY ("(hidden)")         Environment Variable      local
+env.COINDCX_SECRET_KEY ("(hidden)")      Environment Variable      local
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mMiniflare does not currently trigger scheduled Workers automatically.[0m
+
+  Refer to [4mhttps://developers.cloudflare.com/workers/configuration/cron-triggers/#test-cron-triggers[0m for more details 
+
+
+⎔ Starting local server...
+[wrangler:info] Ready on http://localhost:34757
+[DB] D1 initialized
+[DeltaClient] v5.0 Initialized
+[GrokEngine] v5.0 Initialized
+[GrokEngine] Starting...
+[wrangler:info] GET /api/status 200 OK (30ms)
+[GrokEngine] BTC 1H EMA21: 95766.68
+[GrokEngine] BTC 1m Vol MA20: 35.01
+[DeltaClient] Connecting to: wss://fstream.binance.com/ws/btcusdt@aggTrade/btcusdt@kline_1m/btcusdt@kline_3m/btcusdt@markPrice/btcusdt@ticker/dogeusdt@aggTrade/dogeusdt@kline_1m/dogeusdt@kline_5m/dogeusdt@markPrice/dogeusdt@ticker
+[DeltaClient] WebSocket created. readyState: 0
+[DeltaClient] Attaching listener for 'open'
+[DeltaClient] Using .addEventListener() for 'open'
+[DeltaClient] Attaching listener for 'message'
+[DeltaClient] Using .addEventListener() for 'message'
+[DeltaClient] Attaching listener for 'error'
+[DeltaClient] Using .addEventListener() for 'error'
+[DeltaClient] Attaching listener for 'close'
+[DeltaClient] Using .addEventListener() for 'close'
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...
+⎔ Reloading local server...

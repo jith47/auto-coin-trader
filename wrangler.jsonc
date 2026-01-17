@@ -21,6 +21,12 @@
 			"binding": "DB",
 			"database_name": "trade_db",
 			"database_id": "adfd9b6d-0350-478f-b4dc-5ba9c228d7f7"
+		},
+		{
+			"binding": "trade_db",
+			"database_name": "trade_db",
+			"database_id": "739e432a-f0ec-4f61-b0f2-913570686a46",
+			"remote": true
 		}
 	],
 	"triggers": {

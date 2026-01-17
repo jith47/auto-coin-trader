@@ -5,7 +5,8 @@ import { placeOrder, getOpenPositions } from "./coindcx.js";
 let engine = null;
 let db = null;
 
-async function initEngine(env, ctx) {
+// Shared initialization function
+async function init(env) {
     if (!db) {
         db = new D1Database(env.DB);
         await db.init();
@@ -44,6 +45,7 @@ async function initEngine(env, ctx) {
                             );
                             console.log("[Worker] Exit Order Result:", JSON.stringify(result, null, 2));
 
+                            // Update DB
                             if (result.orders && result.orders[0]) {
                                 const activeTrade = await db.getActiveTrade();
                                 if (activeTrade) {
@@ -85,19 +87,17 @@ async function initEngine(env, ctx) {
                 }
             }
         };
-
-        // Start the engine in the background
-        ctx.waitUntil(engine.start());
-        console.log("[Worker] Engine initialized and running.");
     }
+    return engine;
 }
 
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
+        await init(env);
 
-        // Ensure engine is running
-        await initEngine(env, ctx);
+        // Start engine if not started
+        ctx.waitUntil(engine.start());
 
         // API Routes
         if (url.pathname === "/api/status") {
@@ -120,7 +120,6 @@ export default {
             return Response.json(trades);
         }
 
-        // Serve Static Assets
         if (env.ASSETS) {
             return env.ASSETS.fetch(request);
         }
@@ -129,7 +128,15 @@ export default {
     },
 
     async scheduled(event, env, ctx) {
-        console.log("[Worker] Scheduled trigger: Ensuring engine is running...");
-        await initEngine(env, ctx);
+        console.log("[Worker] Cron Triggered. Initializing...");
+        await init(env);
+
+        console.log("[Worker] Starting Engine...");
+        await engine.start();
+
+        // Keep alive for 55 seconds to maximize coverage
+        console.log("[Worker] Keeping alive for 55s...");
+        await new Promise(resolve => setTimeout(resolve, 55000));
+        console.log("[Worker] Cron execution finished.");
     }
 };
