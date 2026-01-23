@@ -88,9 +88,11 @@ process.on('SIGTERM', () => {
 // It will kill itself if checkTradeStatus finds no trades
 let initialCheckStarted = false;
 function triggerInitialCheck(output) {
-    if (!initialCheckStarted && output.includes('Ready on http://localhost:8787')) {
+    if (!initialCheckStarted && /Ready on http:\/\/(localhost|127\.0\.0\.1):\d+/.test(output)) {
         initialCheckStarted = true;
-        console.log("\n🔍 [System] Wrangler is ready. Performing initial status check...");
-        setTimeout(() => startScheduler(true), 2000); // Small extra buffer
+        const portMatch = output.match(/:(\d+)/);
+        const port = portMatch ? portMatch[1] : '8787';
+        console.log(`\n🔍 [System] Wrangler is ready on port ${port}. Performing initial status check...`);
+        setTimeout(() => startScheduler(true), 1500);
     }
 }

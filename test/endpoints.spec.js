@@ -134,4 +134,24 @@ describe('Worker Endpoints', () => {
         );
         expect(data.order).toEqual({ id: 'order_123' });
     });
+
+    it('returns time stats from DB', async () => {
+        const request = new Request('http://example.com/api/time-stats');
+
+        const mockResults = [
+            { hour: '10', total_trades: 5, wins: 3, losses: 2, total_pnl: 15.5 },
+            { hour: '11', total_trades: 3, wins: 1, losses: 2, total_pnl: -2.0 }
+        ];
+
+        const mockDB = {
+            prepare: vi.fn().mockReturnThis(),
+            all: vi.fn().mockResolvedValue({ results: mockResults })
+        };
+
+        const response = await worker.fetch(request, { ...env, DB: mockDB });
+        const data = await response.json();
+
+        expect(data).toEqual(mockResults);
+        expect(mockDB.prepare).toHaveBeenCalledWith(expect.stringContaining("strftime('%H'"));
+    });
 });

@@ -5,7 +5,7 @@ export function getLogsHTML() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trade Logs Dashboard</title>
+    <title>Logs Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -161,6 +161,64 @@ export function getLogsHTML() {
             overflow: visible;
         }
 
+        /* Time stats styles */
+        .time-stats-container {
+            background-color: var(--card-bg);
+            border-radius: 1rem;
+            border: 1px solid var(--border-color);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .time-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        
+        .time-slot-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            text-align: center;
+        }
+        
+        .time-slot-hour {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--accent-blue);
+            margin-bottom: 0.5rem;
+        }
+        
+        .time-slot-winrate {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+        
+        .time-slot-trades {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        th.sortable:hover {
+            color: var(--text-primary);
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        th.sortable::after {
+            content: ' ↕';
+            opacity: 0.3;
+            font-size: 0.8em;
+        }
+
         @media (max-width: 768px) {
             body { padding: 1rem; }
             .stats-grid { grid-template-columns: 1fr 1fr; }
@@ -173,11 +231,11 @@ export function getLogsHTML() {
 <body>
     <div class="container">
         <header>
-            <h1>Trade Logs</h1>
+            <h1>Logs</h1>
             <div style="display: flex; gap: 1rem;">
                 <button class="refresh-btn" onclick="syncTrades()" id="sync-btn" title="Import all trades from CoinDCX exchange">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M3 21v-5h5"></path></svg>
-                    Sync Trades
+                    Sync
                 </button>
                 <button class="refresh-btn" onclick="forceCheck()" id="force-btn" title="Forcefully trigger the trade status check scheduler">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
@@ -256,7 +314,7 @@ export function getLogsHTML() {
                 <div id="total-pnl" class="stat-value">-</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Closed Trades</div>
+                <div class="stat-label">Closed</div>
                 <div id="closed-trades" class="stat-value">-</div>
             </div>
             <div class="stat-card">
@@ -273,21 +331,36 @@ export function getLogsHTML() {
             </div>
         </div>
 
+        <div class="time-stats-container">
+            <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 0.5rem 0;" onclick="toggleTimeStats()">
+                <h2 style="font-size: 1.25rem; font-weight: 600;">Performance by Hour (IST)</h2>
+                <div id="time-stats-toggle-icon" style="transition: transform 0.3s ease;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+            </div>
+            <div id="time-stats-collapsible" style="display: none; margin-top: 1rem;">
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">Most profitable hours of the day (Indian Standard Time) based on closed trades.</p>
+                <div id="time-stats-body" class="time-stats-grid">
+                    <div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">Loading time analysis...</div>
+                </div>
+            </div>
+        </div>
+
         <div class="logs-table-container">
             <table>
                 <thead>
                     <tr>
-                        <th>Time</th>
+                        <th class="sortable" onclick="handleSort('timestamp')">Time</th>
                         <th>Decision</th>
-                        <th>Asset</th>
-                        <th>Entry</th>
-                        <th>Exit</th>
+                        <th class="sortable" onclick="handleSort('asset')">Asset</th>
+                        <th class="sortable" onclick="handleSort('price')">Entry</th>
+                        <th class="sortable" onclick="handleSort('exit_price')">Exit</th>
                         <th>Qty</th>
-                        <th>PnL</th>
+                        <th class="sortable" onclick="handleSort('pnl')">PnL</th>
                         <th>Order ID</th>
                         <th>Reason</th>
                         <th>Close Reason</th>
-                        <th>Status</th>
+                        <th class="sortable" onclick="handleSort('status')">Status</th>
                     </tr>
                 </thead>
                 <tbody id="logs-body">
@@ -434,7 +507,7 @@ export function getLogsHTML() {
         }
 
         async function clearLogs() {
-            if (!confirm("Are you sure you want to DELETE ALL trade logs? This cannot be undone.")) return;
+            if (!confirm("Are you sure you want to DELETE ALL logs? This cannot be undone.")) return;
             
             const btn = document.getElementById('clear-btn');
             const originalText = btn.innerHTML;
@@ -468,7 +541,7 @@ export function getLogsHTML() {
             const file = input.files[0];
             if (!file) return;
 
-            if (!confirm('WARNING: Restoring will DELETE all current logs and replace them with the backup. Continue?')) {
+            if (!confirm('Restoring will APPEND logs from the backup to the existing logs. Continue?')) {
                 input.value = '';
                 return;
             }
@@ -499,21 +572,116 @@ export function getLogsHTML() {
             reader.readAsText(file);
         }
 
+        function toggleTimeStats() {
+            const content = document.getElementById('time-stats-collapsible');
+            const icon = document.getElementById('time-stats-toggle-icon');
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.style.transform = 'rotate(180deg)';
+                fetchTimeStatsOnly();
+            } else {
+                content.style.display = 'none';
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        async function fetchTimeStatsOnly() {
+            try {
+                const response = await fetch('/api/time-stats');
+                const timeStats = await response.json();
+                renderTimeStats(timeStats);
+            } catch (e) {
+                console.error('Failed to fetch time stats:', e);
+            }
+        }
+
+        let currentLogs = [];
+        let sortConfig = { key: 'timestamp', direction: 'desc' };
+
         async function fetchLogs() {
             try {
-                // Fetch logs and stats in parallel
+                // Fetch all data in parallel
                 const [logsResponse, statsResponse] = await Promise.all([
                     fetch('/api/logs'),
                     fetch('/api/stats')
                 ]);
                 
-                const logs = await logsResponse.json();
+                currentLogs = await logsResponse.json();
                 const stats = await statsResponse.json();
                 
-                renderLogs(logs);
+                applySortAndRender();
                 renderStats(stats);
+
+                // Load time stats if the section is already expanded (not typical for page load, but good for refresh)
+                if (document.getElementById('time-stats-collapsible').style.display === 'block') {
+                    fetchTimeStatsOnly();
+                }
             } catch (e) {
                 console.error('Failed to fetch data:', e);
+            }
+        }
+
+        function handleSort(key) {
+            if (sortConfig.key === key) {
+                sortConfig.direction = sortConfig.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortConfig.key = key;
+                sortConfig.direction = 'desc';
+            }
+            applySortAndRender();
+        }
+
+        function applySortAndRender() {
+            const sorted = [...currentLogs].sort((a, b) => {
+                let valA = a[sortConfig.key];
+                let valB = b[sortConfig.key];
+                
+                if (valA === null || valA === undefined) valA = '';
+                if (valB === null || valB === undefined) valB = '';
+                
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                
+                if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+                if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+            renderLogs(sorted);
+        }
+
+        function renderTimeStats(stats) {
+            const container = document.getElementById('time-stats-body');
+            if (!stats || stats.length === 0) {
+                container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">No closure data available for analysis.</div>';
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            // Ensure all 24 hours are represented
+            const hourMap = {};
+            stats.forEach(s => hourMap[parseInt(s.hour)] = s);
+            
+            for (let i = 0; i < 24; i++) {
+                const s = hourMap[i];
+                if (!s) continue; // Only show hours with at least one trade
+                
+                const winRate = ((s.wins / s.total_trades) * 100).toFixed(0);
+                const pnl = parseFloat(s.total_pnl);
+                const color = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                
+                const card = document.createElement('div');
+                card.className = 'time-slot-card';
+                card.style.borderColor = pnl >= 0 ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)';
+                card.style.background = pnl >= 0 ? 'rgba(34, 197, 94, 0.05)' : 'rgba(239, 68, 68, 0.05)';
+                
+                card.innerHTML = \`
+                    <div class="time-slot-hour">\${i.toString().padStart(2, '0')}:00</div>
+                    <div class="time-slot-winrate" style="color: \${color}">\${winRate}%</div>
+                    <div class="time-slot-trades">\${s.total_trades} trades</div>
+                    <div style="font-size: 0.7rem; margin-top: 0.25rem; font-weight: 600; color: \${color}">\${pnl >= 0 ? '+' : ''}\${pnl.toFixed(2)}</div>
+                \`;
+                container.appendChild(card);
             }
         }
 
@@ -593,13 +761,11 @@ export function getLogsHTML() {
                     body.appendChild(row);
                 }
             });
-            
-            // Stats are now handled by renderStats() via /api/stats
         }
 
         fetchLogs();
     </script>
 </body>
 </html>
-  `;
+    `;
 }

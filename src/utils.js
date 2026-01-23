@@ -11,6 +11,12 @@ export async function callGemini(env, promptParts, modelName = "gemini-3-flash-p
     ].filter(k => k);
     if (keys.length === 0) throw new Error("No GEMINI_API_KEY found");
 
+    // Randomize keys order to distribute load
+    for (let i = keys.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [keys[i], keys[j]] = [keys[j], keys[i]];
+    }
+
     let lastError;
     for (const key of keys) {
         try {

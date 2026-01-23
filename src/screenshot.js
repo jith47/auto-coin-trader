@@ -75,6 +75,37 @@ export default {
       }
     }
 
+    // Route: /api/time-stats
+    if (pathname === "/api/time-stats") {
+      if (!env.DB) return new Response("Database not bound", { status: 500 });
+      try {
+        // Query to get stats grouped by hour of the day
+        // timestamp is in milliseconds unix epoch
+        // strftime('%H', timestamp / 1000, 'unixepoch') gets the hour in UTC
+        // But since we want to know when it won, let's use the local time if possible or just UTC hour
+        // For simplicity let's use UTC hour as it's standard.
+        // We filter by CLOSED trades and only those with PnL.
+        const query = `
+          SELECT 
+            strftime('%H', (timestamp / 1000) + 19800, 'unixepoch') as hour,
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+            SUM(pnl) as total_pnl
+          FROM trade_logs
+          WHERE status = 'CLOSED' AND pnl IS NOT NULL
+          GROUP BY hour
+          ORDER BY hour ASC
+        `;
+        const { results } = await env.DB.prepare(query).all();
+        return new Response(JSON.stringify(results), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
     // Route: /api/check-status
     if (pathname === "/api/check-status") {
       console.log("🔍 [API] Manual status check triggered.");
@@ -294,33 +325,29 @@ export default {
           throw new Error("Invalid backup file format. Expected an array of logs.");
         }
 
-        // 1. Clear existing logs
-        await env.DB.prepare("DELETE FROM trade_logs").run();
-        try {
-          await env.DB.prepare("DELETE FROM sqlite_sequence WHERE name='trade_logs'").run();
-        } catch (e) { }
-
-        // 2. Insert backed up logs
+        // Append behavior: do NOT delete existing logs. Insert backed up logs while
+        // avoiding primary-key conflicts by letting the DB assign ids. Use
+        // INSERT OR IGNORE to skip duplicate order_id entries (there is a unique
+        // index on order_id) so restore won't fail on duplicates.
         let restoredCount = 0;
         const stmt = env.DB.prepare(`
-          INSERT INTO trade_logs (
-            id, timestamp, decision, reason, asset, price, quantity,
-            leverage, stop_loss, take_profit, raw_response, status, 
-            order_id, parent_trade_id, exit_price, pnl, summary
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT OR IGNORE INTO trade_logs (
+            timestamp, decision, reason, asset, price, quantity,
+            leverage, stop_loss, take_profit, raw_response, status,
+            order_id, parent_trade_id, exit_price, pnl, summary, close_reason, is_analyzed
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        // Batch insert could be better but loop is safer for D1 limits per query
         for (const log of logs) {
           await stmt.bind(
-            log.id, log.timestamp, log.decision, log.reason, log.asset, log.price, log.quantity,
+            log.timestamp, log.decision, log.reason, log.asset, log.price, log.quantity,
             log.leverage, log.stop_loss, log.take_profit, log.raw_response, log.status,
-            log.order_id, log.parent_trade_id, log.exit_price, log.pnl, log.summary
+            log.order_id, log.parent_trade_id, log.exit_price, log.pnl, log.summary, log.close_reason, log.is_analyzed
           ).run();
           restoredCount++;
         }
 
-        return new Response(JSON.stringify({ success: true, message: `Restored ${restoredCount} logs successfully.` }), {
+        return new Response(JSON.stringify({ success: true, message: `Appended ${restoredCount} logs successfully.` }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (e) {
@@ -443,8 +470,8 @@ async function runAnalysisAndTrade(env, trade) {
 
     // Define assets to capture with their timeframes
     const captureConfig = [
-      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m", "3m"] },
-      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m", "5m"] }
+      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1h", "1d", "4h", "1m"] },
+      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m"] }
     ];
 
     const screenshots = [];
@@ -711,6 +738,8 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
             console.error("❌ Error during SL/TP validation:", e);
           }
           // --- VALIDATION LOGIC END ---
+          // Cancel all pending orders before placing new ones
+          await cancelAllOrders(env);
 
           tradeResult = await placeOrder(
             env,
@@ -842,8 +871,8 @@ async function runPostTradeAnalysis(env, closedTradeIds) {
 
     // Capture IMMEDIATE screenshots of BTC and DOGE for delta context
     const captureConfig = [
-      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m"] },
-      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m"] }
+      { name: "BTC", url: "https://www.coinglass.com/tv/Binance_BTCUSDT", timeframes: ["1m", "1h"] },
+      { name: "DOGE", url: "https://www.coinglass.com/tv/Binance_DOGEUSDT", timeframes: ["1m", "1h"] }
     ];
 
     const screenshots = [];
@@ -874,6 +903,8 @@ The screenshots were captured IMMEDIATELY after the trade was closed to provide 
 
 TRADE DATA:
 - Decision: ${trade.decision}
+- Entry Time: ${trade.entry_time}
+- Exit Time: ${trade.exit_time}
 - Entry Price: ${trade.price}
 - Exit Price: ${trade.exit_price}
 - PnL: ${trade.pnl}
@@ -881,11 +912,10 @@ TRADE DATA:
 - Status: ${trade.status}
 
 INSTRUCTIONS:
-1. Explain why the trade was a WIN or LOSS.
-2. Analyze the BTC/DOGE Delta and CVD data from the screenshots at the time of exit.
-3. Determine the specific trigger that caused the exit (e.g., Stop Loss hit, Take Profit hit, Delta flip, Momentum faded, Manual close).
-4. Provide a detailed analysis (3-5 sentences) explaining the market conditions that led to this outcome.
-5. Output ONLY the analysis text. No JSON, no formatting.
+1. Analyze the BTC/DOGE data from the screenshots at the time of exit.
+2. Determine the specific trigger that caused the exit (e.g., Stop Loss hit, Take Profit hit, Delta flip, Momentum faded, Manual close).
+3. Provide a detailed analysis (3-5 sentences) explaining the market conditions that led to this outcome. Clearly state why trade lost compared to entry reason. What went wrong while predicting the outcome(making entry decision).
+4. Output ONLY the analysis text. No JSON, no formatting.
 `;
 
       const result = await callGemini(env, [analysisPrompt, ...screenshots]);

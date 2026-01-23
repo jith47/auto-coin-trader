@@ -8,7 +8,7 @@ console.log("   Schedule: Every 60 seconds");
 async function triggerCron(retryCount = 0) {
     try {
         console.log(`\n[${new Date().toLocaleTimeString()}] ⏳ Triggering scheduled event...`);
-        const response = await fetch("http://localhost:8787/api/check-status", {
+        const response = await fetch("http://127.0.0.1:8787/api/check-status", {
             method: "GET"
         });
 
@@ -21,11 +21,12 @@ async function triggerCron(retryCount = 0) {
         }
     } catch (e) {
         console.error(`[${new Date().toLocaleTimeString()}] ❌ Error triggering cron:`, e.message);
+        if (e.code === 'ECONNREFUSED') {
+            console.log("   (Connection refused. Make sure 'npm run dev' is running on port 8787)");
+        }
         if (retryCount < 3) {
             console.log(`   Retrying in 5 seconds... (Attempt ${retryCount + 1}/3)`);
             setTimeout(() => triggerCron(retryCount + 1), 5000);
-        } else {
-            console.log("   (Make sure 'npm run dev' is running in another terminal)");
         }
     }
 }
