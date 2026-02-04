@@ -101,12 +101,13 @@ export function getLogsHTML() {
             background-color: var(--card-bg);
             border-radius: 1rem;
             border: 1px solid var(--border-color);
-            overflow: hidden;
+            overflow-x: auto;
             box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
         }
 
         table {
             width: 100%;
+            min-width: 1200px;
             border-collapse: collapse;
             text-align: left;
         }
@@ -346,11 +347,42 @@ export function getLogsHTML() {
             </div>
         </div>
 
+        <div class="time-stats-container">
+            <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 0.5rem 0;" onclick="toggleDayStats()">
+                <h2 style="font-size: 1.25rem; font-weight: 600;">Performance by Day of Week</h2>
+                <div id="day-stats-toggle-icon" style="transition: transform 0.3s ease;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+            </div>
+            <div id="day-stats-collapsible" style="display: none; margin-top: 1rem;">
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">Performance grouped by day of the week (IST).</p>
+                <div id="day-stats-body" class="time-stats-grid">
+                    <div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">Loading day analysis...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="time-stats-container">
+            <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 0.5rem 0;" onclick="toggleMonthStats()">
+                <h2 style="font-size: 1.25rem; font-weight: 600;">Performance by Month</h2>
+                <div id="month-stats-toggle-icon" style="transition: transform 0.3s ease;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+            </div>
+            <div id="month-stats-collapsible" style="display: none; margin-top: 1rem;">
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">Performance grouped by month (IST).</p>
+                <div id="month-stats-body" class="time-stats-grid">
+                    <div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">Loading month analysis...</div>
+                </div>
+            </div>
+        </div>
+
         <div class="logs-table-container">
             <table>
                 <thead>
                     <tr>
-                        <th class="sortable" onclick="handleSort('timestamp')">Time</th>
+                        <th class="sortable" onclick="handleSort('timestamp')">Entry Time</th>
+                        <th class="sortable" onclick="handleSort('closed_at')">Closed At</th>
                         <th>Decision</th>
                         <th class="sortable" onclick="handleSort('asset')">Asset</th>
                         <th class="sortable" onclick="handleSort('price')">Entry</th>
@@ -595,6 +627,52 @@ export function getLogsHTML() {
             }
         }
 
+        function toggleDayStats() {
+            const content = document.getElementById('day-stats-collapsible');
+            const icon = document.getElementById('day-stats-toggle-icon');
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.style.transform = 'rotate(180deg)';
+                fetchDayStatsOnly();
+            } else {
+                content.style.display = 'none';
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        async function fetchDayStatsOnly() {
+            try {
+                const response = await fetch('/api/day-stats');
+                const dayStats = await response.json();
+                renderDayStats(dayStats);
+            } catch (e) {
+                console.error('Failed to fetch day stats:', e);
+            }
+        }
+
+        function toggleMonthStats() {
+            const content = document.getElementById('month-stats-collapsible');
+            const icon = document.getElementById('month-stats-toggle-icon');
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.style.transform = 'rotate(180deg)';
+                fetchMonthStatsOnly();
+            } else {
+                content.style.display = 'none';
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        async function fetchMonthStatsOnly() {
+            try {
+                const response = await fetch('/api/month-stats');
+                const monthStats = await response.json();
+                renderMonthStats(monthStats);
+            } catch (e) {
+                console.error('Failed to fetch month stats:', e);
+            }
+        }
+
         let currentLogs = [];
         let sortConfig = { key: 'timestamp', direction: 'desc' };
 
@@ -612,9 +690,15 @@ export function getLogsHTML() {
                 applySortAndRender();
                 renderStats(stats);
 
-                // Load time stats if the section is already expanded (not typical for page load, but good for refresh)
+                // Load additional stats if expanded
                 if (document.getElementById('time-stats-collapsible').style.display === 'block') {
                     fetchTimeStatsOnly();
+                }
+                if (document.getElementById('day-stats-collapsible').style.display === 'block') {
+                    fetchDayStatsOnly();
+                }
+                if (document.getElementById('month-stats-collapsible').style.display === 'block') {
+                    fetchMonthStatsOnly();
                 }
             } catch (e) {
                 console.error('Failed to fetch data:', e);
@@ -667,6 +751,7 @@ export function getLogsHTML() {
                 if (!s) continue; // Only show hours with at least one trade
                 
                 const winRate = ((s.wins / s.total_trades) * 100).toFixed(0);
+                const wins = parseInt(s.wins || 0);
                 const pnl = parseFloat(s.total_pnl);
                 const color = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
                 
@@ -678,11 +763,75 @@ export function getLogsHTML() {
                 card.innerHTML = \`
                     <div class="time-slot-hour">\${i.toString().padStart(2, '0')}:00</div>
                     <div class="time-slot-winrate" style="color: \${color}">\${winRate}%</div>
-                    <div class="time-slot-trades">\${s.total_trades} trades</div>
+                    <div class="time-slot-trades">\${wins} wins / \${s.total_trades} trades</div>
                     <div style="font-size: 0.7rem; margin-top: 0.25rem; font-weight: 600; color: \${color}">\${pnl >= 0 ? '+' : ''}\${pnl.toFixed(2)}</div>
                 \`;
                 container.appendChild(card);
             }
+        }
+
+        function renderDayStats(stats) {
+            const container = document.getElementById('day-stats-body');
+            if (!stats || stats.length === 0) {
+                container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">No closure data available.</div>';
+                return;
+            }
+            
+            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            container.innerHTML = '';
+            
+            stats.forEach(s => {
+                const dayName = days[parseInt(s.day_of_week)];
+                const wins = parseInt(s.wins || 0);
+                const winRate = ((s.wins / s.total_trades) * 100).toFixed(0);
+                const pnl = parseFloat(s.total_pnl);
+                const color = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                
+                const card = document.createElement('div');
+                card.className = 'time-slot-card';
+                card.style.borderColor = pnl >= 0 ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)';
+                card.style.background = pnl >= 0 ? 'rgba(34, 197, 94, 0.05)' : 'rgba(239, 68, 68, 0.05)';
+                
+                card.innerHTML = \`
+                    <div class="time-slot-hour">\${dayName}</div>
+                    <div class="time-slot-winrate" style="color: \${color}">\${winRate}%</div>
+                    <div class="time-slot-trades">\${wins} wins / \${s.total_trades} trades</div>
+                    <div style="font-size: 0.7rem; margin-top: 0.25rem; font-weight: 600; color: \${color}">\${pnl >= 0 ? '+' : ''}\${pnl.toFixed(2)}</div>
+                \`;
+                container.appendChild(card);
+            });
+        }
+
+        function renderMonthStats(stats) {
+            const container = document.getElementById('month-stats-body');
+            if (!stats || stats.length === 0) {
+                container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">No closure data available.</div>';
+                return;
+            }
+            
+            const months = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            container.innerHTML = '';
+            
+            stats.forEach(s => {
+                const monthName = months[parseInt(s.month)];
+                const wins = parseInt(s.wins || 0);
+                const winRate = ((s.wins / s.total_trades) * 100).toFixed(0);
+                const pnl = parseFloat(s.total_pnl);
+                const color = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                
+                const card = document.createElement('div');
+                card.className = 'time-slot-card';
+                card.style.borderColor = pnl >= 0 ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)';
+                card.style.background = pnl >= 0 ? 'rgba(34, 197, 94, 0.05)' : 'rgba(239, 68, 68, 0.05)';
+                
+                card.innerHTML = \`
+                    <div class="time-slot-hour">\${monthName}</div>
+                    <div class="time-slot-winrate" style="color: \${color}">\${winRate}%</div>
+                    <div class="time-slot-trades">\${wins} wins / \${s.total_trades} trades</div>
+                    <div style="font-size: 0.7rem; margin-top: 0.25rem; font-weight: 600; color: \${color}">\${pnl >= 0 ? '+' : ''}\${pnl.toFixed(2)}</div>
+                \`;
+                container.appendChild(card);
+            });
         }
 
         function renderStats(stats) {
@@ -736,7 +885,10 @@ export function getLogsHTML() {
                     pnlPercentText = (pnlPercent >= 0 ? '+' : '') + pnlPercent.toFixed(2) + '%';
                 }
                 
+                const closedDate = log.closed_at ? new Date(log.closed_at).toLocaleString() : '-';
+                
                 row.innerHTML = '<td>' + date + '</td>' +
+                    '<td>' + closedDate + '</td>' +
                     '<td><span class="badge badge-' + log.decision.toLowerCase() + '">' + log.decision + '</span></td>' +
                     '<td>' + (log.asset || '-') + '</td>' +
                     '<td>' + (log.price ? log.price.toFixed(4) : '-') + '</td>' +

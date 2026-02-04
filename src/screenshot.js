@@ -79,12 +79,6 @@ export default {
     if (pathname === "/api/time-stats") {
       if (!env.DB) return new Response("Database not bound", { status: 500 });
       try {
-        // Query to get stats grouped by hour of the day
-        // timestamp is in milliseconds unix epoch
-        // strftime('%H', timestamp / 1000, 'unixepoch') gets the hour in UTC
-        // But since we want to know when it won, let's use the local time if possible or just UTC hour
-        // For simplicity let's use UTC hour as it's standard.
-        // We filter by CLOSED trades and only those with PnL.
         const query = `
           SELECT 
             strftime('%H', (timestamp / 1000) + 19800, 'unixepoch') as hour,
@@ -106,23 +100,92 @@ export default {
       }
     }
 
+    // Route: /api/day-stats
+    if (pathname === "/api/day-stats") {
+      if (!env.DB) return new Response("Database not bound", { status: 500 });
+      try {
+        const query = `
+          SELECT 
+            strftime('%w', (timestamp / 1000) + 19800, 'unixepoch') as day_of_week,
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+            SUM(pnl) as total_pnl
+          FROM trade_logs
+          WHERE status = 'CLOSED' AND pnl IS NOT NULL
+          GROUP BY day_of_week
+          ORDER BY day_of_week ASC
+        `;
+        const { results } = await env.DB.prepare(query).all();
+        return new Response(JSON.stringify(results), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
+    // Route: /api/month-stats
+    if (pathname === "/api/month-stats") {
+      if (!env.DB) return new Response("Database not bound", { status: 500 });
+      try {
+        const query = `
+          SELECT 
+            strftime('%m', (timestamp / 1000) + 19800, 'unixepoch') as month,
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+            SUM(pnl) as total_pnl
+          FROM trade_logs
+          WHERE status = 'CLOSED' AND pnl IS NOT NULL
+          GROUP BY month
+          ORDER BY month ASC
+        `;
+        const { results } = await env.DB.prepare(query).all();
+        return new Response(JSON.stringify(results), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      }
+    }
+
     // Route: /api/check-status
     if (pathname === "/api/check-status") {
       console.log("🔍 [API] Manual status check triggered.");
-      ctx.waitUntil((async () => {
-        try {
-          const closedIds = await checkTradeStatus(env);
-          if (closedIds && closedIds.length > 0) {
-            console.log(`🎯 [API] Detected ${closedIds.length} closed trade(s). Triggering analysis...`);
-            await runPostTradeAnalysis(env, closedIds);
-          } else {
-            console.log("ℹ️ [API] No new closures detected.");
-          }
-        } catch (err) {
-          console.error("❌ [API] Error in status check:", err);
+
+      let activeTradesCount = 0;
+      let statusMsg = "checking";
+
+      try {
+        const result = await checkTradeStatus(env);
+        const closedIds = result.closedTradeIds || [];
+        activeTradesCount = result.activeTradesCount || 0;
+
+        if (closedIds.length > 0) {
+          console.log(`🎯 [API] Detected ${closedIds.length} closed trade(s). Triggering analysis...`);
+          ctx.waitUntil(runPostTradeAnalysis(env, closedIds));
+          statusMsg = "analyzing_closure";
+        } else {
+          console.log(`ℹ️ [API] No new closures. Active trades: ${activeTradesCount}`);
+          statusMsg = activeTradesCount > 0 ? "monitoring" : "idle";
         }
-      })());
-      return new Response(JSON.stringify({ status: "checking" }), {
+
+        if (analyze) {
+          console.log("🚀 [API] Triggering analysis from check-status parameter...");
+          ctx.waitUntil(runAnalysisAndTrade(env, trade));
+          statusMsg = "analyzing_market";
+        }
+
+      } catch (err) {
+        console.error("❌ [API] Error in status check:", err);
+        statusMsg = "error";
+      }
+
+      return new Response(JSON.stringify({
+        status: statusMsg,
+        activeTradesCount: activeTradesCount
+      }), {
         headers: { "Content-Type": "application/json" }
       });
     }
@@ -293,6 +356,14 @@ export default {
           await env.DB.prepare("ALTER TABLE trade_logs ADD COLUMN is_analyzed INTEGER DEFAULT 0").run();
         }
 
+        // Check if closed_at exists
+        try {
+          await env.DB.prepare("SELECT closed_at FROM trade_logs LIMIT 1").run();
+        } catch (e) {
+          await env.DB.prepare("ALTER TABLE trade_logs ADD COLUMN closed_at INTEGER").run();
+        }
+
+
         return new Response(JSON.stringify({ success: true, message: "Migrations checked and applied." }), {
           headers: { "Content-Type": "application/json" }
         });
@@ -334,15 +405,15 @@ export default {
           INSERT OR IGNORE INTO trade_logs (
             timestamp, decision, reason, asset, price, quantity,
             leverage, stop_loss, take_profit, raw_response, status,
-            order_id, parent_trade_id, exit_price, pnl, summary, close_reason, is_analyzed
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            order_id, parent_trade_id, exit_price, pnl, summary, close_reason, is_analyzed, closed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         for (const log of logs) {
           await stmt.bind(
             log.timestamp, log.decision, log.reason, log.asset, log.price, log.quantity,
             log.leverage, log.stop_loss, log.take_profit, log.raw_response, log.status,
-            log.order_id, log.parent_trade_id, log.exit_price, log.pnl, log.summary, log.close_reason, log.is_analyzed
+            log.order_id, log.parent_trade_id, log.exit_price, log.pnl, log.summary, log.close_reason, log.is_analyzed, log.closed_at
           ).run();
           restoredCount++;
         }
@@ -429,8 +500,18 @@ export default {
   },
 };
 
+
+let isAnalyzing = false;
+
 // Background processing function
 async function runAnalysisAndTrade(env, trade) {
+  if (isAnalyzing) {
+    console.log("⚠️ [System] Analysis already in progress. Skipping.");
+    return;
+  }
+  isAnalyzing = true;
+  let browser = null;
+
   try {
     console.log("🚀 Starting background analysis...");
 
@@ -439,7 +520,6 @@ async function runAnalysisAndTrade(env, trade) {
       console.log("🛡️ Safety Check: Checking for open positions before starting...");
       try {
         const positionsData = await getOpenPositions(env);
-        console.log("📊 Raw Positions Data:", JSON.stringify(positionsData));
 
         const positions = Array.isArray(positionsData) ? positionsData : (positionsData.positions || []);
 
@@ -464,7 +544,7 @@ async function runAnalysisAndTrade(env, trade) {
     const strategyText = await getLatestStrategy(env);
     const currentStrategy = strategyText
 
-    const browser = await launch(env.MYBROWSER);
+    browser = await launch(env.MYBROWSER);
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1920, height: 1080 });
 
@@ -808,6 +888,13 @@ Please provide the final JSON decision. Ensure 'quantity' is affordable with the
     }
   } catch (error) {
     console.error("Error in background analysis:", error);
+  } finally {
+    if (browser) {
+      console.log("🧹 [System] Closing browser...");
+      await browser.close().catch(e => console.error("Error closing browser:", e));
+    }
+    isAnalyzing = false;
+    console.log("🏁 [System] Analysis task finished.");
   }
 }
 
@@ -836,6 +923,13 @@ async function switchTimeframe(page, timeframe) {
 }
 
 async function runPostTradeAnalysis(env, closedTradeIds) {
+  if (isAnalyzing) {
+    console.log("⚠️ [System] Analysis in progress. Skipping post-trade analysis.");
+    return;
+  }
+  isAnalyzing = true;
+  let browser = null;
+
   try {
     console.log(`📊 Starting immediate post-trade analysis for trades: ${closedTradeIds.join(", ")}`);
 
@@ -861,11 +955,14 @@ async function runPostTradeAnalysis(env, closedTradeIds) {
 
     if (tradesToAnalyze.length === 0) {
       console.log("ℹ️ No losing trades to analyze. Skipping browser launch.");
+      // We still want to trigger the next analysis loop even if no post-analysis needed
+      // But we need to release lock first.
+      // So we just fall through to finally.
       return;
     }
 
     console.log(`📸 Launching browser to analyze ${tradesToAnalyze.length} losing trade(s)...`);
-    const browser = await launch(env.MYBROWSER);
+    browser = await launch(env.MYBROWSER);
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1920, height: 1080 });
 
@@ -889,6 +986,7 @@ async function runPostTradeAnalysis(env, closedTradeIds) {
       });
     }
     await browser.close();
+    browser = null;
 
     // const { GoogleGenerativeAI } = await import("@google/generative-ai");
     // const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
@@ -927,8 +1025,14 @@ INSTRUCTIONS:
 
     // Re-trigger market analysis for next trade opportunity
     console.log("🔄 Trade closed. Triggering new market analysis for next opportunity...");
-    await runAnalysisAndTrade(env, true);
   } catch (e) {
     console.error("❌ Error in post-trade analysis:", e);
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => { });
+    }
+    isAnalyzing = false;
   }
+  // Call outside to avoid lock collision
+  await runAnalysisAndTrade(env, true);
 }

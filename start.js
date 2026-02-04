@@ -48,8 +48,8 @@ function handleOutput(data) {
         startScheduler();
     }
     if (output.includes('>>> STOP_SCHEDULER <<<')) {
-        console.log("🎯 [Debug] Detected STOP signal in output");
-        stopScheduler();
+        console.log("🎯 [Debug] Detected STOP signal in output (Ignored for scheduled analysis)");
+        // stopScheduler(); // Disabled to keep scheduler alive for 15-min checks
     }
 }
 

@@ -213,13 +213,15 @@ export async function checkTradeStatus(env) {
 
             // Update the parent record if anything changed
             if (newStatus !== trade.status || exitPrice !== trade.exit_price) {
+                const closedAt = exitTradeFound ? exitTradeFound.timestamp : null;
                 await env.DB.prepare(
-                    "UPDATE trade_logs SET status = ?, exit_price = ?, pnl = ? WHERE id = ?"
-                ).bind(newStatus, exitPrice, pnl, trade.id).run();
+                    "UPDATE trade_logs SET status = ?, exit_price = ?, pnl = ?, closed_at = ? WHERE id = ?"
+                ).bind(newStatus, exitPrice, pnl, closedAt, trade.id).run();
 
                 if (newStatus === 'CLOSED') {
                     closedTradeIds.push(trade.id);
-                    console.log(`  ✅ Trade #${trade.id} marked as CLOSED. PnL: ${pnl.toFixed(2)}`);
+                    const closedTimeStr = closedAt ? new Date(closedAt).toLocaleString() : 'unknown';
+                    console.log(`  ✅ Trade #${trade.id} marked as CLOSED at ${closedTimeStr}. PnL: ${pnl.toFixed(2)}`);
                 }
             }
         }
@@ -233,10 +235,13 @@ export async function checkTradeStatus(env) {
             console.log(">>> STOP_SCHEDULER <<<");
         }
 
-        return closedTradeIds;
+        return {
+            closedTradeIds,
+            activeTradesCount: remainingTrades.length
+        };
     } catch (e) {
         console.error("❌ Error checking trade status:", e);
-        return [];
+        return { closedTradeIds: [], activeTradesCount: 0 };
     }
 }
 
@@ -282,17 +287,20 @@ export async function syncTradesFromExchange(env) {
                 asset = 'B-' + asset;
             }
 
-            const timestamp = firstFill.timestamp || Date.now();
+            // const timestamp = firstFill.timestamp || Date.now(); // Moved down
 
             let totalQty = 0;
             let weightedPriceSum = 0;
+            let latestTimestamp = 0;
             for (const fill of orderFills) {
                 const qty = parseFloat(fill.quantity || fill.size || 0);
                 const price = parseFloat(fill.price || 0);
                 totalQty += qty;
                 weightedPriceSum += qty * price;
+                if (fill.timestamp > latestTimestamp) latestTimestamp = fill.timestamp;
             }
             const avgPrice = weightedPriceSum / totalQty;
+            const timestamp = latestTimestamp || firstFill.timestamp || Date.now();
 
             console.log(`\n🔎 Processing synced trade: ${decision} ${asset} x ${totalQty} @ ${avgPrice.toFixed(6)} (Order: ${orderId})`);
 
@@ -392,10 +400,10 @@ export async function syncTradesFromExchange(env) {
                     }
 
                     await env.DB.prepare(
-                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ? WHERE id = ?"
-                    ).bind(avgPrice, pnl, parent.id).run();
+                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ?, closed_at = ? WHERE id = ?"
+                    ).bind(avgPrice, pnl, timestamp, parent.id).run();
 
-                    console.log(`  ✅ Synced exit updated Parent #${parent.id}. PnL: ${pnl.toFixed(2)}`);
+                    console.log(`  ✅ Synced exit updated Parent #${parent.id} (Closed at ${new Date(timestamp).toLocaleString()}). PnL: ${pnl.toFixed(2)}`);
                     // Single-row architecture: Do NOT insert a new record for the exit.
                     continue;
                 }
