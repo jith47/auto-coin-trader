@@ -60,8 +60,8 @@ export async function logTradeToDB(env, data) {
         const result = await env.DB.prepare(`
       INSERT INTO trade_logs (
         timestamp, decision, reason, asset, price, quantity, 
-        leverage, stop_loss, take_profit, raw_response, status, order_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        leverage, stop_loss, take_profit, raw_response, status, order_id, brokerage_fee
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
             Date.now(),
             data.decision,
@@ -74,7 +74,8 @@ export async function logTradeToDB(env, data) {
             data.takeProfit || 0,
             data.rawResponse || "",
             data.status,
-            data.orderId || null
+            data.orderId || null,
+            data.fee || 0
         ).run();
 
         console.log("✅ Successfully logged to D1:", {
@@ -153,13 +154,16 @@ export async function checkTradeStatus(env) {
                     side: fill.side ? fill.side.toLowerCase() : '',
                     timestamp: fill.timestamp,
                     quantity: 0,
-                    weightedPriceSum: 0
+                    weightedPriceSum: 0,
+                    totalFee: 0
                 };
             }
             const qty = parseFloat(fill.quantity || fill.size || 0);
             const price = parseFloat(fill.price || 0);
+            const fee = parseFloat(fill.fee_amount || fill.fee || fill.trading_fee || 0);
             fillsByOrderId[orderId].quantity += qty;
             fillsByOrderId[orderId].weightedPriceSum += (qty * price);
+            fillsByOrderId[orderId].totalFee += fee;
             // Keep the latest timestamp for the order
             if (fill.timestamp > fillsByOrderId[orderId].timestamp) {
                 fillsByOrderId[orderId].timestamp = fill.timestamp;
@@ -170,7 +174,8 @@ export async function checkTradeStatus(env) {
             const f = fillsByOrderId[id];
             aggregatedFills.push({
                 ...f,
-                price: f.weightedPriceSum / f.quantity
+                price: f.weightedPriceSum / f.quantity,
+                fee: f.totalFee
             });
         }
 
@@ -203,10 +208,19 @@ export async function checkTradeStatus(env) {
                 console.log(`    ✅ Found matching exit trade on exchange: ${matchingExit.order_id}`);
                 newStatus = 'CLOSED';
                 exitPrice = matchingExit.price;
-                pnl = trade.decision === 'BUY'
+                // Calculate Gross PnL
+                const grossPnl = trade.decision === 'BUY'
                     ? (exitPrice - trade.price) * Math.abs(trade.quantity)
                     : (trade.price - exitPrice) * Math.abs(trade.quantity);
+                // Total fee = entry fee (stored in trade.brokerage_fee) + exit fee
+                const entryFee = parseFloat(trade.brokerage_fee || 0);
+                const exitFee = matchingExit.fee || 0;
+                const totalFee = entryFee + exitFee;
+                // Net PnL = Gross - Total Fees
+                pnl = grossPnl - totalFee;
                 exitTradeFound = matchingExit;
+                exitTradeFound.totalFee = totalFee; // Store for logging
+                console.log(`    💰 Gross PnL: ${grossPnl.toFixed(4)}, Entry Fee: ${entryFee.toFixed(4)}, Exit Fee: ${exitFee.toFixed(4)}, Net PnL: ${pnl.toFixed(4)}`);
             } else {
                 console.log(`    ⏳ No matching exit trade found yet. (Looking for ${exitSide} of ~${Math.abs(trade.quantity)} ${trade.asset})`);
             }
@@ -214,14 +228,15 @@ export async function checkTradeStatus(env) {
             // Update the parent record if anything changed
             if (newStatus !== trade.status || exitPrice !== trade.exit_price) {
                 const closedAt = exitTradeFound ? exitTradeFound.timestamp : null;
+                const totalFee = exitTradeFound ? exitTradeFound.totalFee : (trade.brokerage_fee || 0);
                 await env.DB.prepare(
-                    "UPDATE trade_logs SET status = ?, exit_price = ?, pnl = ?, closed_at = ? WHERE id = ?"
-                ).bind(newStatus, exitPrice, pnl, closedAt, trade.id).run();
+                    "UPDATE trade_logs SET status = ?, exit_price = ?, pnl = ?, closed_at = ?, brokerage_fee = ? WHERE id = ?"
+                ).bind(newStatus, exitPrice, pnl, closedAt, totalFee, trade.id).run();
 
                 if (newStatus === 'CLOSED') {
                     closedTradeIds.push(trade.id);
                     const closedTimeStr = closedAt ? new Date(closedAt).toLocaleString() : 'unknown';
-                    console.log(`  ✅ Trade #${trade.id} marked as CLOSED at ${closedTimeStr}. PnL: ${pnl.toFixed(2)}`);
+                    console.log(`  ✅ Trade #${trade.id} marked as CLOSED at ${closedTimeStr}. Net PnL: ${pnl.toFixed(2)}, Total Fee: ${totalFee.toFixed(4)}`);
                 }
             }
         }
@@ -276,7 +291,7 @@ export async function syncTradesFromExchange(env) {
         let newTradesAdded = 0;
 
         for (const [orderId, orderFills] of Object.entries(tradesByOrderId)) {
-            if (existingOrderIds.has(orderId)) continue;
+            // We don't skip anymore! We might need to update fees for existing orders.
 
             const firstFill = orderFills[0];
             const decision = firstFill.side?.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
@@ -292,25 +307,37 @@ export async function syncTradesFromExchange(env) {
             let totalQty = 0;
             let weightedPriceSum = 0;
             let latestTimestamp = 0;
+            let totalFee = 0;
             for (const fill of orderFills) {
                 const qty = parseFloat(fill.quantity || fill.size || 0);
                 const price = parseFloat(fill.price || 0);
+                const fee = parseFloat(fill.fee_amount || fill.fee || fill.trading_fee || 0);
+                console.log(`      - Fill: Order=${fill.order_id}, Qty=${qty}, Price=${price}, Fee=${fee} (Raw fee_amount: ${fill.fee_amount}, fee: ${fill.fee})`);
                 totalQty += qty;
                 weightedPriceSum += qty * price;
+                totalFee += fee;
                 if (fill.timestamp > latestTimestamp) latestTimestamp = fill.timestamp;
             }
-            const avgPrice = weightedPriceSum / totalQty;
+            const avgPrice = totalQty > 0 ? weightedPriceSum / totalQty : 0;
             const timestamp = latestTimestamp || firstFill.timestamp || Date.now();
 
+            console.log(`    📊 Total Qty: ${totalQty}, Avg Price: ${avgPrice.toFixed(6)}, Total Fee: ${totalFee.toFixed(4)}`);
             console.log(`\n🔎 Processing synced trade: ${decision} ${asset} x ${totalQty} @ ${avgPrice.toFixed(6)} (Order: ${orderId})`);
 
             // Step 1: Check if this order_id already exists in ANY status
             const { results: existingByOrderId } = await env.DB.prepare(
-                "SELECT id FROM trade_logs WHERE order_id = ?"
+                "SELECT id, brokerage_fee, status, pnl FROM trade_logs WHERE order_id = ?"
             ).bind(orderId).all();
 
             if (existingByOrderId.length > 0) {
-                console.log(`  ⏭️ Order ID ${orderId} already exists. Skipping.`);
+                const existing = existingByOrderId[0];
+                // If fee is 0 and we found a fee in the exchange history, update it!
+                if ((!existing.brokerage_fee || existing.brokerage_fee === 0) && totalFee > 0) {
+                    console.log(`  📝 Order ID ${orderId} exists but missing fee. Updating fee to ${totalFee.toFixed(4)}`);
+                    await env.DB.prepare("UPDATE trade_logs SET brokerage_fee = ? WHERE id = ?").bind(totalFee, existing.id).run();
+                } else {
+                    console.log(`  ⏭️ Order ID ${orderId} already exists. Skipping.`);
+                }
                 continue;
             }
 
@@ -323,10 +350,10 @@ export async function syncTradesFromExchange(env) {
 
             if (orphanTrade.length > 0) {
                 const openTrade = orphanTrade[0];
-                console.log(`  🏠 Matches existing ORPHAN trade #${openTrade.id} (No Order ID). Updating with Order ID ${orderId}.`);
+                console.log(`  🏠 Matches existing ORPHAN trade #${openTrade.id} (No Order ID). Updating with Order ID ${orderId}. Entry Fee: ${totalFee.toFixed(4)}`);
                 await env.DB.prepare(
-                    "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ? WHERE id = ?"
-                ).bind(orderId, avgPrice, totalQty, openTrade.id).run();
+                    "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ?, brokerage_fee = ? WHERE id = ?"
+                ).bind(orderId, avgPrice, totalQty, totalFee, openTrade.id).run();
                 newTradesAdded++;
                 continue;
             }
@@ -342,10 +369,10 @@ export async function syncTradesFromExchange(env) {
                 // Better to be safe: if it has an order_id, it might be a different trade.
                 if (!openTrade.order_id) {
                     // This should have been caught by Priority B, but just in case
-                    console.log(`  🏠 Matches existing OPEN trade #${openTrade.id}. Updating to OPEN.`);
+                    console.log(`  🏠 Matches existing OPEN trade #${openTrade.id}. Updating to OPEN. Entry Fee: ${totalFee.toFixed(4)}`);
                     await env.DB.prepare(
-                        "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ? WHERE id = ?"
-                    ).bind(orderId, avgPrice, totalQty, openTrade.id).run();
+                        "UPDATE trade_logs SET status = 'OPEN', order_id = ?, price = ?, quantity = ?, brokerage_fee = ? WHERE id = ?"
+                    ).bind(orderId, avgPrice, totalQty, totalFee, openTrade.id).run();
                     newTradesAdded++;
                     continue;
                 }
@@ -392,18 +419,24 @@ export async function syncTradesFromExchange(env) {
                     }
 
                     console.log(`  🔗 LINKED! Best match is Parent trade #${parent.id}.`);
-                    let pnl = 0;
+                    // Calculate Gross PnL
+                    let grossPnl = 0;
                     if (parent.decision === 'BUY') {
-                        pnl = (avgPrice - parent.price) * totalQty;
+                        grossPnl = (avgPrice - parent.price) * totalQty;
                     } else {
-                        pnl = (parent.price - avgPrice) * totalQty;
+                        grossPnl = (parent.price - avgPrice) * totalQty;
                     }
+                    // Total fee = entry fee (stored in parent.brokerage_fee) + exit fee (from this sync)
+                    const entryFee = parseFloat(parent.brokerage_fee || 0);
+                    const allFees = entryFee + totalFee;
+                    // Net PnL = Gross - Total Fees
+                    const pnl = grossPnl - allFees;
 
                     await env.DB.prepare(
-                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ?, closed_at = ? WHERE id = ?"
-                    ).bind(avgPrice, pnl, timestamp, parent.id).run();
+                        "UPDATE trade_logs SET status = 'CLOSED', exit_price = ?, pnl = ?, closed_at = ?, brokerage_fee = ? WHERE id = ?"
+                    ).bind(avgPrice, pnl, timestamp, allFees, parent.id).run();
 
-                    console.log(`  ✅ Synced exit updated Parent #${parent.id} (Closed at ${new Date(timestamp).toLocaleString()}). PnL: ${pnl.toFixed(2)}`);
+                    console.log(`  ✅ Synced exit updated Parent #${parent.id}. Gross: ${grossPnl.toFixed(4)}, Fees: ${allFees.toFixed(4)}, Net PnL: ${pnl.toFixed(2)}`);
                     // Single-row architecture: Do NOT insert a new record for the exit.
                     continue;
                 }

@@ -51,6 +51,7 @@ export default {
             SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closed_trades,
             SUM(CASE WHEN status = 'CLOSED' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN status = 'CLOSED' THEN pnl ELSE 0 END) as total_pnl,
+            SUM(brokerage_fee) as total_fees,
             SUM(
               CASE WHEN status = 'CLOSED' AND price > 0 AND quantity > 0 AND leverage > 0 THEN
                 (pnl / (price * quantity / leverage)) * 100

@@ -327,6 +327,10 @@ export function getLogsHTML() {
                 <div id="buy-sell-ratio" class="stat-value" style="font-size: 1.25rem;">-</div>
             </div>
             <div class="stat-card">
+                <div class="stat-label">Total Fees</div>
+                <div id="total-fees" class="stat-value" style="color: var(--accent-yellow);">-</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-label">Last Update</div>
                 <div id="last-update" class="stat-value" style="font-size: 1rem;">-</div>
             </div>
@@ -388,7 +392,8 @@ export function getLogsHTML() {
                         <th class="sortable" onclick="handleSort('price')">Entry</th>
                         <th class="sortable" onclick="handleSort('exit_price')">Exit</th>
                         <th>Qty</th>
-                        <th class="sortable" onclick="handleSort('pnl')">PnL</th>
+                        <th class="sortable" onclick="handleSort('brokerage_fee')">Fee</th>
+                        <th class="sortable" onclick="handleSort('pnl')">Net PnL</th>
                         <th>Order ID</th>
                         <th>Reason</th>
                         <th>Close Reason</th>
@@ -856,6 +861,7 @@ export function getLogsHTML() {
             document.getElementById('avg-pnl').style.color = avgPnL >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
             
             document.getElementById('buy-sell-ratio').textContent = (stats.buys || 0) + 'B / ' + (stats.sells || 0) + 'S';
+            document.getElementById('total-fees').textContent = parseFloat(stats.total_fees || 0).toFixed(4);
             document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         }
 
@@ -885,6 +891,10 @@ export function getLogsHTML() {
                     pnlPercentText = (pnlPercent >= 0 ? '+' : '') + pnlPercent.toFixed(2) + '%';
                 }
                 
+                // Brokerage fee
+                const fee = log.brokerage_fee !== null && log.brokerage_fee !== undefined ? parseFloat(log.brokerage_fee) : 0;
+                const feeText = fee > 0 ? fee.toFixed(4) : '-';
+                
                 const closedDate = log.closed_at ? new Date(log.closed_at).toLocaleString() : '-';
                 
                 row.innerHTML = '<td>' + date + '</td>' +
@@ -894,6 +904,7 @@ export function getLogsHTML() {
                     '<td>' + (log.price ? log.price.toFixed(4) : '-') + '</td>' +
                     '<td>' + (log.exit_price ? log.exit_price.toFixed(4) : '-') + '</td>' +
                     '<td>' + (log.quantity || '-') + '</td>' +
+                    '<td style="color: var(--accent-yellow); font-size: 0.8rem;">' + feeText + '</td>' +
                     '<td style="font-weight: 600; color: ' + pnlColor + ';">' + pnlText + ' <span style="font-size: 0.8em; opacity: 0.8;">' + (pnlPercentText !== '-' ? '(' + pnlPercentText + ')' : '') + '</span></td>' +
                     '<td style="font-family: monospace; font-size: 0.75rem; color: var(--text-secondary);">' + (log.order_id || '-') + '</td>' +
                     '<td class="reason-cell" title="' + (log.reason || '') + '">' + (log.reason || '-') + '</td>' +
