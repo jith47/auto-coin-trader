@@ -10,7 +10,13 @@ let scheduler = null;
 
 function startScheduler(isInitial = false) {
     if (scheduler) {
-        console.log("ℹ️ [System] Scheduler already running, skipping start.");
+        console.log("ℹ️ [System] Scheduler already running. Sending WAKE-UP signal (SIGUSR1)...");
+        try {
+            scheduler.kill('SIGUSR1');
+            console.log("⚡ [System] WAKE-UP signal sent to PID:", scheduler.pid);
+        } catch (e) {
+            console.error("❌ [System] Failed to send signal to scheduler:", e);
+        }
         return;
     }
     console.log(`\n⏰ [System] Starting Local Scheduler (${isInitial ? 'Initial Check' : 'Active Trades Detected'})...`);

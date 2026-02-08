@@ -23,6 +23,15 @@ function getISTTime() {
     return istTime;
 }
 
+// Handle defined signals to wake up the scheduler immediately
+process.on('SIGUSR1', () => {
+    const istTime = getISTTime();
+    const timeString = istTime.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' });
+    console.log(`[${timeString}] ⚡ Received WAKE-UP signal (SIGUSR1). Forcing immediate active trade monitoring...`);
+    monitorTrades = true;
+    triggerCron();
+});
+
 async function triggerCron() {
     const istTime = getISTTime();
     const hours = istTime.getHours();
@@ -51,9 +60,9 @@ async function triggerCron() {
     const shouldPollAPI = shouldRunAnalysis || monitorTrades;
 
     if (!shouldPollAPI) {
-        // Log sparingly when idle
+        // Log sparingly when idle (every 5 mins) to show it's alive
         if (minutes % 5 === 0) {
-            // console.log(`[${timeString}] 💤 Monitoring paused (No active trades). Waiting for scheduled slot...`);
+            console.log(`[${timeString}] 💤 Monitoring paused (No active trades). Waiting for signal or scheduled slot...`);
         }
         return;
     }
@@ -67,7 +76,13 @@ async function triggerCron() {
         let finalUrl = BASE_URL;
         if (shouldRunAnalysis) finalUrl += "&analyze=true";
 
-        const response = await fetch(finalUrl);
+        // Add timeout to prevent hanging requests
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+        const response = await fetch(finalUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
         if (response.ok) {
             const data = await response.json().catch(() => ({}));
 
@@ -91,7 +106,11 @@ async function triggerCron() {
             console.log(`[${timeString}] ❌ API Error: ${response.status}`);
         }
     } catch (e) {
-        console.error(`[${timeString}] ❌ Request failed:`, e.message);
+        if (e.name === 'AbortError') {
+            console.error(`[${timeString}] ❌ Request timed out after 10s`);
+        } else {
+            console.error(`[${timeString}] ❌ Request failed:`, e.message);
+        }
     } finally {
         isProcessing = false;
     }

@@ -1,0 +1,6 @@
+🚀 [Scheduler] Local Cron Scheduler process started.
+⏰ Starting Local Cron Scheduler...
+   Target: http://localhost:8787/__scheduled?cron=*+*+*+*+*
+   Schedule: Checks every minute (Smart Polling), Triggers every 15 mins (IST)
+[12:04:35 am] 🔍 Checking Status...
+[12:04:35 am] ⏹️ No active trades. Pausing status checks until next event/slot.
