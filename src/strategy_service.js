@@ -1,5 +1,5 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition } from './coindcx.js';
-import { fetchAllMarketData, computeIndicators, fetchDeltaFromDO } from './binance.js';
+import { fetchAllMarketData, computeIndicators, averageVolume } from './binance.js';
 const CONFIG = {
     PAIR: 'B-DOGE_USDT',
     MARGIN_PERCENT: 70,
@@ -66,23 +66,12 @@ export class StrategyService {
     }
     async run(db) {
         this.db = db;
-        console.log(`[Strategy] ── Evaluation Start (${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
+        console.log(`[Strategy] ── Evaluation Start(${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
         try {
             // 1. Fetch data FIRST
             const data = await fetchAllMarketData();
 
-            // 2. Fetch real-time delta from Durable Object (falls back to REST if unavailable)
-            let deltaSnapshot = null;
-            if (this.env.DELTA_FEED) {
-                try {
-                    deltaSnapshot = await fetchDeltaFromDO(this.env);
-                    console.log(`[Strategy] DO delta: connected=${deltaSnapshot.connected}, uptime=${deltaSnapshot.uptimeMin}min`);
-                } catch (err) {
-                    console.log('[Strategy] DO delta unavailable:', err.message);
-                }
-            }
-
-            this.indicators = computeIndicators(data, CONFIG, deltaSnapshot);
+            this.indicators = computeIndicators(data, CONFIG);
 
             console.log('[Strategy] Indicators:', JSON.stringify({
                 btcPrice: this.indicators.btc.price?.toFixed(0),
@@ -105,7 +94,7 @@ export class StrategyService {
             // 3. New trade checks
             const cooldownCheck = await this.checkCooldowns();
             if (!cooldownCheck.canTrade) {
-                console.log(`[Strategy] Blocked: ${cooldownCheck.reason}`);
+                console.log(`[Strategy] Blocked: ${cooldownCheck.reason} `);
                 return { status: 'BLOCKED', reason: cooldownCheck.reason };
             }
 
@@ -119,8 +108,8 @@ export class StrategyService {
             const killSwitchLong = this.checkKillSwitches(this.indicators, 'BUY');
             const killSwitchShort = this.checkKillSwitches(this.indicators, 'SELL');
             if (killSwitchLong && killSwitchShort) {
-                console.log(`[Strategy] All directions blocked: LONG=${killSwitchLong}, SHORT=${killSwitchShort}`);
-                return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong}; ${killSwitchShort}` };
+                console.log(`[Strategy] All directions blocked: LONG = ${killSwitchLong}, SHORT = ${killSwitchShort} `);
+                return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong}; ${killSwitchShort} ` };
             }
 
             // 6. Identify matching setup
@@ -130,12 +119,12 @@ export class StrategyService {
                 return { status: 'NO_SETUP' };
             }
 
-            console.log(`[Strategy] Setup found: ${setup.type} ${setup.direction}`);
+            console.log(`[Strategy] Setup found: ${setup.type} ${setup.direction} `);
 
             // 7. Verify kill switch doesn't block the found direction
             const killSwitch = setup.direction === 'BUY' ? killSwitchLong : killSwitchShort;
             if (killSwitch) {
-                console.log(`[Strategy] Kill switch triggered: ${killSwitch}`);
+                console.log(`[Strategy] Kill switch triggered: ${killSwitch} `);
                 return { status: 'KILL_SWITCH', reason: killSwitch };
             }
 
@@ -186,6 +175,18 @@ export class StrategyService {
         return null;
     }
     evaluateSetups(ind) {
+        console.log('[Strategy] ── Setup Evaluation ──');
+        console.log('[Strategy] Market State:', JSON.stringify({
+            btcStructure: ind.btc.structure,
+            btcCvd: ind.btc.cvdDirection + '/' + ind.btc.cvdSlope,
+            dogeCvd: ind.doge.cvdDirection + '/' + ind.doge.cvdSlope,
+            relStrength: ind.doge.relativeStrength,
+            dogeDistHigh: ind.doge.distFromHigh?.toFixed(2) + '%',
+            dogeDistLow: ind.doge.distFromLow?.toFixed(2) + '%',
+            sector: ind.sector.bias,
+            liquidations: ind.liquidations.recentEvent,
+        }));
+
         const sweepSetup = this.checkSweepReclaim(ind);
         if (sweepSetup) return sweepSetup;
         const rwSetup = this.checkRelativeWeaknessShort(ind);
@@ -197,72 +198,83 @@ export class StrategyService {
         return null;
     }
     checkSweepReclaim(ind) {
-        // Long: BTC swept lows & reclaimed, CVD rising, DOGE near low, longs flushed, sector bullish/mixed
-        if (ind.btc.structure === 'sweep_reclaim_bullish') {
-            if (ind.btc.cvdDirection === 'rising' &&
-                ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY &&
-                (ind.doge.cvdDirection === 'rising' || ind.doge.cvdDirection === 'flat') &&
-                ind.liquidations.recentEvent === 'longs_flushed' &&
-                (ind.sector.bias === 'bullish' || ind.sector.bias === 'mixed')) {
-                return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
-            }
-        }
-        // Short: BTC swept highs & rejected, CVD falling, DOGE near high, shorts squeezed
-        if (ind.btc.structure === 'sweep_reclaim_bearish') {
-            if (ind.btc.cvdDirection === 'falling' &&
-                ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY &&
-                (ind.doge.cvdDirection === 'falling' || ind.doge.cvdDirection === 'flat') &&
-                ind.liquidations.recentEvent === 'shorts_squeezed') {
-                return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
-            }
-        }
+        // Long check
+        const longChecks = {
+            btcStructure: ind.btc.structure === 'sweep_reclaim_bullish',
+            btcCvdRising: ind.btc.cvdDirection === 'rising',
+            dogeNearLow: ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY,
+            dogeCvdOk: ind.doge.cvdDirection === 'rising' || ind.doge.cvdDirection === 'flat',
+            longsFlushed: ind.liquidations.recentEvent === 'longs_flushed',
+            sectorOk: ind.sector.bias === 'bullish' || ind.sector.bias === 'mixed',
+        };
+        console.log('[Strategy] SWEEP_RECLAIM_LONG:', JSON.stringify(longChecks));
+        if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
+
+        // Short check
+        const shortChecks = {
+            btcStructure: ind.btc.structure === 'sweep_reclaim_bearish',
+            btcCvdFalling: ind.btc.cvdDirection === 'falling',
+            dogeNearHigh: ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY,
+            dogeCvdOk: ind.doge.cvdDirection === 'falling' || ind.doge.cvdDirection === 'flat',
+            shortsSqueezed: ind.liquidations.recentEvent === 'shorts_squeezed',
+        };
+        console.log('[Strategy] SWEEP_RECLAIM_SHORT:', JSON.stringify(shortChecks));
+        if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
+
         return null;
     }
     checkRelativeWeaknessShort(ind) {
-        if (ind.btc.change1h > 0 &&
-            ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD &&
-            ind.doge.relativeStrength === 'weaker' &&
-            ind.btc.structure === 'rejection' &&
-            ind.doge.cvdDirection === 'falling' &&
-            ind.doge.distFromLow > CONFIG.DIVERGE_DISTANCE_MIN) {
-            return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
-        }
+        const checks = {
+            btcPositive: ind.btc.change1h > 0,
+            dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
+            dogeWeaker: ind.doge.relativeStrength === 'weaker',
+            btcRejection: ind.btc.structure === 'rejection',
+            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
+            dogeHasRoom: ind.doge.distFromLow > CONFIG.DIVERGE_DISTANCE_MIN,
+        };
+        console.log('[Strategy] REL_WEAKNESS_SHORT:', JSON.stringify(checks));
+        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
         return null;
     }
     checkRelativeStrengthLong(ind) {
-        if (ind.btc.change1h < 0 &&
-            ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD &&
-            ind.doge.relativeStrength === 'stronger' &&
-            ind.btc.structure === 'support_holding' &&
-            ind.doge.cvdDirection === 'rising' &&
-            ind.doge.distFromHigh > CONFIG.DIVERGE_DISTANCE_MIN) {
-            return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
-        }
+        const checks = {
+            btcNegative: ind.btc.change1h < 0,
+            dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
+            dogeStronger: ind.doge.relativeStrength === 'stronger',
+            btcSupport: ind.btc.structure === 'support_holding',
+            dogeCvdRising: ind.doge.cvdDirection === 'rising',
+            dogeHasRoom: ind.doge.distFromHigh > CONFIG.DIVERGE_DISTANCE_MIN,
+        };
+        console.log('[Strategy] REL_STRENGTH_LONG:', JSON.stringify(checks));
+        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
         return null;
     }
     checkTrendContinuation(ind) {
-        // Long: BTC 1h > 1%, CVD rising+steep, DOGE aligned/stronger, CVD rising, room to run, sector bullish
-        if (ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN &&
-            ind.btc.cvdDirection === 'rising' &&
-            ind.btc.cvdSlope === 'steep' &&
-            (ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'stronger') &&
-            ind.doge.cvdDirection === 'rising' &&
-            ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN &&
-            ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN &&
-            ind.sector.bias === 'bullish') {
-            return { type: 'TREND_CONTINUATION', direction: 'BUY' };
-        }
-        // Short: BTC 1h < -1%, CVD falling+steep, DOGE aligned/weaker, CVD falling, room to run
-        // Note: Strategy does not require sector bias for short trend continuation
-        if (ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN &&
-            ind.btc.cvdDirection === 'falling' &&
-            ind.btc.cvdSlope === 'steep' &&
-            (ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'weaker') &&
-            ind.doge.cvdDirection === 'falling' &&
-            ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN &&
-            ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN) {
-            return { type: 'TREND_CONTINUATION', direction: 'SELL' };
-        }
+        const longChecks = {
+            btc1hStrong: ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN,
+            btcCvdRising: ind.btc.cvdDirection === 'rising',
+            btcCvdSteep: ind.btc.cvdSlope === 'steep',
+            dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'stronger',
+            dogeCvdRising: ind.doge.cvdDirection === 'rising',
+            dogeRoomUp: ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN,
+            dogeRoomDown: ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN,
+            sectorBullish: ind.sector.bias === 'bullish',
+        };
+        console.log('[Strategy] TREND_LONG:', JSON.stringify(longChecks));
+        if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
+
+        const shortChecks = {
+            btc1hWeak: ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN,
+            btcCvdFalling: ind.btc.cvdDirection === 'falling',
+            btcCvdSteep: ind.btc.cvdSlope === 'steep',
+            dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'weaker',
+            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
+            dogeRoomDown: ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN,
+            dogeRoomUp: ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN,
+        };
+        console.log('[Strategy] TREND_SHORT:', JSON.stringify(shortChecks));
+        if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
+
         return null;
     }
     scoreSignal(ind, setup) {

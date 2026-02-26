@@ -1,6 +1,6 @@
 import { StrategyService } from './strategy_service.js';
 import { D1Database } from './db_d1.js';
-export { BinanceDeltaFeed } from './delta_feed.js';
+
 
 // SHA-256 hash helper
 async function sha256(text) {
@@ -66,14 +66,6 @@ export default {
                 const service = new StrategyService(env);
                 const result = await service.run(db);
                 return Response.json(result);
-            }
-
-            if (url.pathname === '/api/delta') {
-                if (!env.DELTA_FEED) return Response.json({ error: 'DELTA_FEED not bound' });
-                const id = env.DELTA_FEED.idFromName('main');
-                const stub = env.DELTA_FEED.get(id);
-                const resp = await stub.fetch('http://do/health');
-                return new Response(resp.body, { headers: { 'Content-Type': 'application/json' } });
             }
 
             return Response.json({ error: 'Not found' }, { status: 404 });

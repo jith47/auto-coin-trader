@@ -59,3 +59,4 @@ COINDCX_API_KEY=your_key
 COINDCX_SECRET_KEY=your_secret
 GEMINI_API_KEY=your_gemini_key
 ```
+npx wrangler tail --format pretty 2>&1
