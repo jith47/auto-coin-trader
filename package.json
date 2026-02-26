@@ -1,27 +1,15 @@
 {
 	"name": "playwright-worker",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"type": "module",
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
-		"dev": "node api/strategy_runner.js --live",
-		"start": "node api/strategy_runner.js --live",
-		"monitor": "node api/strategy_runner.js",
 		"test": "vitest"
 	},
 	"devDependencies": {
-		"@cloudflare/playwright": "^1.0.0",
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
-		"playwright": "^1.57.0",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.45.3"
-	},
-	"dependencies": {
-		"@google/generative-ai": "^0.24.1",
-		"better-sqlite3": "^12.6.0",
-		"cors": "^2.8.5",
-		"express": "^5.2.1",
-		"ws": "^8.19.0"
 	}
 }

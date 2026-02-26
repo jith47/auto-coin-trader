@@ -45,6 +45,41 @@ export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, 
     return data;
 }
 
+export async function closePartialPosition(env, pair, side, quantity, leverage) {
+    const baseUrl = "https://api.coindcx.com";
+    const endpoint = "/exchange/v1/derivatives/futures/orders/create";
+    const timestamp = Date.now();
+    const body = {
+        "timestamp": timestamp,
+        "order": {
+            "side": side.toLowerCase(),
+            "pair": pair,
+            "order_type": "market_order",
+            "total_quantity": quantity,
+            "leverage": leverage,
+            "notification": "no_notification",
+            "position_margin_type": "isolated",
+            "margin_currency_short_name": "USDT",
+            "reduce_only": true,
+        }
+    };
+    const payload = JSON.stringify(body);
+    console.log(`[CoinDCX] Partial close: ${side} ${quantity} ${pair}`);
+    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
+    const response = await fetch(baseUrl + endpoint, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
+            "X-AUTH-SIGNATURE": signature
+        },
+        body: payload
+    });
+    const data = await response.json();
+    console.log('[CoinDCX] Partial close result:', JSON.stringify(data));
+    return data;
+}
+
 function generateSignature(payload, secret) {
     return crypto.createHmac('sha256', secret).update(payload).digest('hex');
 }

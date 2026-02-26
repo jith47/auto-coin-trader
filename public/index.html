@@ -4,371 +4,650 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strategy Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <title>DOGE Scalper Dashboard</title>
     <style>
-        :root {
-            --bg-color: #0a0b10;
-            --card-bg: rgba(255, 255, 255, 0.03);
-            --accent-color: #6366f1;
-            --accent-glow: rgba(99, 102, 241, 0.3);
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --success: #10b981;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: 'Outfit', sans-serif;
+        }
+
+        :root {
+            --bg: #0a0e17;
+            --surface: #111827;
+            --surface2: #1e293b;
+            --border: #1e293b;
+            --text: #e2e8f0;
+            --dim: #64748b;
+            --green: #22c55e;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --amber: #f59e0b;
+            --purple: #a855f7;
         }
 
         body {
-            background-color: var(--bg-color);
-            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-            padding: 2rem;
-            background-image:
-                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 50%),
-                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1280px;
             margin: 0 auto;
-        }
-
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
+            padding: 20px;
         }
 
         h1 {
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 700;
-            background: linear-gradient(to right, #6366f1, #10b981);
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
         }
 
-        .status-badge {
-            padding: 0.5rem 1rem;
-            border-radius: 2rem;
-            font-size: 0.875rem;
-            font-weight: 600;
+        h1 span {
+            color: var(--amber);
+        }
+
+        /* Login Screen */
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            background: var(--card-bg);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            justify-content: center;
+            z-index: 100;
         }
 
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--text-secondary);
+        .login-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 40px;
+            width: 380px;
+            text-align: center;
         }
 
-        .status-scanning .status-dot {
-            background: var(--accent-color);
-            box-shadow: 0 0 10px var(--accent-color);
+        .login-box h2 {
+            margin-bottom: 8px;
+            font-size: 1.25rem;
         }
 
-        .status-in_trade .status-dot {
-            background: var(--warning);
-            box-shadow: 0 0 10px var(--warning);
+        .login-box p {
+            color: var(--dim);
+            font-size: 0.85rem;
+            margin-bottom: 24px;
         }
 
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
+        .login-input {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            font-size: 0.9rem;
+            margin-bottom: 16px;
+            outline: none;
         }
 
-        .card {
-            background: var(--card-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 1.5rem;
-            padding: 1.5rem;
-            transition: transform 0.3s ease, border-color 0.3s ease;
+        .login-input:focus {
+            border-color: var(--blue);
         }
 
-        .card:hover {
-            transform: translateY(-5px);
-            border-color: rgba(99, 102, 241, 0.2);
+        .login-btn {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            background: var(--blue);
+            color: white;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity .15s;
         }
 
-        .card-title {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            margin-bottom: 1rem;
+        .login-btn:hover {
+            opacity: 0.85;
+        }
+
+        .login-error {
+            color: var(--red);
+            font-size: 0.8rem;
+            margin-top: 12px;
+            display: none;
+        }
+
+        /* Dashboard */
+        .dashboard {
+            display: none;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
 
-        .card-value {
-            font-size: 1.5rem;
-            font-weight: 600;
+        .badge-green {
+            background: rgba(34, 197, 94, .15);
+            color: var(--green);
         }
 
-        .active-trade {
-            grid-column: span 2;
-            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(16, 185, 129, 0.05));
+        .badge-red {
+            background: rgba(239, 68, 68, .15);
+            color: var(--red);
         }
 
-        .trade-info {
+        .badge-amber {
+            background: rgba(245, 158, 11, .15);
+            color: var(--amber);
+        }
+
+        .badge-blue {
+            background: rgba(59, 130, 246, .15);
+            color: var(--blue);
+        }
+
+        .grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
-            margin-top: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
         }
 
-        .info-item {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
         }
 
-        .info-label {
+        .card-label {
             font-size: 0.75rem;
-            color: var(--text-secondary);
+            color: var(--dim);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 8px;
         }
 
-        .info-value {
-            font-weight: 600;
+        .card-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
         }
 
-        .table-container {
-            background: var(--card-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 1.5rem;
+        .card-sub {
+            font-size: 0.8rem;
+            color: var(--dim);
+            margin-top: 4px;
+        }
+
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-bottom: 24px;
             overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-title {
+            font-weight: 600;
+            font-size: 0.95rem;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            text-align: left;
+            font-size: 0.85rem;
         }
 
         th {
-            padding: 1rem 1.5rem;
+            text-align: left;
+            padding: 10px 16px;
+            color: var(--dim);
+            font-weight: 500;
             font-size: 0.75rem;
             text-transform: uppercase;
-            color: var(--text-secondary);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border);
         }
 
         td {
-            padding: 1rem 1.5rem;
-            font-size: 0.875rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
         }
 
         tr:last-child td {
             border-bottom: none;
         }
 
-        .pnl-positive {
-            color: var(--success);
+        tr:hover {
+            background: var(--surface2);
         }
 
-        .pnl-negative {
-            color: var(--danger);
+        .text-green {
+            color: var(--green);
         }
 
-        .badge {
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.5rem;
+        .text-red {
+            color: var(--red);
+        }
+
+        .text-dim {
+            color: var(--dim);
+        }
+
+        .text-amber {
+            color: var(--amber);
+        }
+
+        .text-blue {
+            color: var(--blue);
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all .15s;
+        }
+
+        .btn:hover {
+            background: var(--border);
+        }
+
+        .btn-primary {
+            background: var(--blue);
+            border-color: var(--blue);
+        }
+
+        .btn-primary:hover {
+            opacity: 0.85;
+        }
+
+        .btn-danger {
+            background: transparent;
+            border-color: var(--red);
+            color: var(--red);
             font-size: 0.75rem;
+        }
+
+        .delta-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            padding: 16px 20px;
+        }
+
+        .delta-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .delta-label {
+            font-size: 0.75rem;
+            color: var(--dim);
+        }
+
+        .delta-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
             font-weight: 600;
         }
 
-        .badge-buy {
-            background: rgba(16, 185, 129, 0.1);
-            color: var(--success);
+        .active-trade {
+            background: linear-gradient(135deg, rgba(59, 130, 246, .08), rgba(168, 85, 247, .08));
+            border-color: var(--blue);
         }
 
-        .badge-sell {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--danger);
+        .indicator-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            padding: 16px 20px;
+        }
+
+        .ind-item {
+            font-size: 0.8rem;
+        }
+
+        .ind-label {
+            color: var(--dim);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .refresh-timer {
+            font-size: 0.75rem;
+            color: var(--dim);
         }
 
         @keyframes pulse {
-            0% {
+
+            0%,
+            100% {
                 opacity: 1;
             }
 
             50% {
-                opacity: 0.5;
-            }
-
-            100% {
-                opacity: 1;
+                opacity: .5;
             }
         }
 
-        .live-indicator {
-            display: inline-block;
+        .live-dot {
             width: 8px;
             height: 8px;
-            background: var(--success);
+            background: var(--green);
             border-radius: 50%;
-            margin-right: 0.5rem;
+            display: inline-block;
             animation: pulse 2s infinite;
         }
     </style>
 </head>
 
 <body>
-    <div class="container">
-        <header>
-            <div>
-                <h1>Strategy Dashboard</h1>
-                <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem;">
-                    <span class="live-indicator"></span>Real-time Dashboard
-                </p>
-            </div>
-            <div id="bot-status" class="status-badge">
-                <span class="status-dot"></span>
-                <span id="status-text">INITIALIZING</span>
-            </div>
-        </header>
 
-        <div class="grid">
-            <div class="card">
-                <div class="card-title">Trades Today</div>
-                <div id="trades-today" class="card-value">0 / 5</div>
-            </div>
-            <div class="card">
-                <div class="card-title">Win Rate</div>
-                <div id="win-rate" class="card-value">0%</div>
-            </div>
-            <div class="card">
-                <div class="card-title">Total PnL</div>
-                <div id="total-pnl" class="card-value">0.00%</div>
-            </div>
-            <div class="card">
-                <div class="card-title">Market Context</div>
-                <div id="market-context" class="card-value" style="font-size: 1rem; color: var(--text-secondary);">
-                    Waiting for data...
-                </div>
-            </div>
-            <div id="active-trade-card" class="card active-trade" style="display: none;">
-                <div class="card-title">Active Trade</div>
-                <div id="active-side" class="card-value">BUY</div>
-                <div class="trade-info">
-                    <div class="info-item">
-                        <span class="info-label">Entry</span>
-                        <span id="active-entry" class="info-value">0.00</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Current PnL</span>
-                        <span id="active-pnl" class="info-value">0.00%</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Stop Loss</span>
-                        <span id="active-sl" class="info-value">0.00</span>
-                    </div>
-                </div>
-            </div>
+    <!-- Login Screen -->
+    <div class="login-overlay" id="loginScreen">
+        <div class="login-box">
+            <h2>🐕 DOGE Scalper</h2>
+            <p>Enter your dashboard password</p>
+            <input type="password" class="login-input" id="passwordInput" placeholder="Password" autofocus>
+            <button class="login-btn" onclick="doLogin()">Login</button>
+            <div class="login-error" id="loginError">Incorrect password</div>
         </div>
+    </div>
 
-        <div class="table-container">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Type</th>
-                        <th>Entry</th>
-                        <th>Exit</th>
-                        <th>PnL</th>
-                        <th>Reason</th>
-                    </tr>
-                </thead>
-                <tbody id="trade-history">
-                    <!-- Trades will be injected here -->
-                </tbody>
-            </table>
+    <!-- Dashboard -->
+    <div class="dashboard" id="dashboard">
+        <div class="container">
+            <div class="header">
+                <h1>🐕 DOGE <span>Scalper</span></h1>
+                <div class="header-right">
+                    <span class="refresh-timer" id="timer">Auto-refresh: 10s</span>
+                    <span class="live-dot" id="liveDot"></span>
+                    <button class="btn btn-primary" onclick="triggerRun()">▶ Run Now</button>
+                    <button class="btn" onclick="refresh()">↻ Refresh</button>
+                    <button class="btn btn-danger" onclick="logout()">Logout</button>
+                </div>
+            </div>
+
+            <div class="grid" id="statsGrid">
+                <div class="card">
+                    <div class="card-label">Status</div>
+                    <div class="card-value" id="status">—</div>
+                    <div class="card-sub" id="statusSub"></div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Today's Trades</div>
+                    <div class="card-value" id="todayTrades">—</div>
+                    <div class="card-sub" id="todayLosses"></div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Win Rate</div>
+                    <div class="card-value" id="winRate">—</div>
+                    <div class="card-sub" id="totalTrades"></div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Total P&L</div>
+                    <div class="card-value" id="totalPnl">—</div>
+                    <div class="card-sub" id="mockBalance"></div>
+                </div>
+            </div>
+
+            <div class="panel active-trade" id="activePanel" style="display:none;">
+                <div class="panel-header">
+                    <span class="panel-title">🔴 Active Trade</span>
+                    <span class="badge badge-blue" id="activeDirection">—</span>
+                </div>
+                <div class="indicator-grid" id="activeDetails"></div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">📡 Delta Feed (Durable Object)</span>
+                    <span class="badge" id="deltaStatus">—</span>
+                </div>
+                <div class="delta-row">
+                    <div class="delta-item"><span class="delta-label">BTC CVD</span><span class="delta-val"
+                            id="btcCvd">—</span></div>
+                    <div class="delta-item"><span class="delta-label">DOGE CVD</span><span class="delta-val"
+                            id="dogeCvd">—</span></div>
+                    <div class="delta-item"><span class="delta-label">Uptime</span><span class="delta-val text-dim"
+                            id="deltaUptime">—</span></div>
+                    <div class="delta-item"><span class="delta-label">Messages</span><span class="delta-val text-dim"
+                            id="deltaMsgs">—</span></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">📊 Trade Log</span>
+                    <span class="text-dim" id="tradeCount">0 trades</span>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Side</th>
+                                <th>Entry</th>
+                                <th>SL</th>
+                                <th>TP</th>
+                                <th>Qty</th>
+                                <th>Score</th>
+                                <th>Status</th>
+                                <th>P&L</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradeBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header"><span class="panel-title">🔍 Last Run Result</span></div>
+                <pre style="padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--dim);max-height:300px;overflow:auto;white-space:pre-wrap;"
+                    id="lastRun">Click "Run Now" to trigger strategy evaluation</pre>
+            </div>
         </div>
     </div>
 
     <script>
-        async function updateDashboard() {
+        const TOKEN_KEY = 'scalper_token';
+        let refreshInterval;
+
+        function getToken() { return localStorage.getItem(TOKEN_KEY); }
+
+        function authHeaders() {
+            return { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' };
+        }
+
+        async function apiFetch(path) {
+            const res = await fetch(path, { headers: authHeaders() });
+            if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
+            return res.json();
+        }
+
+        // Check if already logged in
+        if (getToken()) { showDashboard(); }
+
+        // Enter key on password input
+        document.getElementById('passwordInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') doLogin();
+        });
+
+        async function doLogin() {
+            const password = document.getElementById('passwordInput').value;
+            const errEl = document.getElementById('loginError');
+            errEl.style.display = 'none';
             try {
-                const [statusRes, tradesRes] = await Promise.all([
-                    fetch('/api/status'),
-                    fetch('/api/trades')
-                ]);
-
-                const status = await statusRes.json();
-                const trades = await tradesRes.json();
-
-                // Update Status
-                const statusBadge = document.getElementById('bot-status');
-                const statusText = document.getElementById('status-text');
-                statusBadge.className = `status-badge status-${status.engine.state.toLowerCase()}`;
-                statusText.innerText = status.engine.state;
-
-                document.getElementById('trades-today').innerText = `${status.engine.tradesToday} / 5`;
-
-                if (status.stats) {
-                    document.getElementById('win-rate').innerText = `${status.stats.winRate.toFixed(1)}%`;
-                    document.getElementById('total-pnl').innerText = `${status.stats.totalPnL >= 0 ? '+' : ''}${status.stats.totalPnL.toFixed(2)}%`;
-                    document.getElementById('total-pnl').className = `card-value ${status.stats.totalPnL >= 0 ? 'pnl-positive' : 'pnl-negative'}`;
-                }
-
-                if (status.engine.currentStatus) {
-                    document.getElementById('market-context').innerText = status.engine.currentStatus;
-                }
-
-                // Update Active Trade
-                const activeCard = document.getElementById('active-trade-card');
-                if (status.activeTrade) {
-                    activeCard.style.display = 'block';
-                    document.getElementById('active-side').innerText = status.activeTrade.side;
-                    document.getElementById('active-side').className = `card-value pnl-${status.activeTrade.side === 'BUY' ? 'positive' : 'negative'}`;
-                    document.getElementById('active-entry').innerText = status.activeTrade.entry.toFixed(5);
-                    document.getElementById('active-sl').innerText = status.activeTrade.sl.toFixed(5);
-
-                    // PnL calculation would need current price, which we can get from lastStatus
-                    // For now, just showing placeholder or static info
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    localStorage.setItem(TOKEN_KEY, data.token);
+                    showDashboard();
                 } else {
-                    activeCard.style.display = 'none';
+                    errEl.textContent = data.error || 'Incorrect password';
+                    errEl.style.display = 'block';
                 }
-
-                // Update History
-                const historyBody = document.getElementById('trade-history');
-                historyBody.innerHTML = trades.map(t => `
-                    <tr>
-                        <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
-                        <td><span class="badge badge-${t.decision.toLowerCase()}">${t.decision}</span></td>
-                        <td>${t.price.toFixed(5)}</td>
-                        <td>${t.exit_price ? t.exit_price.toFixed(5) : '-'}</td>
-                        <td class="${t.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">
-                            ${t.pnl ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) : '-'}
-                        </td>
-                        <td style="color: var(--text-secondary); font-size: 0.75rem;">${t.reason || t.close_reason || '-'}</td>
-                    </tr>
-                `).join('');
-
             } catch (e) {
-                console.error('Dashboard update failed:', e);
+                errEl.textContent = 'Connection error';
+                errEl.style.display = 'block';
             }
         }
 
-        setInterval(updateDashboard, 5000);
-        updateDashboard();
+        function showDashboard() {
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            startAutoRefresh();
+        }
+
+        function logout() {
+            localStorage.removeItem(TOKEN_KEY);
+            clearInterval(refreshInterval);
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('dashboard').style.display = 'none';
+            document.getElementById('passwordInput').value = '';
+        }
+
+        async function refresh() {
+            try {
+                const [statusRes, tradesRes, deltaRes] = await Promise.all([
+                    apiFetch('/api/status').catch(() => null),
+                    apiFetch('/api/trades').catch(() => []),
+                    apiFetch('/api/delta').catch(() => null),
+                ]);
+                if (statusRes) renderStatus(statusRes);
+                if (tradesRes) renderTrades(tradesRes);
+                if (deltaRes) renderDelta(deltaRes);
+            } catch (e) { /* handled in apiFetch */ }
+        }
+
+        function renderStatus(s) {
+            const el = document.getElementById('status');
+            el.textContent = s.status;
+            el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-blue' : 'text-green');
+            document.getElementById('statusSub').textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
+            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 6`;
+            document.getElementById('todayLosses').textContent = `${s.todayLosses || 0} losses today`;
+            document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%';
+            document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total trades`;
+            const pnl = s.stats?.totalPnL || 0;
+            const pnlEl = document.getElementById('totalPnl');
+            pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+            pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
+            document.getElementById('mockBalance').textContent = 'Mock balance tracked in DB';
+            const panel = document.getElementById('activePanel');
+            if (s.activeTrade) {
+                panel.style.display = 'block';
+                document.getElementById('activeDirection').textContent = s.activeTrade.decision;
+                document.getElementById('activeDirection').className = 'badge ' + (s.activeTrade.decision === 'BUY' ? 'badge-green' : 'badge-red');
+                document.getElementById('activeDetails').innerHTML = `
+      <div class="ind-item"><div class="ind-label">Entry</div>${s.activeTrade.price}</div>
+      <div class="ind-item"><div class="ind-label">Stop Loss</div>${s.activeTrade.stop_loss}</div>
+      <div class="ind-item"><div class="ind-label">Take Profit</div>${s.activeTrade.take_profit}</div>
+      <div class="ind-item"><div class="ind-label">Quantity</div>${s.activeTrade.quantity}</div>
+      <div class="ind-item"><div class="ind-label">Leverage</div>${s.activeTrade.leverage}x</div>
+      <div class="ind-item"><div class="ind-label">Order ID</div><span class="text-dim">${(s.activeTrade.order_id || '').slice(0, 16)}</span></div>`;
+            } else { panel.style.display = 'none'; }
+        }
+
+        function renderTrades(trades) {
+            document.getElementById('tradeCount').textContent = trades.length + ' trades';
+            const body = document.getElementById('tradeBody');
+            if (!trades.length) { body.innerHTML = '<tr><td colspan="10" class="text-dim" style="text-align:center;padding:24px;">No trades yet</td></tr>'; return; }
+            body.innerHTML = trades.map(t => {
+                const time = new Date(t.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+                const sideClass = t.decision === 'BUY' ? 'text-green' : 'text-red';
+                const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
+                const pnlClass = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim';
+                const statusBadge = t.status === 'OPEN' ? 'badge-blue' : t.pnl > 0 ? 'badge-green' : t.pnl < 0 ? 'badge-red' : 'badge-amber';
+                const reason = (t.reason || '').length > 40 ? t.reason.slice(0, 40) + '…' : (t.reason || '—');
+                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnl}</td><td class="text-dim" title="${t.reason || ''}">${reason}</td></tr>`;
+            }).join('');
+        }
+
+        function renderDelta(d) {
+            const el = document.getElementById('deltaStatus');
+            if (d.error) { el.textContent = 'NOT BOUND'; el.className = 'badge badge-red'; return; }
+            el.textContent = d.connected ? 'CONNECTED' : 'DISCONNECTED';
+            el.className = 'badge ' + (d.connected ? 'badge-green' : 'badge-red');
+            document.getElementById('deltaUptime').textContent = (d.uptimeMin || d.uptimeMin === 0) ? d.uptimeMin + ' min' : '—';
+            document.getElementById('deltaMsgs').textContent = d.messageCount != null ? d.messageCount.toLocaleString() : '—';
+            const fmtCvd = (data) => {
+                if (!data) return '—';
+                const cls = data.direction === 'rising' ? 'text-green' : data.direction === 'falling' ? 'text-red' : 'text-dim';
+                return `<span class="${cls}">${data.direction}</span> · ${data.slope} · ${data.minutesOfData || 0}min`;
+            };
+            document.getElementById('btcCvd').innerHTML = fmtCvd(d.btc);
+            document.getElementById('dogeCvd').innerHTML = fmtCvd(d.doge);
+        }
+
+        async function triggerRun() {
+            const pre = document.getElementById('lastRun');
+            pre.textContent = 'Running strategy...';
+            try {
+                const data = await apiFetch('/api/run');
+                pre.textContent = JSON.stringify(data, null, 2);
+                setTimeout(refresh, 500);
+            } catch (e) { pre.textContent = 'Error: ' + e.message; }
+        }
+
+        function startAutoRefresh() {
+            refresh();
+            let countdown = 10;
+            const timerEl = document.getElementById('timer');
+            clearInterval(refreshInterval);
+            refreshInterval = setInterval(() => {
+                countdown--;
+                timerEl.textContent = `Auto-refresh: ${countdown}s`;
+                if (countdown <= 0) { refresh(); countdown = 10; }
+            }, 1000);
+        }
     </script>
 </body>
 

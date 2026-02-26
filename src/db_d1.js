@@ -3,77 +3,133 @@ export class D1Database {
         this.db = d1;
     }
 
-    async init() {
-        // D1 migrations are handled by Wrangler, but we can ensure tables exist if needed
-        // For now, we assume schema is managed via migrations
-        console.log("[DB] D1 initialized");
-    }
-
-    // Helper to log a trade
+    // Log a trade
     async logTrade(data) {
         const stmt = this.db.prepare(`
             INSERT INTO trade_logs (
-                timestamp, decision, reason, asset, price, quantity, 
-                leverage, stop_loss, take_profit, raw_response, status, order_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                timestamp, decision, reason, asset, price, quantity,
+                leverage, stop_loss, take_profit, tp_levels, raw_response, status, order_id, entry_value_inr
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         return await stmt.bind(
             Date.now(),
             data.decision,
             data.reason,
-            data.asset || "B-DOGE_USDT",
+            data.asset || 'B-DOGE_USDT',
             data.entry || 0,
             data.quantity || 0,
             data.leverage || 0,
             data.stopLoss || 0,
             data.takeProfit || 0,
+            data.tpLevels ? JSON.stringify(data.tpLevels) : null,
             JSON.stringify(data),
-            data.status || "OPEN",
-            data.orderId || null
+            data.status || 'OPEN',
+            data.orderId || null,
+            data.entryValueInr || 0
         ).run();
     }
 
     // Update trade status
-    async updateTradeStatus(orderId, status, exitPrice = null, pnl = null, closeReason = null) {
+    async updateTradeStatus(orderId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
         const stmt = this.db.prepare(`
-            UPDATE trade_logs 
-            SET status = ?, exit_price = ?, pnl = ?, close_reason = ? 
+            UPDATE trade_logs
+            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?
             WHERE order_id = ?
         `);
-        return await stmt.bind(status, exitPrice, pnl, closeReason, orderId).run();
+        return await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, orderId).run();
+    }
+
+    // Update TP levels status
+    async updateTPLevels(orderId, tpLevels) {
+        const stmt = this.db.prepare(`
+            UPDATE trade_logs
+            SET tp_levels = ?
+            WHERE order_id = ?
+        `);
+        return await stmt.bind(JSON.stringify(tpLevels), orderId).run();
     }
 
     // Get active trade
     async getActiveTrade() {
-        return await this.db.prepare("SELECT * FROM trade_logs WHERE status = 'OPEN' OR status = 'FILLED' LIMIT 1").first();
+        return await this.db.prepare(
+            "SELECT * FROM trade_logs WHERE status = 'OPEN' OR status = 'FILLED' ORDER BY timestamp DESC LIMIT 1"
+        ).first();
     }
 
     // Get recent trades
     async getRecentTrades(limit = 10) {
-        const { results } = await this.db.prepare("SELECT * FROM trade_logs ORDER BY timestamp DESC LIMIT ?").bind(limit).all();
+        const { results } = await this.db.prepare(
+            'SELECT * FROM trade_logs ORDER BY timestamp DESC LIMIT ?'
+        ).bind(limit).all();
         return results;
     }
 
     // Get overall stats
     async getStats() {
         const stats = await this.db.prepare(`
-            SELECT 
+            SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(pnl) as total_pnl
-            FROM trade_logs 
+            FROM trade_logs
             WHERE status = 'CLOSED'
         `).first();
 
-        const totalTrades = stats.total_trades || 0;
-        const wins = stats.wins || 0;
+        const totalTrades = stats?.total_trades || 0;
+        const wins = stats?.wins || 0;
         const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
 
         return {
             totalTrades,
-            winRate,
-            totalPnL: stats.total_pnl || 0
+            winRate: parseFloat(winRate.toFixed(1)),
+            totalPnL: stats?.total_pnl || 0,
         };
+    }
+
+    // Get today's trade count (UTC day)
+    async getTodayTradeCount() {
+        const todayStart = this.getTodayStartMs();
+        const result = await this.db.prepare(
+            'SELECT COUNT(*) as count FROM trade_logs WHERE timestamp >= ?'
+        ).bind(todayStart).first();
+        return result?.count || 0;
+    }
+
+    // Get today's loss count
+    async getTodayLossCount() {
+        const todayStart = this.getTodayStartMs();
+        const result = await this.db.prepare(
+            "SELECT COUNT(*) as count FROM trade_logs WHERE timestamp >= ? AND status = 'CLOSED' AND pnl < 0"
+        ).bind(todayStart).first();
+        return result?.count || 0;
+    }
+
+    // Get last loss timestamp
+    async getLastLossTime() {
+        const result = await this.db.prepare(
+            "SELECT timestamp FROM trade_logs WHERE status = 'CLOSED' AND pnl < 0 ORDER BY timestamp DESC LIMIT 1"
+        ).first();
+        return result?.timestamp || null;
+    }
+
+    // Helper: get today's start timestamp in ms (UTC midnight)
+    getTodayStartMs() {
+        const now = new Date();
+        return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    }
+
+    // Mock Balance Management
+    async getMockBalance() {
+        const result = await this.db.prepare(
+            "SELECT value FROM settings WHERE key = 'mock_balance_inr'"
+        ).first();
+        return parseFloat(result?.value || '2500');
+    }
+
+    async updateMockBalance(newBalance) {
+        return await this.db.prepare(
+            "UPDATE settings SET value = ? WHERE key = 'mock_balance_inr'"
+        ).bind(newBalance.toFixed(2)).run();
     }
 }
