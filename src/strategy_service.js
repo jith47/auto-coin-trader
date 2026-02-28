@@ -1,5 +1,5 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition } from './coindcx.js';
-import { fetchAllMarketData, computeIndicators, averageVolume } from './binance.js';
+import { fetchAllMarketData, computeIndicators } from './binance.js';
 const CONFIG = {
     PAIR: 'B-DOGE_USDT',
     MARGIN_PERCENT: 70,
@@ -13,30 +13,23 @@ const CONFIG = {
     SL_MIN: 0.6,
     SL_MAX: 1.2,
     MIN_RRR: 1.5,
-    SCORE_THRESHOLD_PREFERRED: 70,
-    SCORE_THRESHOLD_CAUTION: 85,
+    SCORE_THRESHOLD: 70,
     KILL_CORR_BTC: 1.5,
     KILL_CORR_DOGE: 0.3,
     KILL_SESSION_EXTREME: 0.5,
     KILL_OVEREXTEND: 5.0,
 
     SWEEP_DOGE_PROXIMITY: 1.5,
+    TREND_BTC_1H_MIN: 0.5,
     RW_DOGE_1H_THRESHOLD: -0.5,
     RS_DOGE_1H_THRESHOLD: 0.5,
     DIVERGE_DISTANCE_MIN: 1.0,
-    TREND_BTC_1H_MIN: 1.0,
-    TREND_DOGE_DIST_FROM_HIGH_MIN: 0.8,
-    TREND_DOGE_DIST_FROM_LOW_MIN: 1.5,
-    PREFERRED_SESSIONS: [
-        { start: 5.5, end: 11 },
-        { start: 13, end: 16 },
-    ],
-    DEAD_ZONES: [
-        { start: 20, end: 23 },
-    ],
+    TREND_DOGE_DIST_FROM_LOW_MIN: 0.8,
+    TREND_DOGE_DIST_FROM_HIGH_MIN: 1.5,
     MAX_LOSSES: 3,
     COOLDOWN_AFTER_LOSS_MS: 30 * 60 * 1000,
     MAX_TRADES_PER_DAY: 6,
+    MAX_DRAWDOWN_PCT: 30,
     MOCK_MODE: true, // Set to true for mock trading
     INITIAL_INR_BALANCE: 2500,
     USD_INR_RATE: 85, // Simple rate for conversion
@@ -76,13 +69,19 @@ export class StrategyService {
             console.log('[Strategy] Indicators:', JSON.stringify({
                 btcPrice: this.indicators.btc.price?.toFixed(0),
                 dogePrice: this.indicators.doge.price?.toFixed(5),
-                btcCvd: this.indicators.btc.cvdDirection,
-                dogeCvd: this.indicators.doge.cvdDirection,
+                btcCvd: this.indicators.btc.cvdDirection + '/' + this.indicators.btc.cvdSlope,
+                dogeCvd: this.indicators.doge.cvdDirection + '/' + this.indicators.doge.cvdSlope,
                 btc1h: this.indicators.btc.change1h?.toFixed(2) + '%',
+                btc5m: this.indicators.btc.change5m?.toFixed(2) + '%',
                 doge1h: this.indicators.doge.change1h?.toFixed(2) + '%',
+                doge5m: this.indicators.doge.change5m?.toFixed(2) + '%',
                 relStrength: this.indicators.doge.relativeStrength,
+                btcStructure: this.indicators.btc.structure,
+                btcKeyLevel: this.indicators.btc.keyLevel,
                 sectorBias: this.indicators.sector.bias,
-                session: this.indicators.session.type,
+                dogeRange: this.indicators.doge.dogeRange?.toFixed(1) + '%',
+                volRatio: this.indicators.doge.volumeRatio?.toFixed(2),
+                utcHour: this.indicators.session.hour?.toFixed(1),
             }));
 
             // 2. Manage existing trade
@@ -98,10 +97,14 @@ export class StrategyService {
                 return { status: 'BLOCKED', reason: cooldownCheck.reason };
             }
 
-            // 4. Check session type
-            if (this.indicators.session.type === 'DEAD_ZONE') {
-                console.log('[Strategy] Dead zone session — no trading');
-                return { status: 'DEAD_ZONE' };
+            // 4. Max drawdown circuit breaker
+            if (CONFIG.MOCK_MODE) {
+                const currentBalance = await this.db.getMockBalance();
+                const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
+                if (drawdownPct >= CONFIG.MAX_DRAWDOWN_PCT) {
+                    console.log(`[Strategy] CIRCUIT BREAKER: Drawdown ${drawdownPct.toFixed(1)}% exceeds ${CONFIG.MAX_DRAWDOWN_PCT}%`);
+                    return { status: 'CIRCUIT_BREAKER', reason: `Max drawdown ${drawdownPct.toFixed(1)}%` };
+                }
             }
 
             // 5. Check kill switches first (before setup evaluation per strategy doc)
@@ -130,9 +133,7 @@ export class StrategyService {
 
             // 8. Score and threshold check
             const score = this.scoreSignal(this.indicators, setup);
-            const threshold = this.indicators.session.type === 'PREFERRED'
-                ? CONFIG.SCORE_THRESHOLD_PREFERRED
-                : CONFIG.SCORE_THRESHOLD_CAUTION;
+            const threshold = CONFIG.SCORE_THRESHOLD;
             console.log(`[Strategy] Score: ${score}/${threshold}`);
             if (score < threshold) {
                 return { status: 'LOW_SCORE', score, threshold };
@@ -172,6 +173,10 @@ export class StrategyService {
         if (isLong && ind.doge.dailyChange - ind.btc.dailyChange > CONFIG.KILL_OVEREXTEND) {
             return 'NO_LONG_OVEREXTENDED: DOGE daily exceeds BTC by 5%+';
         }
+        // Decoupled: correlation assumption broken
+        if (ind.doge.relativeStrength === 'decoupled') {
+            return 'NO_TRADE_DECOUPLED: DOGE-BTC correlation broken (>2% divergence)';
+        }
         return null;
     }
     evaluateSetups(ind) {
@@ -198,25 +203,21 @@ export class StrategyService {
         return null;
     }
     checkSweepReclaim(ind) {
-        // Long check
+        // LONG — Hard gates: structure + CVD + proximity (3 gates)
+        // Bonus: dogeCvd, sector, liquidation → handled by scoring
         const longChecks = {
             btcStructure: ind.btc.structure === 'sweep_reclaim_bullish',
             btcCvdRising: ind.btc.cvdDirection === 'rising',
             dogeNearLow: ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY,
-            dogeCvdOk: ind.doge.cvdDirection === 'rising' || ind.doge.cvdDirection === 'flat',
-            longsFlushed: ind.liquidations.recentEvent === 'longs_flushed',
-            sectorOk: ind.sector.bias === 'bullish' || ind.sector.bias === 'mixed',
         };
         console.log('[Strategy] SWEEP_RECLAIM_LONG:', JSON.stringify(longChecks));
         if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
 
-        // Short check
+        // SHORT — Hard gates: structure + CVD + proximity (3 gates)
         const shortChecks = {
             btcStructure: ind.btc.structure === 'sweep_reclaim_bearish',
             btcCvdFalling: ind.btc.cvdDirection === 'falling',
             dogeNearHigh: ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY,
-            dogeCvdOk: ind.doge.cvdDirection === 'falling' || ind.doge.cvdDirection === 'flat',
-            shortsSqueezed: ind.liquidations.recentEvent === 'shorts_squeezed',
         };
         console.log('[Strategy] SWEEP_RECLAIM_SHORT:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
@@ -224,61 +225,76 @@ export class StrategyService {
         return null;
     }
     checkRelativeWeaknessShort(ind) {
+        // Hard gates: divergence confirmed + DOGE CVD aligned (3 gates)
+        // Structure/keyLevel → OR (either is meaningful), moved partly to scoring
         const checks = {
             btcPositive: ind.btc.change1h > 0,
             dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
             dogeWeaker: ind.doge.relativeStrength === 'weaker',
-            btcRejection: ind.btc.structure === 'rejection',
-            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
-            dogeHasRoom: ind.doge.distFromLow > CONFIG.DIVERGE_DISTANCE_MIN,
         };
-        console.log('[Strategy] REL_WEAKNESS_SHORT:', JSON.stringify(checks));
+        console.log('[Strategy] REL_WEAKNESS_SHORT:', JSON.stringify({
+            ...checks,
+            btcToppyBonus: ind.btc.structure === 'rejection' || ind.btc.keyLevel === 'at_resistance',
+            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
+        }));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
         return null;
     }
     checkRelativeStrengthLong(ind) {
+        // Hard gates: divergence confirmed (3 gates)
+        // Structure/keyLevel → OR, moved partly to scoring
         const checks = {
             btcNegative: ind.btc.change1h < 0,
             dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
             dogeStronger: ind.doge.relativeStrength === 'stronger',
-            btcSupport: ind.btc.structure === 'support_holding',
-            dogeCvdRising: ind.doge.cvdDirection === 'rising',
-            dogeHasRoom: ind.doge.distFromHigh > CONFIG.DIVERGE_DISTANCE_MIN,
         };
-        console.log('[Strategy] REL_STRENGTH_LONG:', JSON.stringify(checks));
+        console.log('[Strategy] REL_STRENGTH_LONG:', JSON.stringify({
+            ...checks,
+            btcBottomyBonus: ind.btc.structure === 'support_holding' || ind.btc.keyLevel === 'at_support',
+            dogeCvdRising: ind.doge.cvdDirection === 'rising',
+        }));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
         return null;
     }
     checkTrendContinuation(ind) {
+        // LONG — Hard gates: BTC trending + CVD + DOGE aligned (4 gates)
+        // Dropped: sector, room, steep → scoring handles quality
         const longChecks = {
             btc1hStrong: ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN,
             btcCvdRising: ind.btc.cvdDirection === 'rising',
-            btcCvdSteep: ind.btc.cvdSlope === 'steep',
             dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'stronger',
             dogeCvdRising: ind.doge.cvdDirection === 'rising',
-            dogeRoomUp: ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN,
-            dogeRoomDown: ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN,
-            sectorBullish: ind.sector.bias === 'bullish',
         };
-        console.log('[Strategy] TREND_LONG:', JSON.stringify(longChecks));
+        console.log('[Strategy] TREND_LONG:', JSON.stringify({
+            ...longChecks,
+            steepBonus: ind.btc.cvdSlope === 'steep',
+            sectorBonus: ind.sector.bias === 'bullish',
+        }));
         if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
 
+        // SHORT — Hard gates: BTC trending down + CVD + DOGE aligned (4 gates)
         const shortChecks = {
             btc1hWeak: ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN,
             btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            btcCvdSteep: ind.btc.cvdSlope === 'steep',
             dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'weaker',
             dogeCvdFalling: ind.doge.cvdDirection === 'falling',
-            dogeRoomDown: ind.doge.distFromLow > CONFIG.TREND_DOGE_DIST_FROM_HIGH_MIN,
-            dogeRoomUp: ind.doge.distFromHigh > CONFIG.TREND_DOGE_DIST_FROM_LOW_MIN,
         };
-        console.log('[Strategy] TREND_SHORT:', JSON.stringify(shortChecks));
+        console.log('[Strategy] TREND_SHORT:', JSON.stringify({
+            ...shortChecks,
+            steepBonus: ind.btc.cvdSlope === 'steep',
+            sectorBonus: ind.sector.bias === 'bearish',
+        }));
         if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
 
         return null;
     }
     scoreSignal(ind, setup) {
+        // Max theoretical: 30+15+12+15+15+10+8+5 = 110
+        // Threshold: 70 (~64% of max)
         let score = 0;
+        const isLong = setup.direction === 'BUY';
+
+        // 1. BTC Structure (30/20/15/0)
         if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') {
             score += 30;
         } else if (ind.btc.structure === 'rejection' || ind.btc.structure === 'support_holding') {
@@ -286,38 +302,68 @@ export class StrategyService {
         } else if (ind.btc.structure === 'breakout' || ind.btc.structure === 'breakdown') {
             score += 15;
         }
-        const isLong = setup.direction === 'BUY';
+
+        // 2. BTC CVD aligned with direction (15 + 5 for steep)
         if ((isLong && ind.btc.cvdDirection === 'rising') || (!isLong && ind.btc.cvdDirection === 'falling')) {
             score += 15;
+            if (ind.btc.cvdSlope === 'steep') {
+                score += 5;
+            }
         }
+
+        // 3. DOGE CVD aligned with direction (12) — single check, no double count
         if ((isLong && ind.doge.cvdDirection === 'rising') || (!isLong && ind.doge.cvdDirection === 'falling')) {
-            score += 10;
+            score += 12;
         }
+
+        // 4. Relative strength favorable (15)
         if ((isLong && (ind.doge.relativeStrength === 'stronger' || ind.doge.relativeStrength === 'aligned')) ||
             (!isLong && (ind.doge.relativeStrength === 'weaker' || ind.doge.relativeStrength === 'aligned'))) {
             score += 15;
         }
+
+        // 5. Position in range — near favorable extreme (15/10)
         const favorableDistance = isLong ? ind.doge.distFromLow : ind.doge.distFromHigh;
         if (favorableDistance <= 1) {
             score += 15;
         } else if (favorableDistance <= 2) {
             score += 10;
         }
+
+        // 6. Sector tailwind (10/5) — always scored, never hard-gated
         if ((isLong && ind.sector.bias === 'bullish') || (!isLong && ind.sector.bias === 'bearish')) {
             score += 10;
         } else if (ind.sector.bias === 'mixed') {
             score += 5;
         }
+
+        // 7. Key level alignment (8) — bonus for being at the right level
+        if ((isLong && ind.btc.keyLevel === 'at_support') || (!isLong && ind.btc.keyLevel === 'at_resistance')) {
+            score += 8;
+        }
+
+        // 8. Liquidation event (5)
         const liqEvent = ind.liquidations?.recentEvent || 'none';
         if ((isLong && liqEvent === 'longs_flushed') || (!isLong && liqEvent === 'shorts_squeezed')) {
             score += 5;
         }
+        // 9. Volume penalty (-10 when thin market)
+        const volRatio = ind.doge.volumeRatio || 1.0;
+        if (volRatio < 0.5) {
+            score -= 10;
+            console.log(`[Strategy] Volume penalty: -10 (ratio: ${volRatio.toFixed(2)})`);
+        }
+
         return score;
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.doge.price;
         const slPercent = CONFIG.SL[setup.type] || 0.8;
-        const clampedSL = Math.min(Math.max(slPercent, CONFIG.SL_MIN), CONFIG.SL_MAX);
+        // Volatility-adaptive SL: scale by dogeRange/3, clamped 0.8x-1.5x
+        const volatilityMultiplier = Math.max(0.8, Math.min(1.5, (ind.doge.dogeRange || 2.0) / 3.0));
+        const adjustedSL = slPercent * volatilityMultiplier;
+        const clampedSL = Math.min(Math.max(adjustedSL, CONFIG.SL_MIN), CONFIG.SL_MAX);
+        console.log(`[Strategy] SL: base=${slPercent}%, volMult=${volatilityMultiplier.toFixed(2)}x, adjusted=${adjustedSL.toFixed(2)}%, clamped=${clampedSL.toFixed(2)}%`);
         const sl = setup.direction === 'BUY'
             ? entry * (1 - clampedSL / 100)
             : entry * (1 + clampedSL / 100);
@@ -381,13 +427,17 @@ export class StrategyService {
         console.log(`[Strategy] Account balance: ${balanceUsd.toFixed(2)} USD (Equivalent)`);
 
         const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
-        const slDistancePct = Math.abs(entry - sl) / entry;
-        if (slDistancePct === 0) return 0;
-        // SL-based sizing: risk amount = margin * leverage, size position so SL loss = risk
-        const riskAmountUsd = marginAvailable * CONFIG.LEVERAGE;
-        const positionValueUsd = riskAmountUsd / slDistancePct;
+
+        // Position size is margin * leverage
+        const positionValueUsd = marginAvailable * CONFIG.LEVERAGE;
         const quantity = Math.floor(positionValueUsd / entry);
-        console.log(`[Strategy] SL-based sizing: risk=$${riskAmountUsd.toFixed(2)}, slDist=${(slDistancePct * 100).toFixed(2)}%, qty=${quantity}`);
+
+        const slDistancePct = (Math.abs(entry - sl) / entry) * 100;
+        const riskOnMarginPct = slDistancePct * CONFIG.LEVERAGE;
+
+        console.log(`[Strategy] Margin-based sizing: margin=$${marginAvailable.toFixed(2)}, leverage=${CONFIG.LEVERAGE}x, posValue=$${positionValueUsd.toFixed(2)}, qty=${quantity}`);
+        console.log(`[Strategy] Risk Profile: SL Distance=${slDistancePct.toFixed(2)}%, Risk on Margin=${riskOnMarginPct.toFixed(2)}%`);
+
         return quantity > 0 ? quantity : 1;
     }
     async executeTrade(signal) {
@@ -402,6 +452,14 @@ export class StrategyService {
                     status: 'success'
                 };
                 console.log('[Strategy] Mock trade simulated.');
+
+                // Deduct entry fee
+                const entryValueUsdt = signal.quantity * signal.entry;
+                const feeUsdt = entryValueUsdt * 0.001; // 0.1% Fee
+                const feeInr = feeUsdt * CONFIG.USD_INR_RATE;
+                const currentBalance = await this.db.getMockBalance();
+                await this.db.updateMockBalance(currentBalance - feeInr);
+                console.log(`[Strategy] Mock Entry Fee deducted: ${feeInr.toFixed(2)} INR ($${feeUsdt.toFixed(4)})`);
             } else {
                 result = await placeOrder(
                     this.env, CONFIG.PAIR, signal.decision, signal.quantity,
@@ -427,71 +485,116 @@ export class StrategyService {
     }
     async manageTrade(activeTrade) {
         console.log(`[Strategy] Managing active trade: ${activeTrade.decision} ${activeTrade.asset}`);
+        const currentPrice = this.indicators.doge.price;
+        const entryPrice = parseFloat(activeTrade.price);
+        const isLong = activeTrade.decision === 'BUY';
+        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+
+        if (isMock) {
+            return await this.manageMockTrade(activeTrade, currentPrice, entryPrice, isLong);
+        }
+        return await this.manageLiveTrade(activeTrade, currentPrice, entryPrice, isLong);
+    }
+
+    async manageMockTrade(activeTrade, currentPrice, entryPrice, isLong) {
+        try {
+            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
+            const executedPct = tpLevels.filter(l => l.executed).reduce((sum, l) => sum + l.pctOfPosition, 0);
+            const remainingFraction = (100 - executedPct) / 100;
+            console.log(`[Strategy] Mock trade status: remaining=${(remainingFraction * 100).toFixed(0)}%, executed=${executedPct.toFixed(0)}%`);
+
+            if (remainingFraction <= 0) {
+                console.log(`[Strategy] Cleanup: Closing fully executed trade ${activeTrade.order_id}`);
+                await this.closeTradeInDb(activeTrade, currentPrice, 'TP_CLEANUP');
+                return { status: 'TRADE_CLOSED', reason: 'TP_CLEANUP' };
+            }
+
+            // Determine effective SL — move to break-even after any TP hit
+            let slPrice = parseFloat(activeTrade.stop_loss);
+            if (executedPct > 0) {
+                // Break-even SL after first TP
+                slPrice = entryPrice;
+                console.log(`[Strategy] SL moved to break-even: ${slPrice} (${executedPct}% already closed)`);
+            }
+
+            // 1. Check SL
+            const slHit = isLong ? currentPrice <= slPrice : currentPrice >= slPrice;
+            if (slHit) {
+                console.log(`[Strategy] MOCK SL hit at ${currentPrice} (SL: ${slPrice}, remaining: ${(remainingFraction * 100).toFixed(0)}%)`);
+                const priceChangePct = ((slPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+                const pnl = priceChangePct * CONFIG.LEVERAGE;
+                const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
+                const pnlInr = (entryValueInr * remainingFraction) * (pnl / 100);
+
+                // Deduct exit fee on remaining portion
+                const exitValueUsdt = (activeTrade.quantity * remainingFraction) * slPrice;
+                const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
+                const finalPnlInr = pnlInr - exitFeeInr;
+
+                const currentBalance = await this.db.getMockBalance();
+                await this.db.updateMockBalance(currentBalance + finalPnlInr);
+                console.log(`[Strategy] Mock SL Settlement: PnL=${pnlInr.toFixed(2)}, Fee=${exitFeeInr.toFixed(2)}, Final INR=${finalPnlInr.toFixed(2)}`);
+
+                await this.db.updateTradeStatus(
+                    activeTrade.order_id, 'CLOSED', slPrice, pnl,
+                    'MOCK_SL_HIT', null, finalPnlInr
+                );
+                return { status: 'TRADE_CLOSED', reason: 'MOCK_SL_HIT', pnl, remainingFraction };
+            }
+
+            // 2. Check TP levels
+            if (tpLevels.length > 0) {
+                const totalQty = parseFloat(activeTrade.quantity);
+                const tpResult = await this.checkAndExecutePartialTP(
+                    tpLevels, currentPrice, totalQty, entryPrice, isLong, activeTrade
+                );
+                if (tpResult) return tpResult;
+            }
+
+            // 3. Position still open
+            const unrealizedPct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+            console.log(`[Strategy] Mock position open: price=${currentPrice}, unrealized=${(unrealizedPct * CONFIG.LEVERAGE).toFixed(2)}%, remaining=${(remainingFraction * 100).toFixed(0)}%`);
+            return { status: 'IN_TRADE', currentPrice, unrealizedPct };
+        } catch (err) {
+            console.error('[Strategy] Mock trade management error:', err.message);
+            return { status: 'MANAGE_ERROR', error: err.message };
+        }
+    }
+
+    async manageLiveTrade(activeTrade, currentPrice, entryPrice, isLong) {
         try {
             const positions = await getOpenPositions(this.env);
             const dogePos = positions?.find?.(p => p.pair === CONFIG.PAIR);
+
             if (!dogePos || parseFloat(dogePos.quantity || 0) === 0) {
                 console.log('[Strategy] Position closed on exchange');
-                const currentPrice = await getMarketPrice(CONFIG.PAIR);
-                let pnl = 0;
-                if (currentPrice && activeTrade.price) {
-                    const entryPrice = parseFloat(activeTrade.price);
-                    if (activeTrade.decision === 'BUY') {
-                        pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
-                    } else {
-                        pnl = ((entryPrice - currentPrice) / entryPrice) * 100;
-                    }
-                }
+                const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1) * CONFIG.LEVERAGE;
                 await this.db.updateTradeStatus(
                     activeTrade.order_id, 'CLOSED', currentPrice, pnl,
                     'EXCHANGE_CLOSED (SL/TP/MANUAL)'
                 );
                 return { status: 'TRADE_CLOSED', reason: 'EXCHANGE_CLOSED', pnl };
             }
-            const currentQty = parseFloat(dogePos.quantity);
-            const currentPrice = this.indicators.doge.price; // Use fresh indicator price
 
-            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : null;
-            if (tpLevels && tpLevels.length > 0) {
-                const entryPrice = parseFloat(activeTrade.price);
-                const isLong = activeTrade.decision === 'BUY';
-                const tpHit = await this.checkAndExecutePartialTP(
+            const currentQty = parseFloat(dogePos.quantity);
+            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
+            if (tpLevels.length > 0) {
+                const tpResult = await this.checkAndExecutePartialTP(
                     tpLevels, currentPrice, currentQty, entryPrice, isLong, activeTrade
                 );
-                if (tpHit) return tpHit;
-            }
-
-            // SL Check for Mock Mode (since exchange SL isn't there)
-            if (activeTrade.order_id.startsWith('MOCK_')) {
-                const isLong = activeTrade.decision === 'BUY';
-                const slPrice = parseFloat(activeTrade.stop_loss);
-                const slHit = isLong ? currentPrice <= slPrice : currentPrice >= slPrice;
-                if (slHit) {
-                    console.log(`[Strategy] MOCK SL hit at ${currentPrice} (SL: ${slPrice})`);
-                    const pnl = ((slPrice - activeTrade.price) / activeTrade.price) * 100 * (isLong ? 1 : -1);
-                    const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-                    const pnlInr = entryValueInr * (pnl / 100);
-                    const exitValueInr = entryValueInr + pnlInr;
-
-                    const currentBalance = await this.db.getMockBalance();
-                    await this.db.updateMockBalance(currentBalance + pnlInr);
-
-                    await this.db.updateTradeStatus(
-                        activeTrade.order_id, 'CLOSED', slPrice, pnl,
-                        'MOCK_SL_HIT', exitValueInr, pnlInr
-                    );
-                    return { status: 'TRADE_CLOSED', reason: 'MOCK_SL_HIT', pnl };
-                }
+                if (tpResult) return tpResult;
             }
 
             console.log(`[Strategy] Position still open: qty=${currentQty} price=${currentPrice}`);
             return { status: 'IN_TRADE', position: dogePos };
         } catch (err) {
-            console.error('[Strategy] Trade management error:', err.message);
+            console.error('[Strategy] Live trade management error:', err.message);
             return { status: 'MANAGE_ERROR', error: err.message };
         }
     }
+
     async checkAndExecutePartialTP(tpLevels, currentPrice, totalQty, entryPrice, isLong, activeTrade) {
+        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
         for (let i = 0; i < tpLevels.length; i++) {
             const level = tpLevels[i];
             if (level.executed) continue;
@@ -508,15 +611,15 @@ export class StrategyService {
                 if (trailingTriggered && newPeak !== currentPrice) {
                     const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
                     if (closeQty > 0) {
-                        const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                        console.log(`[Strategy] Trailing stop hit at ${currentPrice}, closing ${closeQty}, PnL: ${pnl.toFixed(2)}%`);
+                        const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+                        const pnl = priceChangePct * CONFIG.LEVERAGE;
+                        console.log(`[Strategy] Trailing stop hit at ${currentPrice}, closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
 
-                        if (activeTrade.order_id.startsWith('MOCK_')) {
+                        if (isMock) {
                             const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
                             const pnlInr = (entryValueInr * (level.pctOfPosition / 100)) * (pnl / 100);
                             const currentBalance = await this.db.getMockBalance();
                             await this.db.updateMockBalance(currentBalance + pnlInr);
-                            // We don't close the whole trade yet because other parts might be open
                         } else {
                             const closeSide = isLong ? 'SELL' : 'BUY';
                             try {
@@ -529,7 +632,6 @@ export class StrategyService {
                     }
                 }
                 await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
-                // If this was the last level, close the trade in DB
                 if (i === tpLevels.length - 1 && level.executed) {
                     await this.closeTradeInDb(activeTrade, currentPrice, 'TRAILING_STOP');
                 }
@@ -539,16 +641,24 @@ export class StrategyService {
             const tpReached = isLong ? currentPrice >= level.price : currentPrice <= level.price;
             if (tpReached) {
                 const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
-                const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+                const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+                const pnl = priceChangePct * CONFIG.LEVERAGE;
 
                 if (closeQty > 0) {
-                    console.log(`[Strategy] TP${i + 1} hit at ${currentPrice} (target: ${level.price}), closing ${closeQty} (${level.pctOfPosition}%)`);
+                    console.log(`[Strategy] TP${i + 1} hit at ${currentPrice} (target: ${level.price}), closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
 
-                    if (activeTrade.order_id.startsWith('MOCK_')) {
+                    if (isMock) {
                         const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
                         const pnlInr = (entryValueInr * (level.pctOfPosition / 100)) * (pnl / 100);
+
+                        // Deduct exit fee for this partial TP
+                        const exitValueUsdt = (totalQty * (level.pctOfPosition / 100)) * currentPrice;
+                        const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
+                        const finalPnlInr = pnlInr - exitFeeInr;
+
                         const currentBalance = await this.db.getMockBalance();
-                        await this.db.updateMockBalance(currentBalance + pnlInr);
+                        await this.db.updateMockBalance(currentBalance + finalPnlInr);
+                        console.log(`[Strategy] Mock TP Hit: PnL=${pnlInr.toFixed(2)} INR, Fee=${exitFeeInr.toFixed(2)} INR, Net=${finalPnlInr.toFixed(2)} INR`);
                     } else {
                         const closeSide = isLong ? 'SELL' : 'BUY';
                         try {
@@ -558,10 +668,11 @@ export class StrategyService {
                         }
                     }
                     level.executed = true;
+                    // Sync memory to prevent stale checks in same run
+                    activeTrade.tp_levels = JSON.stringify(tpLevels);
                     await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
                 }
 
-                // If last TP level, close trade
                 if (i === tpLevels.length - 1) {
                     await this.closeTradeInDb(activeTrade, currentPrice, 'TP_FINAL');
                     return { status: 'TRADE_CLOSED', reason: 'TP_FINAL', pnl };
@@ -575,16 +686,21 @@ export class StrategyService {
 
     async closeTradeInDb(activeTrade, currentPrice, reason) {
         const isLong = activeTrade.decision === 'BUY';
-        const pnl = ((currentPrice - activeTrade.price) / activeTrade.price) * 100 * (isLong ? 1 : -1);
+        const entryPrice = parseFloat(activeTrade.price);
+        const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+        const pnl = priceChangePct * CONFIG.LEVERAGE;
 
         let exitValueInr = null;
         let pnlInr = null;
 
-        if (activeTrade.order_id.startsWith('MOCK_')) {
+        if (CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_')) {
             const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-            pnlInr = entryValueInr * (pnl / 100);
+            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
+            const executedPct = tpLevels.filter(l => l.executed).reduce((sum, l) => sum + l.pctOfPosition, 0);
+            const remainingFraction = (100 - executedPct) / 100;
+            // Only apply PnL to the remaining portion (partial TPs already settled)
+            pnlInr = (entryValueInr * remainingFraction) * (pnl / 100);
             exitValueInr = entryValueInr + pnlInr;
-            // Balance already updated incrementally for partial TPs
         }
 
         await this.db.updateTradeStatus(

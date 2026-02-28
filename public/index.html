@@ -380,6 +380,41 @@
             display: inline-block;
             animation: pulse 2s infinite;
         }
+
+        .reason-cell {
+            max-width: 250px;
+            min-width: 180px;
+        }
+
+        .reason-content {
+            cursor: pointer;
+            transition: all 0.2s;
+            line-height: 1.4;
+        }
+
+        .reason-content.collapsed {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 250px;
+        }
+
+        .reason-content.expanded {
+            white-space: pre-wrap;
+            max-width: none;
+            color: var(--text);
+            padding: 8px 0;
+        }
+
+        .reason-more {
+            color: var(--blue);
+            font-size: 0.7rem;
+            cursor: pointer;
+            margin-top: 4px;
+            display: block;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+        }
     </style>
 </head>
 
@@ -563,7 +598,7 @@
             const pnlEl = document.getElementById('totalPnl');
             pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
             pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
-            document.getElementById('mockBalance').textContent = 'Mock balance tracked in DB';
+            document.getElementById('mockBalance').textContent = 'Mock Balance: ₹' + (s.stats?.balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
             const panel = document.getElementById('activePanel');
             if (s.activeTrade) {
                 panel.style.display = 'block';
@@ -589,9 +624,33 @@
                 const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
                 const pnlClass = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim';
                 const statusBadge = t.status === 'OPEN' ? 'badge-blue' : t.pnl > 0 ? 'badge-green' : t.pnl < 0 ? 'badge-red' : 'badge-amber';
-                const reason = (t.reason || '').length > 40 ? t.reason.slice(0, 40) + '…' : (t.reason || '—');
-                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnl}</td><td class="text-dim" title="${t.reason || ''}">${reason}</td></tr>`;
+                const pnlInr = t.pnl_inr != null ? (t.pnl_inr >= 0 ? '+' : '') + parseFloat(t.pnl_inr).toFixed(2) : null;
+                const pnlDisplay = pnlInr ? `${pnl} (₹${pnlInr})` : pnl;
+                const fullReason = t.reason || '—';
+                const isLongReason = fullReason.length > 45;
+                const reasonHtml = isLongReason
+                    ? `<div class="reason-cell" onclick="toggleReason(this)">
+                        <div class="reason-content collapsed">${fullReason}</div>
+                        <span class="reason-more">Read More</span>
+                       </div>`
+                    : `<div class="reason-cell"><div class="reason-content">${fullReason}</div></div>`;
+
+                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
             }).join('');
+        }
+
+        function toggleReason(el) {
+            const content = el.querySelector('.reason-content');
+            const more = el.querySelector('.reason-more');
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                content.classList.add('expanded');
+                more.textContent = 'Show Less';
+            } else {
+                content.classList.add('collapsed');
+                content.classList.remove('expanded');
+                more.textContent = 'Read More';
+            }
         }
 
         function renderDelta(d) {

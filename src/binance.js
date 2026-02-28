@@ -8,24 +8,59 @@ const BINANCE_BASE = 'https://data-api.binance.vision';
 const SYMBOLS = { BTC: 'BTCUSDT', DOGE: 'DOGEUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
 const CVD_STEEP_THRESHOLD = 0.5;
 const CVD_GRADUAL_THRESHOLD = 0.15;
-const SWEEP_LOOKBACK = 20;
-const SWEEP_MIN_DEPTH = 0.05;
+const SWEEP_LOOKBACK_1M = 60;
+const SWEEP_LOOKBACK_5M = 20;
+const SWEEP_MIN_DEPTH = 0.15;
+const CVD_WINDOW = 30;
+
+/**
+ * Estimate liquidation events from BTC price action.
+ * A sharp wick below recent swing lows (with recovery) signals longs were flushed.
+ * A sharp wick above recent swing highs (with rejection) signals shorts were squeezed.
+ */
+export function estimateLiquidationEvents(btcKlines) {
+    if (!btcKlines || btcKlines.length < SWEEP_LOOKBACK_1M + 5) {
+        return { recentEvent: 'none', longLiqCount: 0, shortLiqCount: 0 };
+    }
+    const lookback = btcKlines.slice(-(SWEEP_LOOKBACK_1M + 5), -5);
+    const recent = btcKlines.slice(-5);
+    const swingLow = Math.min(...lookback.map(k => k.low));
+    const swingHigh = Math.max(...lookback.map(k => k.high));
+
+    // Check recent candles for wicks below swing low (longs flushed)
+    const wickedBelow = recent.some(k => k.low < swingLow);
+    const recoveredAbove = recent[recent.length - 1].close > swingLow;
+    if (wickedBelow && recoveredAbove) {
+        return { recentEvent: 'longs_flushed', longLiqCount: 1, shortLiqCount: 0 };
+    }
+
+    // Check recent candles for wicks above swing high (shorts squeezed)
+    const wickedAbove = recent.some(k => k.high > swingHigh);
+    const rejectedBelow = recent[recent.length - 1].close < swingHigh;
+    if (wickedAbove && rejectedBelow) {
+        return { recentEvent: 'shorts_squeezed', longLiqCount: 0, shortLiqCount: 1 };
+    }
+
+    return { recentEvent: 'none', longLiqCount: 0, shortLiqCount: 0 };
+}
 
 export async function fetchAllMarketData() {
     const { BTC, DOGE, ETH, SOL } = SYMBOLS;
     const [
-        btcKlines1m, btcKlines1h, btc24h,
+        btcKlines1m, btcKlines5m, btc24h,
         dogeKlines1m, doge24h,
         eth24h, sol24h
     ] = await Promise.all([
-        fetchKlines(BTC, '1m', 70), fetchKlines(BTC, '1h', 5),
+        fetchKlines(BTC, '1m', 70),
+        fetchKlines(BTC, '5m', 30),
         fetch24hTicker(BTC),
         fetchKlines(DOGE, '1m', 70), fetch24hTicker(DOGE),
         fetch24hTicker(ETH), fetch24hTicker(SOL),
     ]);
+    const liquidations = estimateLiquidationEvents(btcKlines1m);
     return {
-        btc: { klines1m: btcKlines1m, klines1h: btcKlines1h, ticker24h: btc24h },
-        doge: { klines1m: dogeKlines1m, ticker24h: doge24h, liquidations: { recentEvent: 'none', longLiqCount: 0, shortLiqCount: 0 } },
+        btc: { klines1m: btcKlines1m, klines5m: btcKlines5m, ticker24h: btc24h },
+        doge: { klines1m: dogeKlines1m, ticker24h: doge24h, liquidations },
         eth: { ticker24h: eth24h },
         sol: { ticker24h: sol24h },
     };
@@ -83,42 +118,58 @@ export async function fetch24hTicker(symbol) {
 
 export function computeIndicators(data, config) {
     const btcK = data.btc.klines1m;
+    const btcK5m = data.btc.klines5m || [];
     const dogeK = data.doge.klines1m;
-    const btcK1h = data.btc.klines1h;
     const btcPrice = btcK.length > 0 ? btcK[btcK.length - 1].close : 0;
     const dogePrice = dogeK.length > 0 ? dogeK[dogeK.length - 1].close : 0;
     const btcChange1h = percentChange(btcK, 60);
     const dogeChange1h = percentChange(dogeK, 60);
+    const btcChange5m = percentChange(btcK, 5);
+    const dogeChange5m = percentChange(dogeK, 5);
     const btc24h = data.btc.ticker24h;
     const doge24h = data.doge.ticker24h;
     const btcDistHigh = btc24h.highPrice > 0 ? ((btc24h.highPrice - btcPrice) / btcPrice) * 100 : 0;
     const btcDistLow = btc24h.lowPrice > 0 ? ((btcPrice - btc24h.lowPrice) / btcPrice) * 100 : 0;
-    const dogeDistHigh = doge24h.highPrice > 0 ? ((doge24h.highPrice - dogePrice) / dogePrice) * 100 : 0;
+    const dogeDistHigh = doge24h.highPrice > 0
+        ? ((doge24h.highPrice - dogePrice) / dogePrice) * 100 : 0;
     const dogeDistLow = doge24h.lowPrice > 0 ? ((dogePrice - doge24h.lowPrice) / dogePrice) * 100 : 0;
     const btcCvd = computeCVD(btcK);
     const dogeCvd = computeCVD(dogeK);
-    const btcStructure = detectPriceStructure(btcK);
+    // Use 5m klines for structure (more meaningful patterns), 1m for CVD/momentum
+    const btcStructure = detectPriceStructure(btcK5m, SWEEP_LOOKBACK_5M);
+    const btcKeyLevel = detectKeyLevel(btcPrice, btc24h.highPrice, btc24h.lowPrice);
     const relativeStrength = computeRelativeStrength(dogeChange1h, btcChange1h);
     const ethChange = data.eth.ticker24h.priceChangePercent;
     const solChange = data.sol.ticker24h.priceChangePercent;
     const sectorBias = computeSectorBias(ethChange, solChange);
-    const session = getSessionType(config);
+    const session = getSessionType();
     const liquidations = data.doge.liquidations || { recentEvent: 'none' };
+    // Volatility: 24h range as % of low
+    const dogeRange = doge24h.highPrice > 0 && doge24h.lowPrice > 0
+        ? ((doge24h.highPrice - doge24h.lowPrice) / doge24h.lowPrice) * 100
+        : 2.0;
+    // Volume ratio: recent 10-candle avg vs full 1h avg
+    const volumeRatio = computeVolumeRatio(dogeK);
     return {
         btc: {
             price: btcPrice,
-            change1h: btcChange1h, dailyChange: btc24h.priceChangePercent,
+            change1h: btcChange1h, change5m: btcChange5m,
+            dailyChange: btc24h.priceChangePercent,
             distFromHigh: btcDistHigh, distFromLow: btcDistLow,
             cvdDirection: btcCvd.direction, cvdSlope: btcCvd.slope, cvdValue: btcCvd.value,
-            structure: btcStructure, klines: btcK, klines1h: btcK1h,
+            structure: btcStructure, klines: btcK,
+            keyLevel: btcKeyLevel,
         },
         doge: {
             price: dogePrice,
-            change1h: dogeChange1h, dailyChange: doge24h.priceChangePercent,
+            change1h: dogeChange1h, change5m: dogeChange5m,
+            dailyChange: doge24h.priceChangePercent,
             distFromHigh: dogeDistHigh, distFromLow: dogeDistLow,
             cvdDirection: dogeCvd.direction, cvdSlope: dogeCvd.slope, cvdValue: dogeCvd.value,
             relativeStrength: relativeStrength,
-            klines: dogeK, sessionHigh: doge24h.highPrice, sessionLow: doge24h.lowPrice,
+            klines: dogeK, high24h: doge24h.highPrice, low24h: doge24h.lowPrice,
+            dogeRange: dogeRange,
+            volumeRatio: volumeRatio,
         },
         sector: { ethChange, solChange, bias: sectorBias },
         liquidations: liquidations,
@@ -135,22 +186,23 @@ export function percentChange(klines, periods) {
 }
 
 export function computeCVD(klines) {
-    if (!klines || klines.length < 10) return { direction: 'flat', slope: 'flat', value: 0 };
+    if (!klines || klines.length < CVD_WINDOW) return { direction: 'flat', slope: 'flat', value: 0 };
     const deltas = klines.map(k => {
         const sellVol = k.volume - k.takerBuyVolume;
         return k.takerBuyVolume - sellVol;
     });
-    const recent10 = deltas.slice(-10);
+    const recentN = deltas.slice(-CVD_WINDOW);
     const cvdValues = [];
     let cumulative = 0;
-    for (const d of recent10) {
+    for (const d of recentN) {
         cumulative += d;
         cvdValues.push(cumulative);
     }
-    const recentAvg = (cvdValues[cvdValues.length - 1] + cvdValues[cvdValues.length - 2] + cvdValues[cvdValues.length - 3]) / 3;
-    const earlyAvg = (cvdValues[0] + cvdValues[1] + cvdValues[2]) / 3;
+    // Compare last 5 values vs first 5 values for smoother trend detection
+    const recentAvg = cvdValues.slice(-5).reduce((s, v) => s + v, 0) / 5;
+    const earlyAvg = cvdValues.slice(0, 5).reduce((s, v) => s + v, 0) / 5;
     const diff = recentAvg - earlyAvg;
-    const avgVol = klines.slice(-10).reduce((s, k) => s + k.volume, 0) / 10;
+    const avgVol = klines.slice(-CVD_WINDOW).reduce((s, k) => s + k.volume, 0) / CVD_WINDOW;
     const normalizedSlope = avgVol > 0 ? Math.abs(diff) / avgVol : 0;
     let direction = 'flat';
     if (diff > avgVol * 0.05) direction = 'rising';
@@ -161,31 +213,52 @@ export function computeCVD(klines) {
     return { direction, slope, value: cumulative };
 }
 
-export function detectPriceStructure(klines) {
-    if (!klines || klines.length < SWEEP_LOOKBACK + 2) return 'ranging';
-    const lookback = klines.slice(-(SWEEP_LOOKBACK + 1), -1);
-    const current = klines[klines.length - 1];
-    const prev = klines[klines.length - 2];
+export function detectPriceStructure(klines, sweepLookback = SWEEP_LOOKBACK_5M) {
+    if (!klines || klines.length < sweepLookback + 4) return 'ranging';
+    const lookback = klines.slice(-(sweepLookback + 3), -3);
+    const recent3 = klines.slice(-3); // last 3 candles
+    const current = recent3[2];
     const swingLow = Math.min(...lookback.map(k => k.low));
     const swingHigh = Math.max(...lookback.map(k => k.high));
-    const sweptLow = current.low < swingLow || prev.low < swingLow;
+
+    // Sweep reclaim: check if any of last 3 candles swept, and current reclaimed
+    const sweptLow = recent3.some(k => k.low < swingLow);
     const reclaimedAbove = current.close > swingLow;
     if (sweptLow && reclaimedAbove) {
-        const depth = ((swingLow - Math.min(current.low, prev.low)) / swingLow) * 100;
+        const lowestWick = Math.min(...recent3.map(k => k.low));
+        const depth = ((swingLow - lowestWick) / swingLow) * 100;
         if (depth >= SWEEP_MIN_DEPTH) return 'sweep_reclaim_bullish';
     }
-    const sweptHigh = current.high > swingHigh || prev.high > swingHigh;
+    const sweptHigh = recent3.some(k => k.high > swingHigh);
     const rejectedBelow = current.close < swingHigh;
     if (sweptHigh && rejectedBelow) {
-        const depth = ((Math.max(current.high, prev.high) - swingHigh) / swingHigh) * 100;
+        const highestWick = Math.max(...recent3.map(k => k.high));
+        const depth = ((highestWick - swingHigh) / swingHigh) * 100;
         if (depth >= SWEEP_MIN_DEPTH) return 'sweep_reclaim_bearish';
     }
-    const wickRatio = current.high - current.low > 0
-        ? (current.high - Math.max(current.open, current.close)) / (current.high - current.low) : 0;
-    if (wickRatio > 0.6 && current.close < current.open) return 'rejection';
-    const lowerWickRatio = current.high - current.low > 0
-        ? (Math.min(current.open, current.close) - current.low) / (current.high - current.low) : 0;
-    if (lowerWickRatio > 0.6 && current.close > current.open) return 'support_holding';
+
+    // Rejection / Support: check last 3 candles, require no contradiction after
+    for (let i = 0; i < 3; i++) {
+        const candle = recent3[i];
+        const range = candle.high - candle.low;
+        if (range <= 0) continue;
+
+        const upperWick = (candle.high - Math.max(candle.open, candle.close)) / range;
+        const lowerWick = (Math.min(candle.open, candle.close) - candle.low) / range;
+
+        // Rejection: long upper wick + red close, not contradicted by a green close after
+        if (upperWick > 0.6 && candle.close < candle.open) {
+            const contradicted = recent3.slice(i + 1).some(k => k.close > candle.high * 0.998);
+            if (!contradicted) return 'rejection';
+        }
+        // Support: long lower wick + green close, not contradicted by a red close after
+        if (lowerWick > 0.6 && candle.close > candle.open) {
+            const contradicted = recent3.slice(i + 1).some(k => k.close < candle.low * 1.002);
+            if (!contradicted) return 'support_holding';
+        }
+    }
+
+    // Breakout/breakdown: current candle only
     if (current.close > swingHigh && current.close > current.open) return 'breakout';
     if (current.close < swingLow && current.close < current.open) return 'breakdown';
     return 'ranging';
@@ -207,7 +280,16 @@ export function computeRelativeStrength(dogeChange, btcChange) {
     if (Math.abs(diff) > 2) return 'decoupled';
     if (diff > 0.5) return 'stronger';
     if (diff < -0.5) return 'weaker';
-    return diff > 0 ? 'stronger' : 'weaker';
+    return 'aligned'; // 0.2-0.5 gap is noise, not conviction
+}
+
+export function computeVolumeRatio(klines) {
+    if (!klines || klines.length < 60) return 1.0;
+    const recent10 = klines.slice(-10);
+    const full60 = klines.slice(-60);
+    const avgRecent = recent10.reduce((s, k) => s + k.volume, 0) / 10;
+    const avgFull = full60.reduce((s, k) => s + k.volume, 0) / 60;
+    return avgFull > 0 ? avgRecent / avgFull : 1.0;
 }
 
 export function computeSectorBias(ethChange, solChange) {
@@ -216,20 +298,8 @@ export function computeSectorBias(ethChange, solChange) {
     return 'mixed';
 }
 
-export function getSessionType(config) {
+export function getSessionType() {
     const now = new Date();
     const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
-    for (const zone of config.DEAD_ZONES) {
-        if (utcHour >= zone.start && utcHour < zone.end) return { type: 'DEAD_ZONE', hour: utcHour };
-    }
-    for (const session of config.PREFERRED_SESSIONS) {
-        if (utcHour >= session.start && utcHour < session.end) return { type: 'PREFERRED', hour: utcHour };
-    }
-    return { type: 'CAUTION', hour: utcHour };
-}
-
-export function averageVolume(klines, periods) {
-    if (!klines || klines.length < periods) return 0;
-    const recent = klines.slice(-periods);
-    return recent.reduce((s, k) => s + k.volume, 0) / periods;
+    return { hour: utcHour };
 }

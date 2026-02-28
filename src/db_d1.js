@@ -80,10 +80,13 @@ export class D1Database {
         const wins = stats?.wins || 0;
         const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
 
+        const currentBalance = await this.getMockBalance();
+
         return {
             totalTrades,
             winRate: parseFloat(winRate.toFixed(1)),
             totalPnL: stats?.total_pnl || 0,
+            balance: currentBalance
         };
     }
 
