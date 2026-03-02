@@ -28,7 +28,7 @@ const CONFIG = {
     TREND_DOGE_DIST_FROM_HIGH_MIN: 1.5,
     MAX_LOSSES: 3,
     COOLDOWN_AFTER_LOSS_MS: 30 * 60 * 1000,
-    MAX_TRADES_PER_DAY: 6,
+    MAX_TRADES_PER_DAY: 10,
     MAX_DRAWDOWN_PCT: 30,
     MOCK_MODE: true, // Set to true for mock trading
     INITIAL_INR_BALANCE: 2500,

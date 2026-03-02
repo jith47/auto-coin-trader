@@ -423,7 +423,7 @@
     <!-- Login Screen -->
     <div class="login-overlay" id="loginScreen">
         <div class="login-box">
-            <h2>🐕 DOGE Scalper</h2>
+            <h2>Mock Scalper</h2>
             <p>Enter your dashboard password</p>
             <input type="password" class="login-input" id="passwordInput" placeholder="Password" autofocus>
             <button class="login-btn" onclick="doLogin()">Login</button>
@@ -435,7 +435,7 @@
     <div class="dashboard" id="dashboard">
         <div class="container">
             <div class="header">
-                <h1>🐕 DOGE <span>Scalper</span></h1>
+                <h1>Mock <span>Scalper</span></h1>
                 <div class="header-right">
                     <span class="refresh-timer" id="timer">Auto-refresh: 10s</span>
                     <span class="live-dot" id="liveDot"></span>
@@ -452,7 +452,7 @@
                     <div class="card-sub" id="statusSub"></div>
                 </div>
                 <div class="card">
-                    <div class="card-label">Today's Trades</div>
+                    <div class="card-label">Today</div>
                     <div class="card-value" id="todayTrades">—</div>
                     <div class="card-sub" id="todayLosses"></div>
                 </div>
@@ -590,10 +590,10 @@
             el.textContent = s.status;
             el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-blue' : 'text-green');
             document.getElementById('statusSub').textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
-            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 6`;
+            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 10`;
             document.getElementById('todayLosses').textContent = `${s.todayLosses || 0} losses today`;
             document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%';
-            document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total trades`;
+            document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total`;
             const pnl = s.stats?.totalPnL || 0;
             const pnlEl = document.getElementById('totalPnl');
             pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
