@@ -40,7 +40,7 @@ For a short entry: BTC structure shows sweep_reclaim_bearish, BTC spot CVD is fa
 
 **Hard gates (must ALL be true):**
 
-For a relative weakness short: BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.5 percent, and DOGE relative strength shows weaker.
+For a relative weakness short: BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.5 percent, DOGE relative strength shows weaker, and sector bias must NOT be bullish (only bearish or mixed allowed).
 
 For a relative strength long: BTC 1-hour change must be below zero percent, DOGE 1-hour change must be above positive 0.5 percent, and DOGE relative strength shows stronger.
 
@@ -72,17 +72,23 @@ No long with falling CVD: If both DOGE spot CVD and BTC spot CVD are falling, do
 
 No short with rising CVD: If both DOGE spot CVD and BTC spot CVD are rising, do not go short. There is no seller pressure.
 
-No long in bearish sector: If sector bias is bearish, do not enter long positions. There is sector headwind.
+No long unless sector is bullish: If sector bias is not bullish (i.e., mixed or bearish), do not enter long positions. Longs require sector confirmation — mixed is insufficient.
 
 No long when overextended: If DOGE daily change exceeds BTC daily change by more than 5 percent, do not go long. Mean reversion risk is elevated.
 
 No trade when decoupled: If DOGE relative strength is 'decoupled' (divergence exceeds 2 percent), do not trade in any direction. The BTC-DOGE correlation assumption is broken.
 
+No long when BTC daily is negative: If BTC daily change is below negative 1.5 percent, do not go long. The broader macro trend is bearish and long setups are unreliable regardless of micro-structure.
+
+No long when DOGE 1H CVD is falling: If DOGE aggregated spot CVD on the 1-hour timeframe is falling, do not go long. A 1-minute CVD uptick against a falling 1-hour CVD is noise, not a structural reversal.
+
+No short when momentum is exhausting: If BTC 1-hour change is below negative 2 percent AND BTC 5-minute change is above positive 0.1 percent, do not go short. Selling momentum may be exhausting and a relief bounce is forming.
+
 ## Risk Management
 
-Use 70 percent of available balance for margin.
+Use 60 percent of available balance for margin.
 
-For stop loss placement, base values are 0.7 percent for sweep and reclaim setups, 0.8 percent for relative weakness or strength setups, and 1.0 percent for trend continuation setups. The base SL is then scaled by a volatility multiplier derived from DOGE's 24-hour range: multiplier = clamp(dogeRange / 3.0, 0.8, 1.5). On a quiet day (range 1.5 percent), SL tightens to 80 percent of base. On a volatile day (range 8 percent), SL widens to 150 percent of base. Final SL is still clamped between 0.6 percent and 1.2 percent.
+For stop loss placement, base values are 0.7 percent for sweep and reclaim setups, 0.8 percent for relative weakness or strength setups, and 1.0 percent for trend continuation setups. The base SL is then scaled by a volatility multiplier derived from DOGE's 24-hour range: multiplier = clamp(dogeRange / 3.0, 0.8, 1.5). On a quiet day (range 1.5 percent), SL tightens to 80 percent of base. On a volatile day (range 8 percent), SL widens to 150 percent of base. Final SL is still clamped between 0.6 percent and 1.5 percent.
 
 After the first take-profit level is hit, stop loss moves to break-even (entry price) for the remaining position.
 
@@ -90,7 +96,7 @@ For take profit placement, maintain a minimum reward-to-risk ratio of 1.5. For s
 
 ## Signal Scoring
 
-Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 70 or higher (approximately 61 percent of maximum).
+Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 80 or higher for longs, and 70 or higher for shorts.
 
 Award up to 30 points for structure confirmation: 30 points for sweep and reclaim, 20 points for rejection or support holding, 15 points for breakout or breakdown, 0 for ranging.
 

@@ -2,7 +2,7 @@ import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closeP
 import { fetchAllMarketData, computeIndicators } from './binance.js';
 const CONFIG = {
     PAIR: 'B-DOGE_USDT',
-    MARGIN_PERCENT: 70,
+    MARGIN_PERCENT: 60,
     LEVERAGE: 5,
     SL: {
         SWEEP_RECLAIM: 0.7,
@@ -11,9 +11,10 @@ const CONFIG = {
         TREND_CONTINUATION: 1.0,
     },
     SL_MIN: 0.6,
-    SL_MAX: 1.2,
+    SL_MAX: 1.5,
     MIN_RRR: 1.5,
-    SCORE_THRESHOLD: 70,
+    SCORE_THRESHOLD_SHORT: 70,
+    SCORE_THRESHOLD_LONG: 80,
     KILL_CORR_BTC: 1.5,
     KILL_CORR_DOGE: 0.3,
     KILL_SESSION_EXTREME: 0.5,
@@ -71,6 +72,7 @@ export class StrategyService {
                 dogePrice: this.indicators.doge.price?.toFixed(5),
                 btcCvd: this.indicators.btc.cvdDirection + '/' + this.indicators.btc.cvdSlope,
                 dogeCvd: this.indicators.doge.cvdDirection + '/' + this.indicators.doge.cvdSlope,
+                doge1hCvd: this.indicators.doge.cvd1hDirection,
                 btc1h: this.indicators.btc.change1h?.toFixed(2) + '%',
                 btc5m: this.indicators.btc.change5m?.toFixed(2) + '%',
                 doge1h: this.indicators.doge.change1h?.toFixed(2) + '%',
@@ -133,8 +135,8 @@ export class StrategyService {
 
             // 8. Score and threshold check
             const score = this.scoreSignal(this.indicators, setup);
-            const threshold = CONFIG.SCORE_THRESHOLD;
-            console.log(`[Strategy] Score: ${score}/${threshold}`);
+            const threshold = setup.direction === 'BUY' ? CONFIG.SCORE_THRESHOLD_LONG : CONFIG.SCORE_THRESHOLD_SHORT;
+            console.log(`[Strategy] Score: ${score}/${threshold} (${setup.direction})`);
             if (score < threshold) {
                 return { status: 'LOW_SCORE', score, threshold };
             }
@@ -167,11 +169,23 @@ export class StrategyService {
         if (!isLong && ind.doge.cvdDirection === 'rising' && ind.btc.cvdDirection === 'rising') {
             return 'NO_SHORT_RISING_CVD: Both CVDs rising';
         }
-        if (isLong && ind.sector.bias === 'bearish') {
-            return 'NO_LONG_BEARISH_SECTOR: Sector headwind';
+        if (isLong && ind.sector.bias !== 'bullish') {
+            return `NO_LONG_SECTOR_NOT_BULLISH: Sector is ${ind.sector.bias}, longs require bullish`;
         }
         if (isLong && ind.doge.dailyChange - ind.btc.dailyChange > CONFIG.KILL_OVEREXTEND) {
             return 'NO_LONG_OVEREXTENDED: DOGE daily exceeds BTC by 5%+';
+        }
+        // Change 7: BTC daily < -1.5% blocks longs (macro headwind)
+        if (isLong && ind.btc.dailyChange < -1.5) {
+            return `NO_LONG_BTC_MACRO_BEARISH: BTC daily ${ind.btc.dailyChange.toFixed(1)}% (below -1.5%)`;
+        }
+        // Change 2: 1H CVD gate — block longs when DOGE 1h CVD is falling
+        if (isLong && ind.doge.cvd1hDirection === 'falling') {
+            return `NO_LONG_1H_CVD_FALLING: DOGE 1h CVD is falling (1m uptick is noise)`;
+        }
+        // Change 4: Momentum exhaustion — block shorts when BTC dumped hard but 5m shows reversal
+        if (!isLong && ind.btc.change1h < -2 && ind.btc.change5m > 0.1) {
+            return `NO_SHORT_MOMENTUM_EXHAUSTED: BTC 1h=${ind.btc.change1h.toFixed(1)}% but 5m=${ind.btc.change5m.toFixed(2)}% (reversal)`;
         }
         // Decoupled: correlation assumption broken
         if (ind.doge.relativeStrength === 'decoupled') {
@@ -225,12 +239,13 @@ export class StrategyService {
         return null;
     }
     checkRelativeWeaknessShort(ind) {
-        // Hard gates: divergence confirmed + DOGE CVD aligned (3 gates)
-        // Structure/keyLevel → OR (either is meaningful), moved partly to scoring
+        // Hard gates: divergence confirmed (4 gates, incl. sector filter)
+        // Change 3: Block Setup B RW short when sector bullish
         const checks = {
             btcPositive: ind.btc.change1h > 0,
             dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
             dogeWeaker: ind.doge.relativeStrength === 'weaker',
+            sectorNotBullish: ind.sector.bias !== 'bullish',
         };
         console.log('[Strategy] REL_WEAKNESS_SHORT:', JSON.stringify({
             ...checks,
@@ -243,6 +258,7 @@ export class StrategyService {
     checkRelativeStrengthLong(ind) {
         // Hard gates: divergence confirmed (3 gates)
         // Structure/keyLevel → OR, moved partly to scoring
+        // Bug fix: btcSupport check belongs here, not in checkRelativeWeaknessShort
         const checks = {
             btcNegative: ind.btc.change1h < 0,
             dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
@@ -252,6 +268,7 @@ export class StrategyService {
             ...checks,
             btcBottomyBonus: ind.btc.structure === 'support_holding' || ind.btc.keyLevel === 'at_support',
             dogeCvdRising: ind.doge.cvdDirection === 'rising',
+            doge1hCvd: ind.doge.cvd1hDirection,
         }));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
         return null;
