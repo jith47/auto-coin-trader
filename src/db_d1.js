@@ -116,6 +116,15 @@ export class D1Database {
         return result?.timestamp || null;
     }
 
+    // Get today's PnL in INR
+    async getTodayPnLInr() {
+        const todayStart = this.getTodayStartMs();
+        const result = await this.db.prepare(
+            "SELECT SUM(pnl_inr) as total_pnl FROM trade_logs WHERE timestamp >= ? AND status = 'CLOSED'"
+        ).bind(todayStart).first();
+        return result?.total_pnl || 0;
+    }
+
     // Helper: get today's start timestamp in ms (UTC midnight)
     getTodayStartMs() {
         const now = new Date();
@@ -134,5 +143,27 @@ export class D1Database {
         return await this.db.prepare(
             "UPDATE settings SET value = ? WHERE key = 'mock_balance_inr'"
         ).bind(newBalance.toFixed(2)).run();
+    }
+
+    // Generic Setting Management
+    async getSetting(key, defaultValue = null) {
+        const result = await this.db.prepare(
+            "SELECT value FROM settings WHERE key = ?"
+        ).bind(key).first();
+        return result?.value || defaultValue;
+    }
+
+    async updateSetting(key, value) {
+        // Use UPSERT pattern
+        const existing = await this.getSetting(key);
+        if (existing !== null) {
+            return await this.db.prepare(
+                "UPDATE settings SET value = ? WHERE key = ?"
+            ).bind(value.toString(), key).run();
+        } else {
+            return await this.db.prepare(
+                "INSERT INTO settings (key, value) VALUES (?, ?)"
+            ).bind(key, value.toString()).run();
+        }
     }
 }

@@ -48,19 +48,19 @@ export async function fetchAllMarketData() {
     const { BTC, DOGE, ETH, SOL } = SYMBOLS;
     const [
         btcKlines1m, btcKlines5m, btc24h,
-        dogeKlines1m, dogeKlines1h, doge24h,
+        dogeKlines1m, doge24h,
         eth24h, sol24h
     ] = await Promise.all([
         fetchKlines(BTC, '1m', 70),
         fetchKlines(BTC, '5m', 30),
         fetch24hTicker(BTC),
-        fetchKlines(DOGE, '1m', 70), fetchKlines(DOGE, '1h', 5), fetch24hTicker(DOGE),
+        fetchKlines(DOGE, '1m', 70), fetch24hTicker(DOGE),
         fetch24hTicker(ETH), fetch24hTicker(SOL),
     ]);
     const liquidations = estimateLiquidationEvents(btcKlines1m);
     return {
         btc: { klines1m: btcKlines1m, klines5m: btcKlines5m, ticker24h: btc24h },
-        doge: { klines1m: dogeKlines1m, klines1h: dogeKlines1h, ticker24h: doge24h, liquidations },
+        doge: { klines1m: dogeKlines1m, ticker24h: doge24h, liquidations },
         eth: { ticker24h: eth24h },
         sol: { ticker24h: sol24h },
     };
@@ -135,8 +135,6 @@ export function computeIndicators(data, config) {
     const dogeDistLow = doge24h.lowPrice > 0 ? ((dogePrice - doge24h.lowPrice) / dogePrice) * 100 : 0;
     const btcCvd = computeCVD(btcK);
     const dogeCvd = computeCVD(dogeK);
-    const dogeK1h = data.doge.klines1h || [];
-    const doge1hCvd = computeCVD(dogeK1h);
     // Use 5m klines for structure (more meaningful patterns), 1m for CVD/momentum
     const btcStructure = detectPriceStructure(btcK5m, SWEEP_LOOKBACK_5M);
     const btcKeyLevel = detectKeyLevel(btcPrice, btc24h.highPrice, btc24h.lowPrice);
@@ -168,7 +166,6 @@ export function computeIndicators(data, config) {
             dailyChange: doge24h.priceChangePercent,
             distFromHigh: dogeDistHigh, distFromLow: dogeDistLow,
             cvdDirection: dogeCvd.direction, cvdSlope: dogeCvd.slope, cvdValue: dogeCvd.value,
-            cvd1hDirection: doge1hCvd.direction,
             relativeStrength: relativeStrength,
             klines: dogeK, high24h: doge24h.highPrice, low24h: doge24h.lowPrice,
             dogeRange: dogeRange,
@@ -279,11 +276,11 @@ export function detectKeyLevel(price, high, low) {
 
 export function computeRelativeStrength(dogeChange, btcChange) {
     const diff = dogeChange - btcChange;
-    if (Math.abs(diff) < 0.2) return 'aligned';
+    if (Math.abs(diff) < 0.15) return 'aligned';
     if (Math.abs(diff) > 2) return 'decoupled';
-    if (diff > 0.5) return 'stronger';
-    if (diff < -0.5) return 'weaker';
-    return 'aligned'; // 0.2-0.5 gap is noise, not conviction
+    if (diff > 0.3) return 'stronger';
+    if (diff < -0.3) return 'weaker';
+    return 'aligned'; // 0.15-0.3 gap is noise, not conviction
 }
 
 export function computeVolumeRatio(klines) {
