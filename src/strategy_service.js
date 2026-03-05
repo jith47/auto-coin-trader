@@ -270,22 +270,24 @@ export class StrategyService {
         return null;
     }
     checkRelativeWeaknessShort(ind) {
-        // Hard gates: divergence confirmed + DOGE CVD aligned (3 gates)
+        // Hard gates: divergence confirmed + DOGE CVD aligned (4 gates)
         const checks = {
             btcPositive: ind.btc.change1h > 0,
             dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
             dogeWeaker: ind.doge.relativeStrength === 'weaker',
+            btcNotHoldingSupport: ind.btc.structure !== 'support_holding',
         };
         console.log('[Strategy] Setup B (SELL) checks:', JSON.stringify(checks));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
         return null;
     }
     checkRelativeStrengthLong(ind) {
-        // Hard gates: divergence confirmed (3 gates)
+        // Hard gates: divergence confirmed (4 gates)
         const checks = {
             btcNegative: ind.btc.change1h < 0,
             dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
             dogeStronger: ind.doge.relativeStrength === 'stronger',
+            btcNotRejecting: ind.btc.structure !== 'rejection',
         };
         console.log('[Strategy] Setup B (BUY) checks:', JSON.stringify(checks));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
@@ -322,15 +324,24 @@ export class StrategyService {
         let score = 0;
         const isLong = setup.direction === 'BUY';
 
-        // 1. BTC Structure (30/20/15/0)
+        // 1. BTC Structure (30/20/15/0/-10) — direction-aware
         const isSweep = ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish';
         const isExtremeRejection = (ind.btc.structure === 'rejection' && ind.btc.distFromHigh < 0.25) ||
             (ind.btc.structure === 'support_holding' && ind.btc.distFromLow < 0.25);
 
+        // Direction alignment: support_holding is bullish, rejection is bearish
+        const structureAligned = (isLong && ind.btc.structure === 'support_holding') ||
+            (!isLong && ind.btc.structure === 'rejection');
+        const structureConflicts = (isLong && ind.btc.structure === 'rejection') ||
+            (!isLong && ind.btc.structure === 'support_holding');
+
         if (isSweep || isExtremeRejection) {
             score += 30; // Both sweep and extreme rejection are high conviction
-        } else if (ind.btc.structure === 'rejection' || ind.btc.structure === 'support_holding') {
-            score += 20;
+        } else if (structureAligned) {
+            score += 20; // Structure supports trade direction
+        } else if (structureConflicts) {
+            score -= 10; // Structure opposes trade direction — penalty
+            console.log(`[Strategy] Structure penalty: -10 (${ind.btc.structure} conflicts with ${setup.direction})`);
         } else if (ind.btc.structure === 'breakout' || ind.btc.structure === 'breakdown') {
             score += 15;
         }

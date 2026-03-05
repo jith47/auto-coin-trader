@@ -40,9 +40,9 @@ For a short entry: BTC structure shows sweep_reclaim_bearish, BTC spot CVD is fa
 
 **Hard gates (must ALL be true):**
 
-For a relative weakness short: BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.5 percent, DOGE relative strength shows weaker, and sector bias must NOT be bullish (only bearish or mixed allowed).
+For a relative weakness short: BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.5 percent, DOGE relative strength shows weaker, sector bias must NOT be bullish (only bearish or mixed allowed), and BTC structure must NOT be support_holding (shorting into a support bounce is a trap).
 
-For a relative strength long: BTC 1-hour change must be below zero percent, DOGE 1-hour change must be above positive 0.5 percent, and DOGE relative strength shows stronger.
+For a relative strength long: BTC 1-hour change must be below zero percent, DOGE 1-hour change must be above positive 0.5 percent, DOGE relative strength shows stronger, and BTC structure must NOT be rejection (longing into a rejection is a trap).
 
 **Scored boosters:** BTC structure (rejection OR at_resistance for shorts; support_holding OR at_support for longs), DOGE CVD alignment, and distance from extremes contribute to score.
 
@@ -98,7 +98,7 @@ For take profit placement, maintain a minimum reward-to-risk ratio of 1.5. For s
 
 Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 80 or higher for longs, and 70 or higher for shorts.
 
-Award up to 30 points for structure confirmation: 30 points for sweep and reclaim, 20 points for rejection or support holding, 15 points for breakout or breakdown, 0 for ranging.
+Award up to 30 points for structure confirmation: 30 points for sweep and reclaim or extreme rejection/support near key levels, 20 points for direction-aligned structure (support_holding on longs, rejection on shorts), 15 points for breakout or breakdown, 0 for ranging. Deduct 10 points if structure contradicts trade direction (shorting on support_holding, longing on rejection).
 
 Award up to 20 points for BTC CVD alignment: 15 points if BTC spot CVD confirms direction, plus 5 bonus points if BTC CVD slope is steep (indicating aggressive directional flow).
 
