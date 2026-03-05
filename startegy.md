@@ -56,6 +56,20 @@ For a short entry: BTC 1-hour change must be below negative 0.5 percent, BTC spo
 
 **Scored boosters:** BTC CVD slope steepness, sector bias, and position in daily range contribute to score.
 
+### Setup D — Trap Reversal (Contrarian Structure Play)
+
+This setup exploits market traps. When DOGE shows relative weakness (or strength) but BTC structure reveals the opposite direction, the "weakness" is actually lag — not distribution. Instead of walking into the trap, flip the trade.
+
+**Hard gates (must ALL be true):**
+
+For a trap reversal long: BTC 1-hour change must be above zero (BTC is green), DOGE relative strength must be weaker (DOGE appears to be lagging), BTC structure must be support_holding (BTC is bouncing from support), and BTC 5-minute change must be positive (bounce is actively happening right now, not historical).
+
+For a trap reversal short: BTC 1-hour change must be below zero (BTC is red), DOGE relative strength must be stronger (DOGE appears resilient), BTC structure must be rejection (BTC is rejecting from resistance), and BTC 5-minute change must be negative (rejection is actively happening right now).
+
+**Risk parameters:** Tighter 0.5 percent stop loss (the structural conviction must play out quickly). Take 60 percent off at 0.4 percent profit, trail remaining 40 percent with 0.3 percent trailing distance. This setup is exempt from the CVD kill switch since it explicitly trades against spot CVD on structural conviction.
+
+**Scored boosters:** Standard scoring applies but structure will always score high (+20 direction-aligned).
+
 ## Kill Switches
 
 Never enter a trade if any of the following conditions are true:

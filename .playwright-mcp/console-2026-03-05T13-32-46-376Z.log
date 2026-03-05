@@ -1,0 +1,11 @@
+[     122ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3456/favicon.ico:0
+[  337791ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed:  @ http://localhost:3456/:706
+[  340796ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  343798ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  346800ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  349802ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  352805ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  355808ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  358818ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  361832ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
+[  364865ms] [ERROR] WebSocket connection to 'ws://localhost:3456/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3456/:706
