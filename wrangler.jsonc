@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "playwright-worker",
+	"name": "crypto-autobot",
 	"main": "src/worker.js",
 	"compatibility_flags": [
 		"nodejs_compat"

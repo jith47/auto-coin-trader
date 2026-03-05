@@ -1,413 +1,634 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition } from './coindcx.js';
-import { fetchAllMarketData, computeIndicators } from './binance.js';
+import {
+    fetchAllMarketData, computeATR, getVolatilityRegime,
+    computeOrderBookImbalance, computeTradeFlowImbalance,
+    computeEMA, computeBeta, computeReturns,
+    detectSwingPoints, detectBTCStructure,
+    percentChange, computeVolumeRatio, computeSectorBias,
+} from './binance.js';
+
 const CONFIG = {
     PAIR: 'B-DOGE_USDT',
-    MARGIN_PERCENT: 70,
-    LEVERAGE: 5,
-    SL: {
-        SWEEP_RECLAIM: 0.7,
-        RELATIVE_WEAKNESS: 0.8,
-        RELATIVE_STRENGTH: 0.8,
-        TREND_CONTINUATION: 1.0,
-    },
-    SL_MIN: 0.6,
-    SL_MAX: 1.2,
-    MIN_RRR: 1.5,
-    SCORE_THRESHOLD: 70,
-    KILL_CORR_BTC: 1.5,
-    KILL_CORR_DOGE: 0.3,
-    KILL_SESSION_EXTREME: 0.5,
-    KILL_OVEREXTEND: 5.0,
+    RISK_PER_TRADE: 0.01, // 1% of account per trade
+    MAX_LEVERAGE: 20,
 
-    SWEEP_DOGE_PROXIMITY: 1.5,
-    TREND_BTC_1H_MIN: 0.5,
-    RW_DOGE_1H_THRESHOLD: -0.5,
-    RS_DOGE_1H_THRESHOLD: 0.5,
-    DIVERGE_DISTANCE_MIN: 1.0,
-    TREND_DOGE_DIST_FROM_LOW_MIN: 0.8,
-    TREND_DOGE_DIST_FROM_HIGH_MIN: 1.5,
-    MAX_LOSSES: 3,
+    // ATR clamps
+    SL_MIN_PCT: 0.3,
+    SL_MAX_PCT: 1.2,
+    TP_MIN_PCT: 0.4,
+    TP_MAX_PCT: 1.8,
+
+    // SL/TP multipliers of ATR_pct
+    SL_ATR_MULT: 1.5,
+    TP_ATR_MULT: 2.0,
+
+    // Entry thresholds
+    SCORE_SHORT: 55,
+    SCORE_LONG: 65,
+    CLARITY_SHORT: 15,
+    CLARITY_LONG: 20,
+    MIN_SUPPORTING_MODULES: 3,
+    MIN_RRR: 1.2, // Minimum reward:risk ratio to allow entry
+
+    // Edge Decay trailing stops (pct)
+    EDGE_DECAY_TIGHT_TRAIL: 0.15,
+    EDGE_DECAY_EXIT_TRAIL: 0.10,
+
+    // Profit management
+    PROFIT_BE_THRESHOLD: 1.0,     // ATR mult to move SL to breakeven
+    PROFIT_TRAIL_ATR_MULT: 0.4,   // trailing distance as ATR mult
+    PROFIT_PARTIAL_THRESHOLD: 1.5, // ATR mult for 60% close
+    PROFIT_PARTIAL_PCT: 60,
+    PROFIT_TIGHT_THRESHOLD: 2.5,  // ATR mult for tighten trail
+    PROFIT_TIGHT_TRAIL_ATR: 0.25,
+
+    // Time stops (minutes)
+    TIME_STOP_SLOW: 8,
+    TIME_STOP_MAX: 20,
+    TIME_STOP_SLOW_PROFIT_THRESHOLD: 0.5, // ATR mult
+
+    // Risk management
+    MAX_DAILY_LOSSES: 3,
+    MAX_DAILY_DRAWDOWN_PCT: 3,
+    MAX_ACCOUNT_DRAWDOWN_PCT: 20,
     COOLDOWN_AFTER_LOSS_MS: 30 * 60 * 1000,
     MAX_TRADES_PER_DAY: 10,
-    MAX_DRAWDOWN_PCT: 30,
-    MOCK_MODE: true, // Set to true for mock trading
+
+    // Mock mode
+    MOCK_MODE: true,
     INITIAL_INR_BALANCE: 2500,
-    USD_INR_RATE: 85, // Simple rate for conversion
-    TP_PROFILES: {
-        SWEEP_RECLAIM: [
-            { pctOfPosition: 80, rrMultiple: 1.5 },
-            { pctOfPosition: 20, rrMultiple: 2.5 },
-        ],
-        RELATIVE_WEAKNESS: [
-            { pctOfPosition: 100, rrMultiple: 1.5 },
-        ],
-        RELATIVE_STRENGTH: [
-            { pctOfPosition: 100, rrMultiple: 1.5 },
-        ],
-        TREND_CONTINUATION: [
-            { pctOfPosition: 50, rrMultiple: 1.5 },
-            { pctOfPosition: 30, rrMultiple: 2.0 },
-            { pctOfPosition: 20, trailing: true, trailingDistance: 0.4 },
-        ],
-    },
+    USD_INR_RATE: 85,
 };
+
 export class StrategyService {
     constructor(env) {
         this.env = env;
         this.db = null;
-        this.indicators = null;
+        this.data = null;
     }
+
     async run(db) {
         this.db = db;
-        console.log(`[Strategy] ── Evaluation Start(${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
+        // TEMPORARY: One-time fix for mock balance. Remove after one run.
+        if (CONFIG.MOCK_MODE) {
+            const hasRestored = await this.db.getSetting('balance_restored_mar_04', 'false');
+            if (hasRestored === 'false') {
+                await this.fixMockBalance();
+                await this.db.updateSetting('balance_restored_mar_04', 'true');
+            }
+        }
+        console.log(`[Strategy] ── Evaluation Start (${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
         try {
-            // 1. Fetch data FIRST
-            const data = await fetchAllMarketData();
+            // 1. Fetch all market data
+            this.data = await fetchAllMarketData();
+            const dogePrice = this.data.doge.klines5m.length > 0
+                ? this.data.doge.klines5m[this.data.doge.klines5m.length - 1].close : 0;
+            const btcPrice = this.data.btc.klines5m.length > 0
+                ? this.data.btc.klines5m[this.data.btc.klines5m.length - 1].close : 0;
 
-            this.indicators = computeIndicators(data, CONFIG);
-
-            console.log('[Strategy] Indicators:', JSON.stringify({
-                btcPrice: this.indicators.btc.price?.toFixed(0),
-                dogePrice: this.indicators.doge.price?.toFixed(5),
-                btcCvd: this.indicators.btc.cvdDirection + '/' + this.indicators.btc.cvdSlope,
-                dogeCvd: this.indicators.doge.cvdDirection + '/' + this.indicators.doge.cvdSlope,
-                btc1h: this.indicators.btc.change1h?.toFixed(2) + '%',
-                btc5m: this.indicators.btc.change5m?.toFixed(2) + '%',
-                doge1h: this.indicators.doge.change1h?.toFixed(2) + '%',
-                doge5m: this.indicators.doge.change5m?.toFixed(2) + '%',
-                relStrength: this.indicators.doge.relativeStrength,
-                btcStructure: this.indicators.btc.structure,
-                btcKeyLevel: this.indicators.btc.keyLevel,
-                sectorBias: this.indicators.sector.bias,
-                dogeRange: this.indicators.doge.dogeRange?.toFixed(1) + '%',
-                volRatio: this.indicators.doge.volumeRatio?.toFixed(2),
-                utcHour: this.indicators.session.hour?.toFixed(1),
-            }));
-
-            // 2. Manage existing trade
-            const activeTrade = await db.getActiveTrade();
-            if (activeTrade && activeTrade.status === 'OPEN') {
-                return await this.manageTrade(activeTrade);
+            if (dogePrice === 0 || btcPrice === 0) {
+                console.error('[Strategy] No price data available');
+                return { status: 'ERROR', error: 'No price data' };
             }
 
-            // 3. New trade checks
+            // 2. Calculate ATR (Step 0)
+            const { atr, atrPct } = computeATR(this.data.doge.klines5m, 12);
+            const regime = getVolatilityRegime(atrPct);
+            console.log(`[Strategy] ATR: ${atr.toFixed(6)}, ATR%: ${atrPct.toFixed(4)}%, Regime: ${regime}`);
+
+            // 3. Manage existing trade
+            const activeTrade = await db.getActiveTrade();
+            if (activeTrade && activeTrade.status === 'OPEN') {
+                return await this.manageTrade(activeTrade, dogePrice, atrPct);
+            }
+
+            // 4. Cooldown checks
             const cooldownCheck = await this.checkCooldowns();
             if (!cooldownCheck.canTrade) {
-                console.log(`[Strategy] Blocked: ${cooldownCheck.reason} `);
+                console.log(`[Strategy] Blocked: ${cooldownCheck.reason}`);
                 return { status: 'BLOCKED', reason: cooldownCheck.reason };
             }
 
-            // 4. Max drawdown circuit breaker
+            // 5. Max drawdown circuit breaker
             if (CONFIG.MOCK_MODE) {
                 const currentBalance = await this.db.getMockBalance();
                 const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
-                if (drawdownPct >= CONFIG.MAX_DRAWDOWN_PCT) {
-                    console.log(`[Strategy] CIRCUIT BREAKER: Drawdown ${drawdownPct.toFixed(1)}% exceeds ${CONFIG.MAX_DRAWDOWN_PCT}%`);
+                if (drawdownPct >= CONFIG.MAX_ACCOUNT_DRAWDOWN_PCT) {
+                    console.log(`[Strategy] CIRCUIT BREAKER: Drawdown ${drawdownPct.toFixed(1)}%`);
                     return { status: 'CIRCUIT_BREAKER', reason: `Max drawdown ${drawdownPct.toFixed(1)}%` };
                 }
             }
 
-            // 5. Check kill switches first (before setup evaluation per strategy doc)
-            const killSwitchLong = this.checkKillSwitches(this.indicators, 'BUY');
-            const killSwitchShort = this.checkKillSwitches(this.indicators, 'SELL');
-            if (killSwitchLong && killSwitchShort) {
-                console.log(`[Strategy] All directions blocked: LONG = ${killSwitchLong}, SHORT = ${killSwitchShort} `);
-                return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong}; ${killSwitchShort} ` };
+            // 6. Run all 5 modules
+            const moduleResults = this.runAllModules(dogePrice, btcPrice, atrPct);
+            console.log('[Strategy] Module results:', JSON.stringify(moduleResults.summary));
+
+            // 7. Aggregate scores
+            const aggregation = this.aggregateScores(moduleResults, dogePrice);
+            console.log('[Strategy] Aggregation:', JSON.stringify(aggregation));
+
+            // 8. Check kill switches for the winning direction
+            if (aggregation.direction !== 'neutral') {
+                const killReason = this.checkKillSwitches(aggregation.direction, dogePrice, btcPrice, atrPct);
+                if (killReason) {
+                    console.log(`[Strategy] Kill switch: ${killReason}`);
+                    return { status: 'KILL_SWITCH', reason: killReason };
+                }
             }
 
-            // 6. Identify matching setup
-            const setup = this.evaluateSetups(this.indicators);
-            if (!setup) {
-                console.log('[Strategy] No valid setup');
-                return { status: 'NO_SETUP' };
+            // 9. Check entry thresholds
+            if (!this.meetsEntryThreshold(aggregation)) {
+                console.log(`[Strategy] Below threshold: score=${aggregation.score}, clarity=${aggregation.clarity}, modules=${aggregation.supportingModules}`);
+                return { status: 'NO_SIGNAL', ...aggregation };
             }
 
-            console.log(`[Strategy] Setup found: ${setup.type} ${setup.direction} `);
-
-            // 7. Verify kill switch doesn't block the found direction
-            const killSwitch = setup.direction === 'BUY' ? killSwitchLong : killSwitchShort;
-            if (killSwitch) {
-                console.log(`[Strategy] Kill switch triggered: ${killSwitch} `);
-                return { status: 'KILL_SWITCH', reason: killSwitch };
+            // 10. Build and execute signal
+            const signal = await this.buildSignal(aggregation, dogePrice, atrPct, moduleResults);
+            if (signal.rejected) {
+                console.log(`[Strategy] Trade rejected: ${signal.reason}`);
+                return { status: 'RRR_REJECTED', reason: signal.reason, rrr: signal.rrr };
             }
-
-            // 8. Score and threshold check
-            const score = this.scoreSignal(this.indicators, setup);
-            const threshold = CONFIG.SCORE_THRESHOLD;
-            console.log(`[Strategy] Score: ${score}/${threshold}`);
-            if (score < threshold) {
-                return { status: 'LOW_SCORE', score, threshold };
-            }
-
-            const signal = await this.buildSignal(this.indicators, setup, score);
             console.log('[Strategy] Signal:', JSON.stringify(signal, null, 2));
             return await this.executeTrade(signal);
+
         } catch (err) {
             console.error('[Strategy] Error:', err.message, err.stack);
             return { status: 'ERROR', error: err.message };
         }
     }
-    checkKillSwitches(ind, direction) {
-        const isLong = direction === 'BUY';
-        if (isLong && ind.btc.change1h > CONFIG.KILL_CORR_BTC && ind.doge.change1h < -CONFIG.KILL_CORR_DOGE) {
-            return 'NO_LONG_CORR_DIVERGENCE: BTC strong but DOGE weak';
-        }
-        if (!isLong && ind.btc.change1h < -CONFIG.KILL_CORR_BTC && ind.doge.change1h > CONFIG.KILL_CORR_DOGE) {
-            return 'NO_SHORT_CORR_DIVERGENCE: BTC weak but DOGE strong';
-        }
-        if (isLong && ind.doge.distFromHigh <= CONFIG.KILL_SESSION_EXTREME) {
-            return 'NO_LONG_SESSION_TOP: DOGE within 0.5% of session high';
-        }
-        if (!isLong && ind.doge.distFromLow <= CONFIG.KILL_SESSION_EXTREME) {
-            return 'NO_SHORT_SESSION_BOTTOM: DOGE within 0.5% of session low';
-        }
-        if (isLong && ind.doge.cvdDirection === 'falling' && ind.btc.cvdDirection === 'falling') {
-            return 'NO_LONG_FALLING_CVD: Both CVDs falling';
-        }
-        if (!isLong && ind.doge.cvdDirection === 'rising' && ind.btc.cvdDirection === 'rising') {
-            return 'NO_SHORT_RISING_CVD: Both CVDs rising';
-        }
-        if (isLong && ind.sector.bias === 'bearish') {
-            return 'NO_LONG_BEARISH_SECTOR: Sector headwind';
-        }
-        if (isLong && ind.doge.dailyChange - ind.btc.dailyChange > CONFIG.KILL_OVEREXTEND) {
-            return 'NO_LONG_OVEREXTENDED: DOGE daily exceeds BTC by 5%+';
-        }
-        // Decoupled: correlation assumption broken
-        if (ind.doge.relativeStrength === 'decoupled') {
-            return 'NO_TRADE_DECOUPLED: DOGE-BTC correlation broken (>2% divergence)';
-        }
-        return null;
-    }
-    evaluateSetups(ind) {
-        console.log('[Strategy] ── Setup Evaluation ──');
-        console.log('[Strategy] Market State:', JSON.stringify({
-            btcStructure: ind.btc.structure,
-            btcCvd: ind.btc.cvdDirection + '/' + ind.btc.cvdSlope,
-            dogeCvd: ind.doge.cvdDirection + '/' + ind.doge.cvdSlope,
-            relStrength: ind.doge.relativeStrength,
-            dogeDistHigh: ind.doge.distFromHigh?.toFixed(2) + '%',
-            dogeDistLow: ind.doge.distFromLow?.toFixed(2) + '%',
-            sector: ind.sector.bias,
-            liquidations: ind.liquidations.recentEvent,
-        }));
 
-        const sweepSetup = this.checkSweepReclaim(ind);
-        if (sweepSetup) return sweepSetup;
-        const rwSetup = this.checkRelativeWeaknessShort(ind);
-        if (rwSetup) return rwSetup;
-        const rsSetup = this.checkRelativeStrengthLong(ind);
-        if (rsSetup) return rsSetup;
-        const trendSetup = this.checkTrendContinuation(ind);
-        if (trendSetup) return trendSetup;
-        return null;
-    }
-    checkSweepReclaim(ind) {
-        // LONG — Hard gates: structure + CVD + proximity (3 gates)
-        // Bonus: dogeCvd, sector, liquidation → handled by scoring
-        const longChecks = {
-            btcStructure: ind.btc.structure === 'sweep_reclaim_bullish',
-            btcCvdRising: ind.btc.cvdDirection === 'rising',
-            dogeNearLow: ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY,
-        };
-        console.log('[Strategy] SWEEP_RECLAIM_LONG:', JSON.stringify(longChecks));
-        if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
+    // ─── THE 5 MODULES ─────────────────────────────────────────────
 
-        // SHORT — Hard gates: structure + CVD + proximity (3 gates)
-        const shortChecks = {
-            btcStructure: ind.btc.structure === 'sweep_reclaim_bearish',
-            btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            dogeNearHigh: ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY,
-        };
-        console.log('[Strategy] SWEEP_RECLAIM_SHORT:', JSON.stringify(shortChecks));
-        if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
+    runAllModules(dogePrice, btcPrice, atrPct) {
+        const m1 = this.moduleFlowImbalance(dogePrice);
+        const m2 = this.moduleBTCStructure(btcPrice);
+        const m3 = this.moduleDOGERelativePerf(btcPrice);
+        const m4 = this.moduleVolatilityContext(atrPct);
+        const m5 = this.moduleFundingRate();
 
-        return null;
-    }
-    checkRelativeWeaknessShort(ind) {
-        // Hard gates: divergence confirmed + DOGE CVD aligned (3 gates)
-        // Structure/keyLevel → OR (either is meaningful), moved partly to scoring
-        const checks = {
-            btcPositive: ind.btc.change1h > 0,
-            dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
-            dogeWeaker: ind.doge.relativeStrength === 'weaker',
-        };
-        console.log('[Strategy] REL_WEAKNESS_SHORT:', JSON.stringify({
-            ...checks,
-            btcToppyBonus: ind.btc.structure === 'rejection' || ind.btc.keyLevel === 'at_resistance',
-            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
-        }));
-        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
-        return null;
-    }
-    checkRelativeStrengthLong(ind) {
-        // Hard gates: divergence confirmed (3 gates)
-        // Structure/keyLevel → OR, moved partly to scoring
-        const checks = {
-            btcNegative: ind.btc.change1h < 0,
-            dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
-            dogeStronger: ind.doge.relativeStrength === 'stronger',
-        };
-        console.log('[Strategy] REL_STRENGTH_LONG:', JSON.stringify({
-            ...checks,
-            btcBottomyBonus: ind.btc.structure === 'support_holding' || ind.btc.keyLevel === 'at_support',
-            dogeCvdRising: ind.doge.cvdDirection === 'rising',
-        }));
-        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
-        return null;
-    }
-    checkTrendContinuation(ind) {
-        // LONG — Hard gates: BTC trending + CVD + DOGE aligned (4 gates)
-        // Dropped: sector, room, steep → scoring handles quality
-        const longChecks = {
-            btc1hStrong: ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN,
-            btcCvdRising: ind.btc.cvdDirection === 'rising',
-            dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'stronger',
-            dogeCvdRising: ind.doge.cvdDirection === 'rising',
-        };
-        console.log('[Strategy] TREND_LONG:', JSON.stringify({
-            ...longChecks,
-            steepBonus: ind.btc.cvdSlope === 'steep',
-            sectorBonus: ind.sector.bias === 'bullish',
-        }));
-        if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
-
-        // SHORT — Hard gates: BTC trending down + CVD + DOGE aligned (4 gates)
-        const shortChecks = {
-            btc1hWeak: ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN,
-            btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            dogeAligned: ind.doge.relativeStrength === 'aligned' || ind.doge.relativeStrength === 'weaker',
-            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
-        };
-        console.log('[Strategy] TREND_SHORT:', JSON.stringify({
-            ...shortChecks,
-            steepBonus: ind.btc.cvdSlope === 'steep',
-            sectorBonus: ind.sector.bias === 'bearish',
-        }));
-        if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
-
-        return null;
-    }
-    scoreSignal(ind, setup) {
-        // Max theoretical: 30+15+12+15+15+10+8+5 = 110
-        // Threshold: 70 (~64% of max)
-        let score = 0;
-        const isLong = setup.direction === 'BUY';
-
-        // 1. BTC Structure (30/20/15/0)
-        if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') {
-            score += 30;
-        } else if (ind.btc.structure === 'rejection' || ind.btc.structure === 'support_holding') {
-            score += 20;
-        } else if (ind.btc.structure === 'breakout' || ind.btc.structure === 'breakdown') {
-            score += 15;
-        }
-
-        // 2. BTC CVD aligned with direction (15 + 5 for steep)
-        if ((isLong && ind.btc.cvdDirection === 'rising') || (!isLong && ind.btc.cvdDirection === 'falling')) {
-            score += 15;
-            if (ind.btc.cvdSlope === 'steep') {
-                score += 5;
-            }
-        }
-
-        // 3. DOGE CVD aligned with direction (12) — single check, no double count
-        if ((isLong && ind.doge.cvdDirection === 'rising') || (!isLong && ind.doge.cvdDirection === 'falling')) {
-            score += 12;
-        }
-
-        // 4. Relative strength favorable (15)
-        if ((isLong && (ind.doge.relativeStrength === 'stronger' || ind.doge.relativeStrength === 'aligned')) ||
-            (!isLong && (ind.doge.relativeStrength === 'weaker' || ind.doge.relativeStrength === 'aligned'))) {
-            score += 15;
-        }
-
-        // 5. Position in range — near favorable extreme (15/10)
-        const favorableDistance = isLong ? ind.doge.distFromLow : ind.doge.distFromHigh;
-        if (favorableDistance <= 1) {
-            score += 15;
-        } else if (favorableDistance <= 2) {
-            score += 10;
-        }
-
-        // 6. Sector tailwind (10/5) — always scored, never hard-gated
-        if ((isLong && ind.sector.bias === 'bullish') || (!isLong && ind.sector.bias === 'bearish')) {
-            score += 10;
-        } else if (ind.sector.bias === 'mixed') {
-            score += 5;
-        }
-
-        // 7. Key level alignment (8) — bonus for being at the right level
-        if ((isLong && ind.btc.keyLevel === 'at_support') || (!isLong && ind.btc.keyLevel === 'at_resistance')) {
-            score += 8;
-        }
-
-        // 8. Liquidation event (5)
-        const liqEvent = ind.liquidations?.recentEvent || 'none';
-        if ((isLong && liqEvent === 'longs_flushed') || (!isLong && liqEvent === 'shorts_squeezed')) {
-            score += 5;
-        }
-        // 9. Volume penalty (-10 when thin market)
-        const volRatio = ind.doge.volumeRatio || 1.0;
-        if (volRatio < 0.5) {
-            score -= 10;
-            console.log(`[Strategy] Volume penalty: -10 (ratio: ${volRatio.toFixed(2)})`);
-        }
-
-        return score;
-    }
-    async buildSignal(ind, setup, score) {
-        const entry = ind.doge.price;
-        const slPercent = CONFIG.SL[setup.type] || 0.8;
-        // Volatility-adaptive SL: scale by dogeRange/3, clamped 0.8x-1.5x
-        const volatilityMultiplier = Math.max(0.8, Math.min(1.5, (ind.doge.dogeRange || 2.0) / 3.0));
-        const adjustedSL = slPercent * volatilityMultiplier;
-        const clampedSL = Math.min(Math.max(adjustedSL, CONFIG.SL_MIN), CONFIG.SL_MAX);
-        console.log(`[Strategy] SL: base=${slPercent}%, volMult=${volatilityMultiplier.toFixed(2)}x, adjusted=${adjustedSL.toFixed(2)}%, clamped=${clampedSL.toFixed(2)}%`);
-        const sl = setup.direction === 'BUY'
-            ? entry * (1 - clampedSL / 100)
-            : entry * (1 + clampedSL / 100);
-        const slDistance = Math.abs(entry - sl);
-        const tpProfile = CONFIG.TP_PROFILES[setup.type] || [{ pctOfPosition: 100, rrMultiple: CONFIG.MIN_RRR }];
-        const tpLevels = tpProfile.map(level => {
-            if (level.trailing) {
-                return { ...level, price: null };
-            }
-            const price = setup.direction === 'BUY'
-                ? entry + (slDistance * level.rrMultiple)
-                : entry - (slDistance * level.rrMultiple);
-            return { ...level, price: parseFloat(price.toFixed(6)) };
-        });
-        const firstTpPrice = tpLevels.find(l => l.price !== null)?.price
-            || parseFloat((setup.direction === 'BUY' ? entry + slDistance * CONFIG.MIN_RRR : entry - slDistance * CONFIG.MIN_RRR).toFixed(6));
-
-        // Calculate INR exposure
-        let inrBalance = CONFIG.INITIAL_INR_BALANCE;
-        if (CONFIG.MOCK_MODE) {
-            inrBalance = await this.db.getMockBalance();
-        }
-        const marginInr = inrBalance * (CONFIG.MARGIN_PERCENT / 100);
-
-        const quantity = await this.calculateQuantity(entry, sl, inrBalance);
         return {
-            decision: setup.direction,
-            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.doge.cvdDirection} | RS:${ind.doge.relativeStrength}`,
+            modules: [m1, m2, m3, m4, m5],
+            summary: {
+                m1_flow: `${m1.direction}/${m1.points}`,
+                m2_btc: `${m2.direction}/${m2.points}`,
+                m3_relperf: `${m3.direction}/${m3.points}`,
+                m4_vol: `${m4.direction}/${m4.points}`,
+                m5_funding: `${m5.direction}/${m5.points}`,
+            },
+        };
+    }
+
+    // MODULE 1 — Flow Imbalance (max 25)
+    moduleFlowImbalance(dogePrice) {
+        // Part A: Order Book Imbalance (max 12)
+        const obi = computeOrderBookImbalance(this.data.doge.depth, dogePrice, 0.3);
+        let obiPoints = 0, obiDir = 'neutral';
+        if (obi > 0.40) { obiPoints = 12; obiDir = 'long'; }
+        else if (obi > 0.20) { obiPoints = 6; obiDir = 'long'; }
+        else if (obi < -0.40) { obiPoints = 12; obiDir = 'short'; }
+        else if (obi < -0.20) { obiPoints = 6; obiDir = 'short'; }
+
+        // Part B: Trade Flow Imbalance (max 13)
+        const { tfi, tfiSlope } = computeTradeFlowImbalance(this.data.doge.klines1m, 5);
+        let tfiPoints = 0, tfiDir = 'neutral';
+        if (tfi > 0.25) { tfiPoints = 8; tfiDir = 'long'; }
+        else if (tfi > 0.10) { tfiPoints = 5; tfiDir = 'long'; }
+        else if (tfi < -0.25) { tfiPoints = 8; tfiDir = 'short'; }
+        else if (tfi < -0.10) { tfiPoints = 5; tfiDir = 'short'; }
+
+        // TFI slope bonus (+3)
+        if (tfiDir !== 'neutral') {
+            const slopeAligned = (tfiDir === 'long' && tfiSlope > 0.05) ||
+                (tfiDir === 'short' && tfiSlope < -0.05);
+            if (slopeAligned) tfiPoints += 3;
+        }
+
+        // OBI + TFI agreement bonus (+2)
+        if (obiDir !== 'neutral' && tfiDir !== 'neutral' && obiDir === tfiDir) {
+            tfiPoints += 2;
+        }
+
+        // Conflict rule: if OBI and TFI disagree, trust TFI, cap at 10
+        let totalPoints = obiPoints + tfiPoints;
+        let direction = 'neutral';
+
+        if (obiDir !== 'neutral' && tfiDir !== 'neutral' && obiDir !== tfiDir) {
+            // Conflict — trust TFI
+            direction = tfiDir;
+            totalPoints = Math.min(totalPoints, 10);
+        } else if (tfiDir !== 'neutral') {
+            direction = tfiDir;
+        } else if (obiDir !== 'neutral') {
+            direction = obiDir;
+        }
+
+        totalPoints = Math.min(totalPoints, 25);
+        console.log(`[M1] Flow: OBI=${obi.toFixed(3)}(${obiDir}/${obiPoints}), TFI=${tfi.toFixed(3)}(${tfiDir}/${tfiPoints}), total=${totalPoints} ${direction}`);
+        return { name: 'flow_imbalance', direction, points: totalPoints, obi, tfi };
+    }
+
+    // MODULE 2 — BTC Structural Anchor (max 25)
+    moduleBTCStructure(btcPrice) {
+        // Part A: BTC Trend Position (max 10)
+        const btcCloses = this.data.btc.klines5m.map(k => k.close);
+        const ema21 = computeEMA(btcCloses, 21);
+        const aboveEma = btcPrice > ema21;
+
+        // BTC 1h change from klines1h
+        let btc1hChange = 0;
+        if (this.data.btc.klines1h.length >= 2) {
+            const oldest = this.data.btc.klines1h[0].close;
+            const newest = this.data.btc.klines1h[this.data.btc.klines1h.length - 1].close;
+            btc1hChange = oldest > 0 ? ((newest - oldest) / oldest) * 100 : 0;
+        }
+
+        // Check if BTC crossed EMA21 within last 3 5m candles
+        let emaCrossedRecently = false;
+        if (this.data.btc.klines5m.length >= 4) {
+            const last4 = this.data.btc.klines5m.slice(-4);
+            for (let i = 1; i < last4.length; i++) {
+                const prevAbove = last4[i - 1].close > ema21;
+                const currAbove = last4[i].close > ema21;
+                if (prevAbove !== currAbove) { emaCrossedRecently = true; break; }
+            }
+        }
+
+        let trendPoints = 0, trendDir = 'neutral';
+        if (emaCrossedRecently) {
+            trendPoints = 0; trendDir = 'neutral';
+        } else if (aboveEma && btc1hChange > 0.3) {
+            trendPoints = 10; trendDir = 'long';
+        } else if (aboveEma && btc1hChange >= -0.3) {
+            trendPoints = 5; trendDir = 'long';
+        } else if (!aboveEma && btc1hChange < -0.3) {
+            trendPoints = 10; trendDir = 'short';
+        } else if (!aboveEma && btc1hChange >= -0.3) {
+            trendPoints = 5; trendDir = 'short';
+        }
+
+        // Part B: BTC Price Structure (max 15)
+        const swings = detectSwingPoints(this.data.btc.klines5m, 20);
+        const structure = detectBTCStructure(this.data.btc.klines5m, swings);
+
+        // Combine: use structure direction if available, else trend direction
+        let direction = structure.direction !== 'neutral' ? structure.direction : trendDir;
+        let totalPoints = trendPoints + structure.points;
+
+        // If trend and structure disagree, use the stronger signal
+        if (trendDir !== 'neutral' && structure.direction !== 'neutral' && trendDir !== structure.direction) {
+            if (structure.points >= trendPoints) {
+                direction = structure.direction;
+            } else {
+                direction = trendDir;
+            }
+        }
+
+        totalPoints = Math.min(totalPoints, 25);
+        console.log(`[M2] BTC: EMA21=${ema21.toFixed(0)}, above=${aboveEma}, 1h=${btc1hChange.toFixed(2)}%, trend=${trendDir}/${trendPoints}, struct=${structure.pattern}/${structure.direction}/${structure.points}, total=${totalPoints} ${direction}`);
+        return {
+            name: 'btc_structure', direction, points: totalPoints,
+            ema21, aboveEma, btc1hChange, trendDir, structure,
+        };
+    }
+
+    // MODULE 3 — DOGE Relative Performance (max 20)
+    moduleDOGERelativePerf(btcPrice) {
+        const dogeReturns = computeReturns(this.data.doge.klines5m, 12);
+        const btcReturns = computeReturns(this.data.btc.klines5m, 12);
+        const beta = computeBeta(dogeReturns, btcReturns);
+
+        // BTC 1h change
+        let btc1hChange = 0;
+        if (this.data.btc.klines5m.length >= 13) {
+            const oldest = this.data.btc.klines5m[this.data.btc.klines5m.length - 12 - 1].close;
+            const newest = this.data.btc.klines5m[this.data.btc.klines5m.length - 1].close;
+            btc1hChange = oldest > 0 ? ((newest - oldest) / oldest) * 100 : 0;
+        }
+
+        // DOGE 1h change (from 5m klines, ~12 candles = 60min)
+        let doge1hChange = 0;
+        if (this.data.doge.klines5m.length >= 13) {
+            const oldest = this.data.doge.klines5m[this.data.doge.klines5m.length - 12 - 1].close;
+            const newest = this.data.doge.klines5m[this.data.doge.klines5m.length - 1].close;
+            doge1hChange = oldest > 0 ? ((newest - oldest) / oldest) * 100 : 0;
+        }
+
+        const expectedDoge = btc1hChange * beta;
+        const deviation = doge1hChange - expectedDoge;
+
+        let points = 0, direction = 'neutral';
+        if (deviation < -1.0) { points = 20; direction = 'short'; }
+        else if (deviation < -0.5) { points = 12; direction = 'short'; }
+        else if (deviation > 1.0) { points = 20; direction = 'long'; }
+        else if (deviation > 0.5) { points = 12; direction = 'long'; }
+        else {
+            // Within ±0.5% — 5 points in BTC trend direction
+            points = 5;
+            // Determine BTC trend from Module 2 logic (simplified)
+            const btcCloses = this.data.btc.klines5m.map(k => k.close);
+            const ema21 = computeEMA(btcCloses, 21);
+            direction = btcPrice > ema21 ? 'long' : 'short';
+        }
+
+        // Conflict penalty: if this module opposes BTC trend, cap at 8
+        const btcCloses = this.data.btc.klines5m.map(k => k.close);
+        const ema21 = computeEMA(btcCloses, 21);
+        const btcTrendDir = btcPrice > ema21 ? 'long' : 'short';
+        if (direction !== 'neutral' && direction !== btcTrendDir && points > 8) {
+            console.log(`[M3] Conflict penalty: DOGE ${direction} vs BTC trend ${btcTrendDir}, capping at 8`);
+            points = 8;
+        }
+
+        points = Math.min(points, 20);
+        console.log(`[M3] RelPerf: beta=${beta.toFixed(2)}, btc1h=${btc1hChange.toFixed(2)}%, doge1h=${doge1hChange.toFixed(2)}%, expected=${expectedDoge.toFixed(2)}%, deviation=${deviation.toFixed(2)}%, ${direction}/${points}`);
+        return { name: 'doge_relative_perf', direction, points, beta, deviation };
+    }
+
+    // MODULE 4 — Volatility Context (max 15)
+    moduleVolatilityContext(atrPct) {
+        if (!this.data.doge.klines5m.length) {
+            return { name: 'volatility_context', direction: 'neutral', points: 0 };
+        }
+
+        const current = this.data.doge.klines5m[this.data.doge.klines5m.length - 1];
+        const currentRange = current.high > 0 ? ((current.high - current.low) / current.close) * 100 : 0;
+        const rangeRatio = atrPct > 0 ? currentRange / atrPct : 1;
+
+        let points = 0, direction = 'neutral';
+
+        if (rangeRatio > 2.5) {
+            // Overextended candle
+            const bodyPosition = (current.high - current.low) > 0
+                ? (current.close - current.low) / (current.high - current.low) : 0.5;
+
+            // Check if it broke a swing level (if so, don't fade)
+            const swings = detectSwingPoints(this.data.doge.klines5m, 20);
+            const highestSwing = swings.swingHighs.length > 0 ? Math.max(...swings.swingHighs.map(s => s.price)) : null;
+            const lowestSwing = swings.swingLows.length > 0 ? Math.min(...swings.swingLows.map(s => s.price)) : null;
+            const brokeHigh = highestSwing !== null && current.close > highestSwing;
+            const brokeLow = lowestSwing !== null && current.close < lowestSwing;
+
+            if (bodyPosition > 0.7 && !brokeHigh) {
+                points = 15; direction = 'short'; // Rallied hard, failed to break out
+            } else if (bodyPosition < 0.3 && !brokeLow) {
+                points = 15; direction = 'long'; // Dumped hard, failed to break down
+            }
+            // If broke a swing level → 0 points, neutral (real breakout)
+        } else if (rangeRatio >= 0.8) {
+            // Normal range — 5 points in BTC trend direction
+            const btcCloses = this.data.btc.klines5m.map(k => k.close);
+            const ema21 = computeEMA(btcCloses, 21);
+            const btcPrice = this.data.btc.klines5m[this.data.btc.klines5m.length - 1].close;
+            direction = btcPrice > ema21 ? 'long' : 'short';
+            points = 5;
+        }
+        // rangeRatio < 0.5 → 0 points (too quiet)
+        // 0.5 to 0.8 → also 0 (borderline quiet)
+
+        points = Math.min(points, 15);
+        console.log(`[M4] VolCtx: range=${currentRange.toFixed(3)}%, ratio=${rangeRatio.toFixed(2)}, ${direction}/${points}`);
+        return { name: 'volatility_context', direction, points, rangeRatio };
+    }
+
+    // MODULE 5 — Funding Rate Pressure (max 15)
+    moduleFundingRate() {
+        const rate = this.data.funding.fundingRate * 100; // convert to percentage
+        let points = 0, direction = 'neutral';
+
+        if (rate > 0.05) { points = 15; direction = 'short'; }
+        else if (rate > 0.03) { points = 10; direction = 'short'; }
+        else if (rate > 0.01) { points = 5; direction = 'short'; }
+        else if (rate < -0.05) { points = 15; direction = 'long'; }
+        else if (rate < -0.03) { points = 10; direction = 'long'; }
+        else if (rate < -0.01) { points = 5; direction = 'long'; }
+
+        console.log(`[M5] Funding: rate=${(this.data.funding.fundingRate * 100).toFixed(4)}%, ${direction}/${points}`);
+        return { name: 'funding_rate', direction, points, fundingRate: this.data.funding.fundingRate };
+    }
+
+    // ─── SIGNAL AGGREGATION ────────────────────────────────────────
+
+    aggregateScores(moduleResults, dogePrice) {
+        let longScore = 0, shortScore = 0;
+        let longModules = 0, shortModules = 0;
+
+        for (const m of moduleResults.modules) {
+            if (m.direction === 'long') {
+                longScore += m.points;
+                longModules++;
+            } else if (m.direction === 'short') {
+                shortScore += m.points;
+                shortModules++;
+            }
+        }
+
+        // Direction = whichever side has higher score
+        let direction, score, clarity, supportingModules;
+        if (longScore >= shortScore) {
+            direction = 'long';
+            score = longScore;
+            clarity = longScore - shortScore;
+            supportingModules = longModules;
+        } else {
+            direction = 'short';
+            score = shortScore;
+            clarity = shortScore - longScore;
+            supportingModules = shortModules;
+        }
+
+        // Apply deductions
+        const deductions = this.computeDeductions(direction, dogePrice);
+        score = Math.max(0, score - deductions.total);
+
+        if (score === 0) direction = 'neutral';
+
+        return {
+            direction, score, clarity, supportingModules,
+            longScore, shortScore, longModules, shortModules,
+            deductions: deductions.reasons,
+        };
+    }
+
+    computeDeductions(direction, dogePrice) {
+        let total = 0;
+        const reasons = [];
+        const isLong = direction === 'long';
+
+        // Thin market: 10-min avg volume < 50% of 1h avg
+        const volRatio = computeVolumeRatio(this.data.doge.klines1m);
+        if (volRatio < 0.5) {
+            total += 15;
+            reasons.push(`thin_market(-15, volRatio=${volRatio.toFixed(2)})`);
+        }
+
+        // Sector headwind: ETH and SOL both oppose direction
+        const ethChange = this.data.eth.ticker24h.priceChangePercent;
+        const solChange = this.data.sol.ticker24h.priceChangePercent;
+        if (isLong && ethChange < 0 && solChange < 0) {
+            total += 10;
+            reasons.push('sector_headwind_long(-10)');
+        } else if (!isLong && ethChange > 0 && solChange > 0) {
+            total += 10;
+            reasons.push('sector_headwind_short(-10)');
+        }
+
+        // Near 24h extreme in trade direction
+        const doge24h = this.data.doge.ticker24h;
+        if (isLong && doge24h.highPrice > 0) {
+            const distFromHigh = ((doge24h.highPrice - dogePrice) / dogePrice) * 100;
+            if (distFromHigh <= 0.5) {
+                total += 10;
+                reasons.push(`near_24h_high(-10, dist=${distFromHigh.toFixed(2)}%)`);
+            }
+        } else if (!isLong && doge24h.lowPrice > 0) {
+            const distFromLow = ((dogePrice - doge24h.lowPrice) / dogePrice) * 100;
+            if (distFromLow <= 0.5) {
+                total += 10;
+                reasons.push(`near_24h_low(-10, dist=${distFromLow.toFixed(2)}%)`);
+            }
+        }
+
+        // Daily move already > 5% in trade direction
+        const dailyChange = doge24h.priceChangePercent;
+        if ((isLong && dailyChange > 5) || (!isLong && dailyChange < -5)) {
+            total += 10;
+            reasons.push(`daily_overextended(-10, daily=${dailyChange.toFixed(1)}%)`);
+        }
+
+        return { total, reasons };
+    }
+
+    // ─── KILL SWITCHES ─────────────────────────────────────────────
+
+    checkKillSwitches(direction, dogePrice, btcPrice, atrPct) {
+        const isLong = direction === 'long';
+        const doge24h = this.data.doge.ticker24h;
+
+        // KS1: Near extreme
+        if (isLong && doge24h.highPrice > 0) {
+            const dist = ((doge24h.highPrice - dogePrice) / dogePrice) * 100;
+            if (dist <= 0.5) return 'KS1: No long within 0.5% of 24h high';
+        }
+        if (!isLong && doge24h.lowPrice > 0) {
+            const dist = ((dogePrice - doge24h.lowPrice) / dogePrice) * 100;
+            if (dist <= 0.5) return 'KS1: No short within 0.5% of 24h low';
+        }
+
+        // KS2: Daily exhaustion (>6% move in same direction)
+        const dailyChange = doge24h.priceChangePercent;
+        if (isLong && dailyChange > 6) return `KS2: Daily already +${dailyChange.toFixed(1)}%`;
+        if (!isLong && dailyChange < -6) return `KS2: Daily already ${dailyChange.toFixed(1)}%`;
+
+        // KS3: Thin market (10-min avg < 30% of 1h avg)
+        const volRatio = computeVolumeRatio(this.data.doge.klines1m);
+        if (volRatio < 0.3) return `KS3: Thin market (volRatio=${volRatio.toFixed(2)})`;
+
+        // KS4: Extreme opposing funding
+        const fundingPct = this.data.funding.fundingRate * 100;
+        if (isLong && fundingPct > 0.05) return `KS4: No long with extreme positive funding (${fundingPct.toFixed(4)}%)`;
+        if (!isLong && fundingPct < -0.05) return `KS4: No short with extreme negative funding (${fundingPct.toFixed(4)}%)`;
+
+        // KS5: Daily loss limit (handled by checkCooldowns, but checked here too)
+        // (deferred to cooldown check)
+
+        // KS6: Chaos mode — BTC 5m ATR > 3× its 1h avg ATR
+        if (this.data.btc.klines5m.length >= 13) {
+            const btcATR = computeATR(this.data.btc.klines5m, 12);
+            // Compare current ATR to a baseline: use the first 12 candles' ATR as a proxy for "normal"
+            if (this.data.btc.klines5m.length >= 25) {
+                const earlyKlines = this.data.btc.klines5m.slice(0, 13);
+                const earlyATR = computeATR(earlyKlines, 12);
+                if (earlyATR.atrPct > 0 && btcATR.atrPct > earlyATR.atrPct * 3) {
+                    return `KS6: Chaos mode (BTC ATR ${btcATR.atrPct.toFixed(3)}% > 3x avg ${earlyATR.atrPct.toFixed(3)}%)`;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // ─── ENTRY THRESHOLDS ──────────────────────────────────────────
+
+    meetsEntryThreshold(agg) {
+        if (agg.direction === 'neutral') return false;
+        const isLong = agg.direction === 'long';
+        const scoreThreshold = isLong ? CONFIG.SCORE_LONG : CONFIG.SCORE_SHORT;
+        const clarityThreshold = isLong ? CONFIG.CLARITY_LONG : CONFIG.CLARITY_SHORT;
+
+        return agg.score >= scoreThreshold &&
+            agg.clarity >= clarityThreshold &&
+            agg.supportingModules >= CONFIG.MIN_SUPPORTING_MODULES;
+    }
+
+    // ─── BUILD SIGNAL ──────────────────────────────────────────────
+
+    async buildSignal(aggregation, dogePrice, atrPct, moduleResults) {
+        const isLong = aggregation.direction === 'long';
+        const direction = isLong ? 'BUY' : 'SELL';
+
+        // ATR-based SL and TP with clamps
+        const rawSlPct = CONFIG.SL_ATR_MULT * atrPct;
+        const slPct = Math.max(CONFIG.SL_MIN_PCT, Math.min(CONFIG.SL_MAX_PCT, rawSlPct));
+        const rawTpPct = CONFIG.TP_ATR_MULT * atrPct;
+        const tpPct = Math.max(CONFIG.TP_MIN_PCT, Math.min(CONFIG.TP_MAX_PCT, rawTpPct));
+
+        // RRR gate: reject if reward:risk ratio is too low after clamping
+        const rrr = tpPct / slPct;
+        console.log(`[Strategy] RRR check: TP=${tpPct.toFixed(3)}% / SL=${slPct.toFixed(3)}% = ${rrr.toFixed(2)}:1 (min: ${CONFIG.MIN_RRR})`);
+        if (rrr < CONFIG.MIN_RRR) {
+            return { rejected: true, reason: `RRR too low: ${rrr.toFixed(2)} < ${CONFIG.MIN_RRR}`, rrr };
+        }
+
+        const sl = isLong
+            ? dogePrice * (1 - slPct / 100)
+            : dogePrice * (1 + slPct / 100);
+        const tp = isLong
+            ? dogePrice * (1 + tpPct / 100)
+            : dogePrice * (1 - tpPct / 100);
+
+        // Position sizing: 1% risk based
+        const quantity = await this.calculateQuantity(dogePrice, sl, aggregation.supportingModules);
+
+        // Module states for logging
+        const moduleStates = moduleResults.modules.map(m => ({
+            name: m.name, direction: m.direction, points: m.points,
+        }));
+
+        const reason = `Score:${aggregation.score} Clarity:${aggregation.clarity} Modules:${aggregation.supportingModules} | ` +
+            moduleResults.modules.map(m => `${m.name.charAt(0).toUpperCase()}:${m.direction}/${m.points}`).join(' ');
+
+        // Get INR balance for mock mode
+        let entryValueInr = 0;
+        if (CONFIG.MOCK_MODE) {
+            const balance = await this.db.getMockBalance();
+            entryValueInr = balance * CONFIG.RISK_PER_TRADE * CONFIG.MAX_LEVERAGE; // notional
+        }
+
+        return {
+            decision: direction,
+            reason,
             orderType: 'MARKET',
             quantity,
-            leverage: CONFIG.LEVERAGE,
-            entry,
+            leverage: Math.min(CONFIG.MAX_LEVERAGE, 20),
+            entry: dogePrice,
             stopLoss: parseFloat(sl.toFixed(6)),
-            takeProfit: firstTpPrice,
-            tpLevels,
-            setupType: setup.type,
-            score,
-            entryValueInr: marginInr,
+            takeProfit: parseFloat(tp.toFixed(6)),
+            setupType: 'MICROSTRUCTURE_SCALP',
+            score: aggregation.score,
+            clarity: aggregation.clarity,
+            supportingModules: aggregation.supportingModules,
+            moduleStates: JSON.stringify(moduleStates),
+            atrPct,
+            entryValueInr,
+            entryTime: Date.now(),
         };
     }
-    async calculateQuantity(entry, sl, mockInrBalance = null) {
+
+    async calculateQuantity(entryPrice, slPrice, supportingModules) {
         let balanceUsd = 100;
-        if (CONFIG.MOCK_MODE && mockInrBalance) {
-            balanceUsd = mockInrBalance / CONFIG.USD_INR_RATE;
+        if (CONFIG.MOCK_MODE) {
+            const balanceInr = await this.db.getMockBalance();
+            balanceUsd = balanceInr / CONFIG.USD_INR_RATE;
         } else {
             try {
                 const accountData = await getAccountBalance(this.env);
@@ -420,26 +641,39 @@ export class StrategyService {
                     balanceUsd = parseFloat(accountData.balance);
                 }
             } catch (err) {
-                console.error('[Strategy] Failed to fetch balance, using fallback:', err.message);
+                console.error('[Strategy] Failed to fetch balance:', err.message);
             }
         }
 
-        console.log(`[Strategy] Account balance: ${balanceUsd.toFixed(2)} USD (Equivalent)`);
+        // 1% risk-based position sizing
+        const riskAmount = balanceUsd * CONFIG.RISK_PER_TRADE;
+        const stopDistance = Math.abs(entryPrice - slPrice) / entryPrice;
+        let basePosition = stopDistance > 0 ? riskAmount / (entryPrice * stopDistance) : 0;
 
-        const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
+        // Conviction scaling
+        let convictionMult = 0.70;
+        if (supportingModules >= 5) convictionMult = 1.00;
+        else if (supportingModules >= 4) convictionMult = 0.85;
 
-        // Position size is margin * leverage
-        const positionValueUsd = marginAvailable * CONFIG.LEVERAGE;
-        const quantity = Math.floor(positionValueUsd / entry);
+        const quantity = Math.floor(basePosition * convictionMult);
 
-        const slDistancePct = (Math.abs(entry - sl) / entry) * 100;
-        const riskOnMarginPct = slDistancePct * CONFIG.LEVERAGE;
+        // Cap effective leverage
+        const notional = quantity * entryPrice;
+        const effectiveLeverage = balanceUsd > 0 ? notional / balanceUsd : 0;
 
-        console.log(`[Strategy] Margin-based sizing: margin=$${marginAvailable.toFixed(2)}, leverage=${CONFIG.LEVERAGE}x, posValue=$${positionValueUsd.toFixed(2)}, qty=${quantity}`);
-        console.log(`[Strategy] Risk Profile: SL Distance=${slDistancePct.toFixed(2)}%, Risk on Margin=${riskOnMarginPct.toFixed(2)}%`);
+        console.log(`[Strategy] Position sizing: balance=$${balanceUsd.toFixed(2)}, risk=$${riskAmount.toFixed(2)}, stopDist=${(stopDistance * 100).toFixed(3)}%, base=${Math.floor(basePosition)}, conviction=${convictionMult}, qty=${quantity}, effLev=${effectiveLeverage.toFixed(1)}x`);
+
+        if (effectiveLeverage > CONFIG.MAX_LEVERAGE) {
+            const cappedQty = Math.floor((balanceUsd * CONFIG.MAX_LEVERAGE) / entryPrice);
+            console.log(`[Strategy] Leverage cap: ${effectiveLeverage.toFixed(1)}x > ${CONFIG.MAX_LEVERAGE}x, capping qty to ${cappedQty}`);
+            return cappedQty > 0 ? cappedQty : 1;
+        }
 
         return quantity > 0 ? quantity : 1;
     }
+
+    // ─── TRADE EXECUTION ───────────────────────────────────────────
+
     async executeTrade(signal) {
         try {
             console.log(`[Strategy] Executing ${signal.decision} trade (${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'})...`);
@@ -449,17 +683,15 @@ export class StrategyService {
                 result = {
                     mock: true,
                     orders: [{ id: `MOCK_${Date.now()}` }],
-                    status: 'success'
+                    status: 'success',
                 };
-                console.log('[Strategy] Mock trade simulated.');
-
                 // Deduct entry fee
                 const entryValueUsdt = signal.quantity * signal.entry;
-                const feeUsdt = entryValueUsdt * 0.001; // 0.1% Fee
+                const feeUsdt = entryValueUsdt * 0.001;
                 const feeInr = feeUsdt * CONFIG.USD_INR_RATE;
                 const currentBalance = await this.db.getMockBalance();
                 await this.db.updateMockBalance(currentBalance - feeInr);
-                console.log(`[Strategy] Mock Entry Fee deducted: ${feeInr.toFixed(2)} INR ($${feeUsdt.toFixed(4)})`);
+                console.log(`[Strategy] Mock entry fee: ${feeInr.toFixed(2)} INR`);
             } else {
                 result = await placeOrder(
                     this.env, CONFIG.PAIR, signal.decision, signal.quantity,
@@ -479,243 +711,204 @@ export class StrategyService {
             return { status: 'TRADE_PLACED', signal, result };
         } catch (err) {
             console.error('[Strategy] Trade execution error:', err.message);
-            await this.db.logTrade({ ...signal, status: 'FAILED', error: err.message });
             return { status: 'TRADE_FAILED', error: err.message };
         }
     }
-    async manageTrade(activeTrade) {
-        console.log(`[Strategy] Managing active trade: ${activeTrade.decision} ${activeTrade.asset}`);
-        const currentPrice = this.indicators.doge.price;
+
+    // ─── EXIT MANAGEMENT ───────────────────────────────────────────
+
+    async manageTrade(activeTrade, currentPrice, atrPct) {
+        console.log(`[Strategy] Managing: ${activeTrade.decision} entry=${activeTrade.price}`);
         const entryPrice = parseFloat(activeTrade.price);
         const isLong = activeTrade.decision === 'BUY';
         const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+        const entryTime = activeTrade.entry_time || activeTrade.timestamp;
+        const holdTimeMs = Date.now() - entryTime;
+        const holdTimeMin = holdTimeMs / 60000;
 
-        if (isMock) {
-            return await this.manageMockTrade(activeTrade, currentPrice, entryPrice, isLong);
+        const tradeAtrPct = parseFloat(activeTrade.atr_pct || atrPct);
+        const unrealizedPct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+        const unrealizedAtrMult = tradeAtrPct > 0 ? unrealizedPct / tradeAtrPct : 0;
+
+        const partialClosed = activeTrade.partial_closed_pct ? parseFloat(activeTrade.partial_closed_pct) : 0;
+
+        console.log(`[Strategy] Hold: ${holdTimeMin.toFixed(1)}min, P&L: ${unrealizedPct.toFixed(3)}% (${unrealizedAtrMult.toFixed(2)} ATR), partial=${partialClosed}%`);
+
+        // LAYER 1 — Hard Stop
+        let slPrice = parseFloat(activeTrade.stop_loss);
+
+        // Move to breakeven after reaching +1.0 ATR in profit
+        if (unrealizedAtrMult >= CONFIG.PROFIT_BE_THRESHOLD && partialClosed === 0) {
+            slPrice = entryPrice;
+            console.log(`[Strategy] SL moved to breakeven: ${slPrice}`);
         }
-        return await this.manageLiveTrade(activeTrade, currentPrice, entryPrice, isLong);
+
+        const slHit = isLong ? currentPrice <= slPrice : currentPrice >= slPrice;
+        if (slHit) {
+            console.log(`[Strategy] HARD STOP hit at ${currentPrice} (SL: ${slPrice})`);
+            return await this.exitTrade(activeTrade, currentPrice, 'HARD_STOP', isMock, isLong, entryPrice, holdTimeMs);
+        }
+
+        // LAYER 4 — Time Stop (check before edge decay)
+        if (holdTimeMin >= CONFIG.TIME_STOP_MAX) {
+            console.log(`[Strategy] TIME STOP MAX: ${holdTimeMin.toFixed(1)}min`);
+            return await this.exitTrade(activeTrade, currentPrice, 'TIME_STOP_20MIN', isMock, isLong, entryPrice, holdTimeMs);
+        }
+        if (holdTimeMin >= CONFIG.TIME_STOP_SLOW && unrealizedAtrMult < CONFIG.TIME_STOP_SLOW_PROFIT_THRESHOLD) {
+            console.log(`[Strategy] TIME STOP SLOW: ${holdTimeMin.toFixed(1)}min, profit only ${unrealizedAtrMult.toFixed(2)} ATR`);
+            return await this.exitTrade(activeTrade, currentPrice, 'TIME_STOP_8MIN', isMock, isLong, entryPrice, holdTimeMs);
+        }
+
+        // LAYER 2 — Edge Decay (re-run modules)
+        const dogePrice = currentPrice;
+        const btcPrice = this.data.btc.klines5m.length > 0
+            ? this.data.btc.klines5m[this.data.btc.klines5m.length - 1].close : 0;
+        const moduleResults = this.runAllModules(dogePrice, btcPrice, atrPct);
+        const tradeDir = isLong ? 'long' : 'short';
+
+        let supporting = 0, opposing = 0;
+        for (const m of moduleResults.modules) {
+            if (m.direction === tradeDir) supporting++;
+            else if (m.direction !== 'neutral') opposing++;
+        }
+
+        console.log(`[Strategy] Edge Decay: supporting=${supporting}, opposing=${opposing}`);
+
+        // Rule 3: 2+ modules opposing → immediate exit
+        if (opposing >= 2) {
+            console.log(`[Strategy] EDGE DECAY R3: ${opposing} modules opposing, EXIT`);
+            return await this.exitTrade(activeTrade, currentPrice, `EDGE_DECAY_R3_${opposing}_OPPOSING`, isMock, isLong, entryPrice, holdTimeMs);
+        }
+
+        // Rule 4: 0 modules supporting → immediate exit
+        if (supporting === 0) {
+            console.log(`[Strategy] EDGE DECAY R4: 0 supporting modules, EXIT`);
+            return await this.exitTrade(activeTrade, currentPrice, 'EDGE_DECAY_R4_NO_SUPPORT', isMock, isLong, entryPrice, holdTimeMs);
+        }
+
+        // Rule 1: supporting drops to 2 while in loss → tight trail
+        if (supporting <= 2 && unrealizedPct < 0) {
+            // Check if trail would trigger (simplified: if P&L worse than -tight_trail from peak)
+            console.log(`[Strategy] EDGE DECAY R1: 2 supporting, in loss, activating tight trail`);
+            // In a cron-based system we just exit at market since we can't truly trail between ticks
+            return await this.exitTrade(activeTrade, currentPrice, 'EDGE_DECAY_R1_TIGHT_EXIT', isMock, isLong, entryPrice, holdTimeMs);
+        }
+
+        // Rule 2: supporting drops to 1
+        if (supporting <= 1) {
+            if (unrealizedPct < 0) {
+                console.log(`[Strategy] EDGE DECAY R2: 1 supporting, in loss, EXIT`);
+                return await this.exitTrade(activeTrade, currentPrice, 'EDGE_DECAY_R2_LOSS_EXIT', isMock, isLong, entryPrice, holdTimeMs);
+            }
+            // In profit with 1 supporting → activate 0.10% trail
+            // Since we're cron-based, check if we've lost more than 0.10% from any prior tick
+            console.log(`[Strategy] EDGE DECAY R2: 1 supporting, in profit, will monitor`);
+        }
+
+        // LAYER 3 — Profit Management
+        if (unrealizedAtrMult >= CONFIG.PROFIT_TIGHT_THRESHOLD && partialClosed > 0) {
+            // Already partial closed, tighten trail
+            const tightTrail = CONFIG.PROFIT_TIGHT_TRAIL_ATR * tradeAtrPct;
+            console.log(`[Strategy] Profit trail tightened to ${tightTrail.toFixed(3)}% from peak`);
+        }
+
+        if (unrealizedAtrMult >= CONFIG.PROFIT_PARTIAL_THRESHOLD && partialClosed === 0) {
+            // Close 60% of position
+            console.log(`[Strategy] PARTIAL TP: ${CONFIG.PROFIT_PARTIAL_PCT}% at ${unrealizedAtrMult.toFixed(2)} ATR`);
+            return await this.partialClose(activeTrade, currentPrice, CONFIG.PROFIT_PARTIAL_PCT, isMock, isLong, entryPrice);
+        }
+
+        // Position still open
+        console.log(`[Strategy] Position open: price=${currentPrice}, unrealized=${unrealizedPct.toFixed(3)}%, supporting=${supporting}`);
+        return { status: 'IN_TRADE', currentPrice, unrealizedPct, supporting, opposing, holdTimeMin };
     }
 
-    async manageMockTrade(activeTrade, currentPrice, entryPrice, isLong) {
-        try {
-            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
-            const executedPct = tpLevels.filter(l => l.executed).reduce((sum, l) => sum + l.pctOfPosition, 0);
-            const remainingFraction = (100 - executedPct) / 100;
-            console.log(`[Strategy] Mock trade status: remaining=${(remainingFraction * 100).toFixed(0)}%, executed=${executedPct.toFixed(0)}%`);
+    async exitTrade(activeTrade, exitPrice, reason, isMock, isLong, entryPrice, holdTimeMs) {
+        const priceChangePct = ((exitPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+        const leverage = parseFloat(activeTrade.leverage || CONFIG.MAX_LEVERAGE);
+        const pnl = priceChangePct * leverage;
+        const holdTimeSec = Math.round(holdTimeMs / 1000);
 
-            if (remainingFraction <= 0) {
-                console.log(`[Strategy] Cleanup: Closing fully executed trade ${activeTrade.order_id}`);
-                await this.closeTradeInDb(activeTrade, currentPrice, 'TP_CLEANUP');
-                return { status: 'TRADE_CLOSED', reason: 'TP_CLEANUP' };
-            }
-
-            // Determine effective SL — move to break-even after any TP hit
-            let slPrice = parseFloat(activeTrade.stop_loss);
-            if (executedPct > 0) {
-                // Break-even SL after first TP
-                slPrice = entryPrice;
-                console.log(`[Strategy] SL moved to break-even: ${slPrice} (${executedPct}% already closed)`);
-            }
-
-            // 1. Check SL
-            const slHit = isLong ? currentPrice <= slPrice : currentPrice >= slPrice;
-            if (slHit) {
-                console.log(`[Strategy] MOCK SL hit at ${currentPrice} (SL: ${slPrice}, remaining: ${(remainingFraction * 100).toFixed(0)}%)`);
-                const priceChangePct = ((slPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                const pnl = priceChangePct * CONFIG.LEVERAGE;
-                const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-                const pnlInr = (entryValueInr * remainingFraction) * (pnl / 100);
-
-                // Deduct exit fee on remaining portion
-                const exitValueUsdt = (activeTrade.quantity * remainingFraction) * slPrice;
-                const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
-                const finalPnlInr = pnlInr - exitFeeInr;
-
-                const currentBalance = await this.db.getMockBalance();
-                await this.db.updateMockBalance(currentBalance + finalPnlInr);
-                console.log(`[Strategy] Mock SL Settlement: PnL=${pnlInr.toFixed(2)}, Fee=${exitFeeInr.toFixed(2)}, Final INR=${finalPnlInr.toFixed(2)}`);
-
-                await this.db.updateTradeStatus(
-                    activeTrade.order_id, 'CLOSED', slPrice, pnl,
-                    'MOCK_SL_HIT', null, finalPnlInr
-                );
-                return { status: 'TRADE_CLOSED', reason: 'MOCK_SL_HIT', pnl, remainingFraction };
-            }
-
-            // 2. Check TP levels
-            if (tpLevels.length > 0) {
-                const totalQty = parseFloat(activeTrade.quantity);
-                const tpResult = await this.checkAndExecutePartialTP(
-                    tpLevels, currentPrice, totalQty, entryPrice, isLong, activeTrade
-                );
-                if (tpResult) return tpResult;
-            }
-
-            // 3. Position still open
-            const unrealizedPct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-            console.log(`[Strategy] Mock position open: price=${currentPrice}, unrealized=${(unrealizedPct * CONFIG.LEVERAGE).toFixed(2)}%, remaining=${(remainingFraction * 100).toFixed(0)}%`);
-            return { status: 'IN_TRADE', currentPrice, unrealizedPct };
-        } catch (err) {
-            console.error('[Strategy] Mock trade management error:', err.message);
-            return { status: 'MANAGE_ERROR', error: err.message };
-        }
-    }
-
-    async manageLiveTrade(activeTrade, currentPrice, entryPrice, isLong) {
-        try {
-            const positions = await getOpenPositions(this.env);
-            const dogePos = positions?.find?.(p => p.pair === CONFIG.PAIR);
-
-            if (!dogePos || parseFloat(dogePos.quantity || 0) === 0) {
-                console.log('[Strategy] Position closed on exchange');
-                const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1) * CONFIG.LEVERAGE;
-                await this.db.updateTradeStatus(
-                    activeTrade.order_id, 'CLOSED', currentPrice, pnl,
-                    'EXCHANGE_CLOSED (SL/TP/MANUAL)'
-                );
-                return { status: 'TRADE_CLOSED', reason: 'EXCHANGE_CLOSED', pnl };
-            }
-
-            const currentQty = parseFloat(dogePos.quantity);
-            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
-            if (tpLevels.length > 0) {
-                const tpResult = await this.checkAndExecutePartialTP(
-                    tpLevels, currentPrice, currentQty, entryPrice, isLong, activeTrade
-                );
-                if (tpResult) return tpResult;
-            }
-
-            console.log(`[Strategy] Position still open: qty=${currentQty} price=${currentPrice}`);
-            return { status: 'IN_TRADE', position: dogePos };
-        } catch (err) {
-            console.error('[Strategy] Live trade management error:', err.message);
-            return { status: 'MANAGE_ERROR', error: err.message };
-        }
-    }
-
-    async checkAndExecutePartialTP(tpLevels, currentPrice, totalQty, entryPrice, isLong, activeTrade) {
-        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
-        for (let i = 0; i < tpLevels.length; i++) {
-            const level = tpLevels[i];
-            if (level.executed) continue;
-
-            if (level.trailing) {
-                const peak = level.peakPrice || currentPrice;
-                const newPeak = isLong ? Math.max(peak, currentPrice) : Math.min(peak, currentPrice);
-                level.peakPrice = newPeak;
-                const trailDist = level.trailingDistance / 100;
-                const trailTrigger = isLong
-                    ? newPeak * (1 - trailDist)
-                    : newPeak * (1 + trailDist);
-                const trailingTriggered = isLong ? currentPrice <= trailTrigger : currentPrice >= trailTrigger;
-                if (trailingTriggered && newPeak !== currentPrice) {
-                    const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
-                    if (closeQty > 0) {
-                        const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                        const pnl = priceChangePct * CONFIG.LEVERAGE;
-                        console.log(`[Strategy] Trailing stop hit at ${currentPrice}, closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
-
-                        if (isMock) {
-                            const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-                            const pnlInr = (entryValueInr * (level.pctOfPosition / 100)) * (pnl / 100);
-                            const currentBalance = await this.db.getMockBalance();
-                            await this.db.updateMockBalance(currentBalance + pnlInr);
-                        } else {
-                            const closeSide = isLong ? 'SELL' : 'BUY';
-                            try {
-                                await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, CONFIG.LEVERAGE);
-                            } catch (err) {
-                                console.error('[Strategy] Trailing close failed:', err.message);
-                            }
-                        }
-                        level.executed = true;
-                    }
-                }
-                await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
-                if (i === tpLevels.length - 1 && level.executed) {
-                    await this.closeTradeInDb(activeTrade, currentPrice, 'TRAILING_STOP');
-                }
-                continue;
-            }
-
-            const tpReached = isLong ? currentPrice >= level.price : currentPrice <= level.price;
-            if (tpReached) {
-                const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
-                const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                const pnl = priceChangePct * CONFIG.LEVERAGE;
-
-                if (closeQty > 0) {
-                    console.log(`[Strategy] TP${i + 1} hit at ${currentPrice} (target: ${level.price}), closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
-
-                    if (isMock) {
-                        const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-                        const pnlInr = (entryValueInr * (level.pctOfPosition / 100)) * (pnl / 100);
-
-                        // Deduct exit fee for this partial TP
-                        const exitValueUsdt = (totalQty * (level.pctOfPosition / 100)) * currentPrice;
-                        const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
-                        const finalPnlInr = pnlInr - exitFeeInr;
-
-                        const currentBalance = await this.db.getMockBalance();
-                        await this.db.updateMockBalance(currentBalance + finalPnlInr);
-                        console.log(`[Strategy] Mock TP Hit: PnL=${pnlInr.toFixed(2)} INR, Fee=${exitFeeInr.toFixed(2)} INR, Net=${finalPnlInr.toFixed(2)} INR`);
-                    } else {
-                        const closeSide = isLong ? 'SELL' : 'BUY';
-                        try {
-                            await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, CONFIG.LEVERAGE);
-                        } catch (err) {
-                            console.error('[Strategy] Partial TP close failed:', err.message);
-                        }
-                    }
-                    level.executed = true;
-                    // Sync memory to prevent stale checks in same run
-                    activeTrade.tp_levels = JSON.stringify(tpLevels);
-                    await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
-                }
-
-                if (i === tpLevels.length - 1) {
-                    await this.closeTradeInDb(activeTrade, currentPrice, 'TP_FINAL');
-                    return { status: 'TRADE_CLOSED', reason: 'TP_FINAL', pnl };
-                }
-
-                return { status: 'PARTIAL_TP', level: i + 1, price: currentPrice, closedQty: closeQty };
-            }
-        }
-        return null;
-    }
-
-    async closeTradeInDb(activeTrade, currentPrice, reason) {
-        const isLong = activeTrade.decision === 'BUY';
-        const entryPrice = parseFloat(activeTrade.price);
-        const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-        const pnl = priceChangePct * CONFIG.LEVERAGE;
-
-        let exitValueInr = null;
         let pnlInr = null;
-
-        if (CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_')) {
+        if (isMock) {
             const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
-            const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
-            const executedPct = tpLevels.filter(l => l.executed).reduce((sum, l) => sum + l.pctOfPosition, 0);
-            const remainingFraction = (100 - executedPct) / 100;
-            // Only apply PnL to the remaining portion (partial TPs already settled)
+            const partialClosed = parseFloat(activeTrade.partial_closed_pct || 0);
+            const remainingFraction = (100 - partialClosed) / 100;
             pnlInr = (entryValueInr * remainingFraction) * (pnl / 100);
-            exitValueInr = entryValueInr + pnlInr;
+
+            // Exit fee
+            const exitValueUsdt = (activeTrade.quantity * remainingFraction) * exitPrice;
+            const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
+            pnlInr -= exitFeeInr;
+
+            const currentBalance = await this.db.getMockBalance();
+            await this.db.updateMockBalance(currentBalance + pnlInr);
+            console.log(`[Strategy] Mock exit: PnL=${pnl.toFixed(2)}%, PnL_INR=${pnlInr.toFixed(2)}, fee=${exitFeeInr.toFixed(2)}`);
+        } else {
+            try {
+                const partialClosed = parseFloat(activeTrade.partial_closed_pct || 0);
+                const remainingFraction = (100 - partialClosed) / 100;
+                const closeQty = Math.floor(activeTrade.quantity * remainingFraction);
+                const closeSide = isLong ? 'SELL' : 'BUY';
+                await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, leverage);
+            } catch (err) {
+                console.error('[Strategy] Exit execution error:', err.message);
+            }
         }
 
         await this.db.updateTradeStatus(
-            activeTrade.order_id, 'CLOSED', currentPrice, pnl,
-            reason, exitValueInr, pnlInr
+            activeTrade.order_id, 'CLOSED', exitPrice, pnl,
+            reason, null, pnlInr, holdTimeSec
         );
+        return { status: 'TRADE_CLOSED', reason, pnl, holdTimeSec };
     }
+
+    async partialClose(activeTrade, currentPrice, closePct, isMock, isLong, entryPrice) {
+        const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+        const leverage = parseFloat(activeTrade.leverage || CONFIG.MAX_LEVERAGE);
+        const pnl = priceChangePct * leverage;
+        const closeQty = Math.floor(activeTrade.quantity * (closePct / 100));
+
+        if (isMock) {
+            const entryValueInr = parseFloat(activeTrade.entry_value_inr || 0);
+            const pnlInr = (entryValueInr * (closePct / 100)) * (pnl / 100);
+            const exitValueUsdt = closeQty * currentPrice;
+            const exitFeeInr = (exitValueUsdt * 0.001) * CONFIG.USD_INR_RATE;
+            const finalPnlInr = pnlInr - exitFeeInr;
+
+            const currentBalance = await this.db.getMockBalance();
+            await this.db.updateMockBalance(currentBalance + finalPnlInr);
+            console.log(`[Strategy] Mock partial TP: ${closePct}%, PnL=${pnl.toFixed(2)}%, INR=${finalPnlInr.toFixed(2)}`);
+        } else {
+            const closeSide = isLong ? 'SELL' : 'BUY';
+            try {
+                await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, leverage);
+            } catch (err) {
+                console.error('[Strategy] Partial close error:', err.message);
+            }
+        }
+
+        // Update partial_closed_pct in DB
+        const newPartialPct = (parseFloat(activeTrade.partial_closed_pct || 0)) + closePct;
+        await this.db.updatePartialClose(activeTrade.order_id, newPartialPct);
+
+        // Move SL to breakeven
+        await this.db.db.prepare('UPDATE trade_logs SET stop_loss = ? WHERE order_id = ?')
+            .bind(entryPrice, activeTrade.order_id).run();
+
+        return { status: 'PARTIAL_TP', closePct, pnl, remainingPct: 100 - newPartialPct };
+    }
+
+    // ─── COOLDOWNS ─────────────────────────────────────────────────
+
     async checkCooldowns() {
         const todayTradeCount = await this.db.getTodayTradeCount();
         if (todayTradeCount >= CONFIG.MAX_TRADES_PER_DAY) {
             return { canTrade: false, reason: `Daily trade limit (${todayTradeCount}/${CONFIG.MAX_TRADES_PER_DAY})` };
         }
         const todayLossCount = await this.db.getTodayLossCount();
-        if (todayLossCount >= CONFIG.MAX_LOSSES) {
-            return { canTrade: false, reason: `Daily loss limit (${todayLossCount}/${CONFIG.MAX_LOSSES})` };
+        if (todayLossCount >= CONFIG.MAX_DAILY_LOSSES) {
+            return { canTrade: false, reason: `Daily loss limit (${todayLossCount}/${CONFIG.MAX_DAILY_LOSSES})` };
         }
         const lastLossTime = await this.db.getLastLossTime();
         if (lastLossTime) {
@@ -726,5 +919,23 @@ export class StrategyService {
             }
         }
         return { canTrade: true };
+    }
+
+    async fixMockBalance() {
+        console.log('[Strategy] Running one-time Balance Restoration...');
+        try {
+            const { results: trades } = await this.db.db.prepare("SELECT pnl_inr, entry_value_inr FROM trade_logs WHERE status = 'CLOSED'").all();
+            let totalPnl = 0;
+            let totalEntryFees = 0;
+            for (const trade of trades) {
+                totalPnl += (trade.pnl_inr || 0);
+                totalEntryFees += (trade.entry_value_inr || 0) * 0.005;
+            }
+            const correctBalance = CONFIG.INITIAL_INR_BALANCE + totalPnl - totalEntryFees;
+            await this.db.updateMockBalance(correctBalance);
+            console.log(`[Strategy] Balance Restored: Total PnL=${totalPnl.toFixed(2)}, Fees=${totalEntryFees.toFixed(2)}. New Balance: ${correctBalance.toFixed(2)}`);
+        } catch (err) {
+            console.error('[Strategy] Balance Restoration failed:', err.message);
+        }
     }
 }

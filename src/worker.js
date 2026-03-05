@@ -68,15 +68,28 @@ export default {
                 return Response.json(result);
             }
 
+            if (url.pathname === '/api/debug') {
+                return Response.json({
+                    hasAssets: !!env.ASSETS,
+                    pathname: url.pathname,
+                    envKeys: Object.keys(env)
+                });
+            }
+
             return Response.json({ error: 'Not found' }, { status: 404 });
         }
 
-        // Dashboard (static assets) — no auth on HTML, auth is done client-side
+        // Dashboard (static assets)
         if (env.ASSETS) {
+            // Explicitly serve index.html for root or empty path
+            if (url.pathname === '/' || url.pathname === '') {
+                const indexRequest = new Request(new URL('/index.html', request.url), request);
+                return env.ASSETS.fetch(indexRequest);
+            }
             return env.ASSETS.fetch(request);
         }
 
-        return new Response('Not Found', { status: 404 });
+        return new Response('Assets binding not found', { status: 500 });
     },
 
     async scheduled(event, env, ctx) {

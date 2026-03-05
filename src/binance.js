@@ -1,84 +1,53 @@
 /**
- * Market data source: Binance Vision (data-api.binance.vision)
- * This is Binance's public data API that is NOT geo-blocked from CF Workers.
- * Uses spot USDT pairs — prices are within 0.01% of futures.
- * Same kline format including takerBuyVolume for accurate CVD.
+ * DOGE Microstructure Scalper v1.0 — Data Layer
+ * All data from Binance APIs (spot REST + futures funding rate)
  */
-const BINANCE_BASE = 'https://data-api.binance.vision';
+const BINANCE_SPOT = 'https://data-api.binance.vision';
+const BINANCE_FUTURES = 'https://fapi.binance.com';
 const SYMBOLS = { BTC: 'BTCUSDT', DOGE: 'DOGEUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
-const CVD_STEEP_THRESHOLD = 0.5;
-const CVD_GRADUAL_THRESHOLD = 0.15;
-const SWEEP_LOOKBACK_1M = 60;
-const SWEEP_LOOKBACK_5M = 20;
-const SWEEP_MIN_DEPTH = 0.15;
-const CVD_WINDOW = 30;
 
-/**
- * Estimate liquidation events from BTC price action.
- * A sharp wick below recent swing lows (with recovery) signals longs were flushed.
- * A sharp wick above recent swing highs (with rejection) signals shorts were squeezed.
- */
-export function estimateLiquidationEvents(btcKlines) {
-    if (!btcKlines || btcKlines.length < SWEEP_LOOKBACK_1M + 5) {
-        return { recentEvent: 'none', longLiqCount: 0, shortLiqCount: 0 };
-    }
-    const lookback = btcKlines.slice(-(SWEEP_LOOKBACK_1M + 5), -5);
-    const recent = btcKlines.slice(-5);
-    const swingLow = Math.min(...lookback.map(k => k.low));
-    const swingHigh = Math.max(...lookback.map(k => k.high));
-
-    // Check recent candles for wicks below swing low (longs flushed)
-    const wickedBelow = recent.some(k => k.low < swingLow);
-    const recoveredAbove = recent[recent.length - 1].close > swingLow;
-    if (wickedBelow && recoveredAbove) {
-        return { recentEvent: 'longs_flushed', longLiqCount: 1, shortLiqCount: 0 };
-    }
-
-    // Check recent candles for wicks above swing high (shorts squeezed)
-    const wickedAbove = recent.some(k => k.high > swingHigh);
-    const rejectedBelow = recent[recent.length - 1].close < swingHigh;
-    if (wickedAbove && rejectedBelow) {
-        return { recentEvent: 'shorts_squeezed', longLiqCount: 0, shortLiqCount: 1 };
-    }
-
-    return { recentEvent: 'none', longLiqCount: 0, shortLiqCount: 0 };
-}
+// ─── Data Fetching ───────────────────────────────────────────────
 
 export async function fetchAllMarketData() {
     const { BTC, DOGE, ETH, SOL } = SYMBOLS;
     const [
-        btcKlines1m, btcKlines5m, btc24h,
-        dogeKlines1m, doge24h,
-        eth24h, sol24h
+        dogeDepth,
+        dogeKlines5m, dogeKlines1m, doge24h,
+        btcKlines5m, btcKlines1h, btc24h,
+        eth24h, sol24h,
+        fundingData,
     ] = await Promise.all([
-        fetchKlines(BTC, '1m', 70),
+        fetchOrderBookDepth(DOGE, 20),
+        fetchKlines(DOGE, '5m', 30),
+        fetchKlines(DOGE, '1m', 70),
+        fetch24hTicker(DOGE),
         fetchKlines(BTC, '5m', 30),
+        fetchKlines(BTC, '1h', 3),
         fetch24hTicker(BTC),
-        fetchKlines(DOGE, '1m', 70), fetch24hTicker(DOGE),
-        fetch24hTicker(ETH), fetch24hTicker(SOL),
+        fetch24hTicker(ETH),
+        fetch24hTicker(SOL),
+        fetchFundingRate(DOGE),
     ]);
-    const liquidations = estimateLiquidationEvents(btcKlines1m);
+
     return {
-        btc: { klines1m: btcKlines1m, klines5m: btcKlines5m, ticker24h: btc24h },
-        doge: { klines1m: dogeKlines1m, ticker24h: doge24h, liquidations },
+        doge: { depth: dogeDepth, klines5m: dogeKlines5m, klines1m: dogeKlines1m, ticker24h: doge24h },
+        btc: { klines5m: btcKlines5m, klines1h: btcKlines1h, ticker24h: btc24h },
         eth: { ticker24h: eth24h },
         sol: { ticker24h: sol24h },
+        funding: fundingData,
     };
 }
 
 export async function fetchKlines(symbol, interval, limit) {
     try {
-        const url = `${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        const url = `${BINANCE_SPOT}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
         const res = await fetch(url);
         if (!res.ok) {
-            console.error(`[Data] fetchKlines ${symbol} ${interval} HTTP ${res.status}: ${await res.text()}`);
+            console.error(`[Data] fetchKlines ${symbol} ${interval} HTTP ${res.status}`);
             return [];
         }
         const data = await res.json();
-        if (!Array.isArray(data)) {
-            console.error(`[Data] fetchKlines ${symbol} unexpected:`, JSON.stringify(data).slice(0, 200));
-            return [];
-        }
+        if (!Array.isArray(data)) return [];
         return data.map(k => ({
             openTime: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
             low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
@@ -91,14 +60,30 @@ export async function fetchKlines(symbol, interval, limit) {
     }
 }
 
-export async function fetch24hTicker(symbol) {
+export async function fetchOrderBookDepth(symbol, limit = 20) {
     try {
-        const url = `${BINANCE_BASE}/api/v3/ticker/24hr?symbol=${symbol}`;
+        const url = `${BINANCE_SPOT}/api/v3/depth?symbol=${symbol}&limit=${limit}`;
         const res = await fetch(url);
         if (!res.ok) {
-            console.error(`[Data] fetch24hTicker ${symbol} HTTP ${res.status}: ${await res.text()}`);
-            return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
+            console.error(`[Data] fetchDepth ${symbol} HTTP ${res.status}`);
+            return { bids: [], asks: [] };
         }
+        const data = await res.json();
+        return {
+            bids: (data.bids || []).map(([p, q]) => ({ price: parseFloat(p), qty: parseFloat(q) })),
+            asks: (data.asks || []).map(([p, q]) => ({ price: parseFloat(p), qty: parseFloat(q) })),
+        };
+    } catch (err) {
+        console.error(`[Data] fetchDepth ${symbol} error:`, err.message);
+        return { bids: [], asks: [] };
+    }
+}
+
+export async function fetch24hTicker(symbol) {
+    try {
+        const url = `${BINANCE_SPOT}/api/v3/ticker/24hr?symbol=${symbol}`;
+        const res = await fetch(url);
+        if (!res.ok) return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
         const data = await res.json();
         return {
             priceChange: parseFloat(data.priceChange || 0),
@@ -114,68 +99,258 @@ export async function fetch24hTicker(symbol) {
     }
 }
 
-// --- Indicator computation (unchanged) ---
-
-export function computeIndicators(data, config) {
-    const btcK = data.btc.klines1m;
-    const btcK5m = data.btc.klines5m || [];
-    const dogeK = data.doge.klines1m;
-    const btcPrice = btcK.length > 0 ? btcK[btcK.length - 1].close : 0;
-    const dogePrice = dogeK.length > 0 ? dogeK[dogeK.length - 1].close : 0;
-    const btcChange1h = percentChange(btcK, 60);
-    const dogeChange1h = percentChange(dogeK, 60);
-    const btcChange5m = percentChange(btcK, 5);
-    const dogeChange5m = percentChange(dogeK, 5);
-    const btc24h = data.btc.ticker24h;
-    const doge24h = data.doge.ticker24h;
-    const btcDistHigh = btc24h.highPrice > 0 ? ((btc24h.highPrice - btcPrice) / btcPrice) * 100 : 0;
-    const btcDistLow = btc24h.lowPrice > 0 ? ((btcPrice - btc24h.lowPrice) / btcPrice) * 100 : 0;
-    const dogeDistHigh = doge24h.highPrice > 0
-        ? ((doge24h.highPrice - dogePrice) / dogePrice) * 100 : 0;
-    const dogeDistLow = doge24h.lowPrice > 0 ? ((dogePrice - doge24h.lowPrice) / dogePrice) * 100 : 0;
-    const btcCvd = computeCVD(btcK);
-    const dogeCvd = computeCVD(dogeK);
-    // Use 5m klines for structure (more meaningful patterns), 1m for CVD/momentum
-    const btcStructure = detectPriceStructure(btcK5m, SWEEP_LOOKBACK_5M);
-    const btcKeyLevel = detectKeyLevel(btcPrice, btc24h.highPrice, btc24h.lowPrice);
-    const relativeStrength = computeRelativeStrength(dogeChange1h, btcChange1h);
-    const ethChange = data.eth.ticker24h.priceChangePercent;
-    const solChange = data.sol.ticker24h.priceChangePercent;
-    const sectorBias = computeSectorBias(ethChange, solChange);
-    const session = getSessionType();
-    const liquidations = data.doge.liquidations || { recentEvent: 'none' };
-    // Volatility: 24h range as % of low
-    const dogeRange = doge24h.highPrice > 0 && doge24h.lowPrice > 0
-        ? ((doge24h.highPrice - doge24h.lowPrice) / doge24h.lowPrice) * 100
-        : 2.0;
-    // Volume ratio: recent 10-candle avg vs full 1h avg
-    const volumeRatio = computeVolumeRatio(dogeK);
-    return {
-        btc: {
-            price: btcPrice,
-            change1h: btcChange1h, change5m: btcChange5m,
-            dailyChange: btc24h.priceChangePercent,
-            distFromHigh: btcDistHigh, distFromLow: btcDistLow,
-            cvdDirection: btcCvd.direction, cvdSlope: btcCvd.slope, cvdValue: btcCvd.value,
-            structure: btcStructure, klines: btcK,
-            keyLevel: btcKeyLevel,
-        },
-        doge: {
-            price: dogePrice,
-            change1h: dogeChange1h, change5m: dogeChange5m,
-            dailyChange: doge24h.priceChangePercent,
-            distFromHigh: dogeDistHigh, distFromLow: dogeDistLow,
-            cvdDirection: dogeCvd.direction, cvdSlope: dogeCvd.slope, cvdValue: dogeCvd.value,
-            relativeStrength: relativeStrength,
-            klines: dogeK, high24h: doge24h.highPrice, low24h: doge24h.lowPrice,
-            dogeRange: dogeRange,
-            volumeRatio: volumeRatio,
-        },
-        sector: { ethChange, solChange, bias: sectorBias },
-        liquidations: liquidations,
-        session: session,
-    };
+export async function fetchFundingRate(symbol) {
+    try {
+        const url = `${BINANCE_FUTURES}/fapi/v1/premiumIndex?symbol=${symbol}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            console.warn(`[Data] fetchFunding ${symbol} HTTP ${res.status} — falling back to neutral`);
+            return { fundingRate: 0, predictedRate: 0 };
+        }
+        const data = await res.json();
+        return {
+            fundingRate: parseFloat(data.lastFundingRate || 0),
+            predictedRate: parseFloat(data.nextFundingRate || data.lastFundingRate || 0),
+        };
+    } catch (err) {
+        console.warn(`[Data] fetchFunding ${symbol} error (using neutral):`, err.message);
+        return { fundingRate: 0, predictedRate: 0 };
+    }
 }
+
+// ─── ATR Calculation ─────────────────────────────────────────────
+
+export function computeATR(klines5m, periods = 12) {
+    if (!klines5m || klines5m.length < periods + 1) return { atr: 0, atrPct: 0 };
+    const trs = [];
+    for (let i = klines5m.length - periods; i < klines5m.length; i++) {
+        const k = klines5m[i];
+        const prevClose = klines5m[i - 1].close;
+        const tr = Math.max(
+            k.high - k.low,
+            Math.abs(k.high - prevClose),
+            Math.abs(k.low - prevClose)
+        );
+        trs.push(tr);
+    }
+    const atr = trs.reduce((s, v) => s + v, 0) / trs.length;
+    const currentPrice = klines5m[klines5m.length - 1].close;
+    const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+    return { atr, atrPct };
+}
+
+export function getVolatilityRegime(atrPct) {
+    if (atrPct < 0.15) return 'low';
+    if (atrPct <= 0.45) return 'normal';
+    return 'high';
+}
+
+// ─── Order Book Imbalance (Module 1A) ────────────────────────────
+
+export function computeOrderBookImbalance(depth, midPrice, rangePct = 0.3) {
+    if (!depth || !depth.bids.length || !depth.asks.length || midPrice <= 0) {
+        return 0;
+    }
+    const rangeDecimal = rangePct / 100;
+    const bidFloor = midPrice * (1 - rangeDecimal);
+    const askCeil = midPrice * (1 + rangeDecimal);
+
+    const bidVolume = depth.bids
+        .filter(b => b.price >= bidFloor)
+        .reduce((s, b) => s + b.qty, 0);
+    const askVolume = depth.asks
+        .filter(a => a.price <= askCeil)
+        .reduce((s, a) => s + a.qty, 0);
+
+    const total = bidVolume + askVolume;
+    if (total === 0) return 0;
+    return (bidVolume - askVolume) / total; // -1 to +1
+}
+
+// ─── Trade Flow Imbalance (Module 1B) — from kline taker volume ──
+
+export function computeTradeFlowImbalance(klines1m, windowMinutes = 5) {
+    if (!klines1m || klines1m.length < windowMinutes + 2) {
+        return { tfi: 0, tfiSlope: 0 };
+    }
+
+    const calcTFI = (slice) => {
+        let buyVol = 0, sellVol = 0;
+        for (const k of slice) {
+            buyVol += k.takerBuyVolume;
+            sellVol += (k.volume - k.takerBuyVolume);
+        }
+        const total = buyVol + sellVol;
+        return total > 0 ? (buyVol - sellVol) / total : 0;
+    };
+
+    // Current TFI: last windowMinutes candles
+    const currentSlice = klines1m.slice(-windowMinutes);
+    const tfi = calcTFI(currentSlice);
+
+    // TFI from ~1 minute ago for slope calculation
+    const pastSlice = klines1m.slice(-(windowMinutes + 1), -1);
+    const pastTfi = calcTFI(pastSlice);
+    const tfiSlope = tfi - pastTfi;
+
+    return { tfi, tfiSlope };
+}
+
+// ─── EMA Calculation ─────────────────────────────────────────────
+
+export function computeEMA(values, period) {
+    if (!values || values.length === 0) return 0;
+    const k = 2 / (period + 1);
+    let ema = values[0];
+    for (let i = 1; i < values.length; i++) {
+        ema = values[i] * k + ema * (1 - k);
+    }
+    return ema;
+}
+
+// ─── Beta Calculation (Module 3) ─────────────────────────────────
+
+export function computeBeta(dogeReturns, btcReturns) {
+    if (!dogeReturns || !btcReturns || dogeReturns.length < 2 || dogeReturns.length !== btcReturns.length) {
+        return 1.0; // default beta
+    }
+    const n = dogeReturns.length;
+    const meanDoge = dogeReturns.reduce((s, v) => s + v, 0) / n;
+    const meanBtc = btcReturns.reduce((s, v) => s + v, 0) / n;
+
+    let covariance = 0, variance = 0;
+    for (let i = 0; i < n; i++) {
+        const dDoge = dogeReturns[i] - meanDoge;
+        const dBtc = btcReturns[i] - meanBtc;
+        covariance += dDoge * dBtc;
+        variance += dBtc * dBtc;
+    }
+    covariance /= n;
+    variance /= n;
+
+    return variance > 0 ? covariance / variance : 1.0;
+}
+
+export function computeReturns(klines, count) {
+    if (!klines || klines.length < count + 1) return [];
+    const returns = [];
+    const start = klines.length - count;
+    for (let i = start; i < klines.length; i++) {
+        const prev = klines[i - 1].close;
+        const curr = klines[i].close;
+        returns.push(prev > 0 ? ((curr - prev) / prev) * 100 : 0);
+    }
+    return returns;
+}
+
+// ─── Swing Point Detection ───────────────────────────────────────
+
+export function detectSwingPoints(klines, lookback = 20) {
+    if (!klines || klines.length < 3) return { swingHighs: [], swingLows: [] };
+    const slice = klines.slice(-lookback);
+    const swingHighs = [];
+    const swingLows = [];
+
+    for (let i = 1; i < slice.length - 1; i++) {
+        if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
+            swingHighs.push({ index: i, price: slice[i].high });
+        }
+        if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
+            swingLows.push({ index: i, price: slice[i].low });
+        }
+    }
+    return { swingHighs, swingLows };
+}
+
+// ─── BTC Price Structure Detection (Module 2B) ──────────────────
+
+export function detectBTCStructure(klines5m, swings) {
+    if (!klines5m || klines5m.length < 4) {
+        return { pattern: 'ranging', direction: 'neutral', points: 0 };
+    }
+
+    const recent3 = klines5m.slice(-3);
+    const current = recent3[2];
+    const prev = recent3[1];
+    const { swingHighs, swingLows } = swings;
+
+    const highestSwing = swingHighs.length > 0 ? Math.max(...swingHighs.map(s => s.price)) : null;
+    const lowestSwing = swingLows.length > 0 ? Math.min(...swingLows.map(s => s.price)) : null;
+
+    // Sweep-reclaim bullish: dipped below swing low then closed back above
+    if (lowestSwing !== null) {
+        const sweptLow = recent3.some(k => k.low < lowestSwing);
+        const reclaimedAbove = current.close > lowestSwing;
+        if (sweptLow && reclaimedAbove) {
+            return { pattern: 'sweep_reclaim', direction: 'long', points: 15 };
+        }
+    }
+
+    // Sweep-reclaim bearish: spiked above swing high then closed back below
+    if (highestSwing !== null) {
+        const sweptHigh = recent3.some(k => k.high > highestSwing);
+        const rejectedBelow = current.close < highestSwing;
+        if (sweptHigh && rejectedBelow) {
+            return { pattern: 'sweep_reclaim', direction: 'short', points: 15 };
+        }
+    }
+
+    // Check last 3 candles for rejection / support patterns (with invalidation)
+    for (let i = 0; i < 3; i++) {
+        const candle = recent3[i];
+        const range = candle.high - candle.low;
+        if (range <= 0) continue;
+
+        const bodyTop = Math.max(candle.open, candle.close);
+        const bodyBot = Math.min(candle.open, candle.close);
+        const upperWick = (candle.high - bodyTop) / range;
+        const lowerWick = (bodyBot - candle.low) / range;
+        const bodyPosition = (candle.close - candle.low) / range;
+
+        // Rejection bearish: upper wick > 60%, close in bottom 40%, near a swing high
+        if (upperWick > 0.6 && bodyPosition < 0.4) {
+            // Invalidation: next candle closes above rejection candle's high
+            const invalidated = recent3.slice(i + 1).some(k => k.close > candle.high);
+            if (!invalidated && highestSwing !== null) {
+                const nearSwingH = Math.abs(candle.high - highestSwing) / highestSwing < 0.005;
+                if (nearSwingH) {
+                    return { pattern: 'rejection', direction: 'short', points: 10 };
+                }
+            }
+        }
+
+        // Rejection bullish: lower wick > 60%, close in top 40%, near a swing low
+        if (lowerWick > 0.6 && bodyPosition > 0.6) {
+            const invalidated = recent3.slice(i + 1).some(k => k.close < candle.low);
+            if (!invalidated && lowestSwing !== null) {
+                const nearSwingL = Math.abs(candle.low - lowestSwing) / lowestSwing < 0.005;
+                if (nearSwingL) {
+                    return { pattern: 'rejection', direction: 'long', points: 10 };
+                }
+            }
+        }
+    }
+
+    // Breakout: close above highest swing high with volume > 1.5× avg
+    if (highestSwing !== null && klines5m.length >= 20) {
+        const avg20Vol = klines5m.slice(-20).reduce((s, k) => s + k.volume, 0) / 20;
+        if (current.close > highestSwing && current.volume > avg20Vol * 1.5) {
+            return { pattern: 'breakout', direction: 'long', points: 8 };
+        }
+    }
+
+    // Breakdown: close below lowest swing low with volume > 1.5× avg
+    if (lowestSwing !== null && klines5m.length >= 20) {
+        const avg20Vol = klines5m.slice(-20).reduce((s, k) => s + k.volume, 0) / 20;
+        if (current.close < lowestSwing && current.volume > avg20Vol * 1.5) {
+            return { pattern: 'breakdown', direction: 'short', points: 8 };
+        }
+    }
+
+    return { pattern: 'ranging', direction: 'neutral', points: 0 };
+}
+
+// ─── Percent Change Helper ───────────────────────────────────────
 
 export function percentChange(klines, periods) {
     if (!klines || klines.length < periods + 1) return 0;
@@ -185,121 +360,21 @@ export function percentChange(klines, periods) {
     return ((current - past) / past) * 100;
 }
 
-export function computeCVD(klines) {
-    if (!klines || klines.length < CVD_WINDOW) return { direction: 'flat', slope: 'flat', value: 0 };
-    const deltas = klines.map(k => {
-        const sellVol = k.volume - k.takerBuyVolume;
-        return k.takerBuyVolume - sellVol;
-    });
-    const recentN = deltas.slice(-CVD_WINDOW);
-    const cvdValues = [];
-    let cumulative = 0;
-    for (const d of recentN) {
-        cumulative += d;
-        cvdValues.push(cumulative);
-    }
-    // Compare last 5 values vs first 5 values for smoother trend detection
-    const recentAvg = cvdValues.slice(-5).reduce((s, v) => s + v, 0) / 5;
-    const earlyAvg = cvdValues.slice(0, 5).reduce((s, v) => s + v, 0) / 5;
-    const diff = recentAvg - earlyAvg;
-    const avgVol = klines.slice(-CVD_WINDOW).reduce((s, k) => s + k.volume, 0) / CVD_WINDOW;
-    const normalizedSlope = avgVol > 0 ? Math.abs(diff) / avgVol : 0;
-    let direction = 'flat';
-    if (diff > avgVol * 0.05) direction = 'rising';
-    else if (diff < -avgVol * 0.05) direction = 'falling';
-    let slope = 'flat';
-    if (normalizedSlope >= CVD_STEEP_THRESHOLD) slope = 'steep';
-    else if (normalizedSlope >= CVD_GRADUAL_THRESHOLD) slope = 'gradual';
-    return { direction, slope, value: cumulative };
-}
+// ─── Volume Ratio (10-min avg vs 1-hour avg from 1m klines) ─────
 
-export function detectPriceStructure(klines, sweepLookback = SWEEP_LOOKBACK_5M) {
-    if (!klines || klines.length < sweepLookback + 4) return 'ranging';
-    const lookback = klines.slice(-(sweepLookback + 3), -3);
-    const recent3 = klines.slice(-3); // last 3 candles
-    const current = recent3[2];
-    const swingLow = Math.min(...lookback.map(k => k.low));
-    const swingHigh = Math.max(...lookback.map(k => k.high));
-
-    // Sweep reclaim: check if any of last 3 candles swept, and current reclaimed
-    const sweptLow = recent3.some(k => k.low < swingLow);
-    const reclaimedAbove = current.close > swingLow;
-    if (sweptLow && reclaimedAbove) {
-        const lowestWick = Math.min(...recent3.map(k => k.low));
-        const depth = ((swingLow - lowestWick) / swingLow) * 100;
-        if (depth >= SWEEP_MIN_DEPTH) return 'sweep_reclaim_bullish';
-    }
-    const sweptHigh = recent3.some(k => k.high > swingHigh);
-    const rejectedBelow = current.close < swingHigh;
-    if (sweptHigh && rejectedBelow) {
-        const highestWick = Math.max(...recent3.map(k => k.high));
-        const depth = ((highestWick - swingHigh) / swingHigh) * 100;
-        if (depth >= SWEEP_MIN_DEPTH) return 'sweep_reclaim_bearish';
-    }
-
-    // Rejection / Support: check last 3 candles, require no contradiction after
-    for (let i = 0; i < 3; i++) {
-        const candle = recent3[i];
-        const range = candle.high - candle.low;
-        if (range <= 0) continue;
-
-        const upperWick = (candle.high - Math.max(candle.open, candle.close)) / range;
-        const lowerWick = (Math.min(candle.open, candle.close) - candle.low) / range;
-
-        // Rejection: long upper wick + red close, not contradicted by a green close after
-        if (upperWick > 0.6 && candle.close < candle.open) {
-            const contradicted = recent3.slice(i + 1).some(k => k.close > candle.high * 0.998);
-            if (!contradicted) return 'rejection';
-        }
-        // Support: long lower wick + green close, not contradicted by a red close after
-        if (lowerWick > 0.6 && candle.close > candle.open) {
-            const contradicted = recent3.slice(i + 1).some(k => k.close < candle.low * 1.002);
-            if (!contradicted) return 'support_holding';
-        }
-    }
-
-    // Breakout/breakdown: current candle only
-    if (current.close > swingHigh && current.close > current.open) return 'breakout';
-    if (current.close < swingLow && current.close < current.open) return 'breakdown';
-    return 'ranging';
-}
-
-export function detectKeyLevel(price, high, low) {
-    if (high === 0 || low === 0) return 'mid_range';
-    const range = high - low;
-    if (range === 0) return 'mid_range';
-    const positionInRange = (price - low) / range;
-    if (positionInRange >= 0.85) return 'at_resistance';
-    if (positionInRange <= 0.15) return 'at_support';
-    return 'mid_range';
-}
-
-export function computeRelativeStrength(dogeChange, btcChange) {
-    const diff = dogeChange - btcChange;
-    if (Math.abs(diff) < 0.2) return 'aligned';
-    if (Math.abs(diff) > 2) return 'decoupled';
-    if (diff > 0.5) return 'stronger';
-    if (diff < -0.5) return 'weaker';
-    return 'aligned'; // 0.2-0.5 gap is noise, not conviction
-}
-
-export function computeVolumeRatio(klines) {
-    if (!klines || klines.length < 60) return 1.0;
-    const recent10 = klines.slice(-10);
-    const full60 = klines.slice(-60);
+export function computeVolumeRatio(klines1m) {
+    if (!klines1m || klines1m.length < 60) return 1.0;
+    const recent10 = klines1m.slice(-10);
+    const full60 = klines1m.slice(-60);
     const avgRecent = recent10.reduce((s, k) => s + k.volume, 0) / 10;
     const avgFull = full60.reduce((s, k) => s + k.volume, 0) / 60;
     return avgFull > 0 ? avgRecent / avgFull : 1.0;
 }
 
+// ─── Sector Bias ─────────────────────────────────────────────────
+
 export function computeSectorBias(ethChange, solChange) {
     if (ethChange > 1 && solChange > 1) return 'bullish';
     if (ethChange < -1 && solChange < -1) return 'bearish';
     return 'mixed';
-}
-
-export function getSessionType() {
-    const now = new Date();
-    const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
-    return { hour: utcHour };
 }
