@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DOGE Scalper Dashboard</title>
+    <title>OI Flow Rider Dashboard</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -26,6 +26,7 @@
             --blue: #3b82f6;
             --amber: #f59e0b;
             --purple: #a855f7;
+            --cyan: #06b6d4;
         }
 
         body {
@@ -47,7 +48,7 @@
         }
 
         h1 span {
-            color: var(--amber);
+            color: var(--cyan);
         }
 
         /* Login Screen */
@@ -102,7 +103,7 @@
             padding: 12px;
             border-radius: 8px;
             border: none;
-            background: var(--blue);
+            background: var(--cyan);
             color: white;
             font-size: 0.9rem;
             font-weight: 600;
@@ -170,9 +171,14 @@
             color: var(--blue);
         }
 
+        .badge-cyan {
+            background: rgba(6, 182, 212, .15);
+            color: var(--cyan);
+        }
+
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 16px;
             margin-bottom: 24px;
         }
@@ -193,7 +199,7 @@
         }
 
         .card-value {
-            font-size: 1.75rem;
+            font-size: 1.5rem;
             font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
         }
@@ -277,6 +283,10 @@
             color: var(--blue);
         }
 
+        .text-cyan {
+            color: var(--cyan);
+        }
+
         .btn {
             padding: 8px 16px;
             border-radius: 8px;
@@ -294,8 +304,8 @@
         }
 
         .btn-primary {
-            background: var(--blue);
-            border-color: var(--blue);
+            background: var(--cyan);
+            border-color: var(--cyan);
         }
 
         .btn-primary:hover {
@@ -309,33 +319,9 @@
             font-size: 0.75rem;
         }
 
-        .delta-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            padding: 16px 20px;
-        }
-
-        .delta-item {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-
-        .delta-label {
-            font-size: 0.75rem;
-            color: var(--dim);
-        }
-
-        .delta-val {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.9rem;
-            font-weight: 600;
-        }
-
         .active-trade {
-            background: linear-gradient(135deg, rgba(59, 130, 246, .08), rgba(168, 85, 247, .08));
-            border-color: var(--blue);
+            background: linear-gradient(135deg, rgba(6, 182, 212, .08), rgba(168, 85, 247, .08));
+            border-color: var(--cyan);
         }
 
         .indicator-grid {
@@ -407,13 +393,29 @@
         }
 
         .reason-more {
-            color: var(--blue);
+            color: var(--cyan);
             font-size: 0.7rem;
             cursor: pointer;
             margin-top: 4px;
             display: block;
             font-family: 'Inter', sans-serif;
             font-weight: 600;
+        }
+
+        /* OI Flow Card styling */
+        .oi-card {
+            border-color: var(--cyan);
+            background: linear-gradient(135deg, var(--surface), rgba(6, 182, 212, .05));
+        }
+
+        .oi-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .oi-arrow {
+            font-size: 1.2rem;
         }
     </style>
 </head>
@@ -423,7 +425,7 @@
     <!-- Login Screen -->
     <div class="login-overlay" id="loginScreen">
         <div class="login-box">
-            <h2>Mock Scalper</h2>
+            <h2>OI Flow Rider</h2>
             <p>Enter your dashboard password</p>
             <input type="password" class="login-input" id="passwordInput" placeholder="Password" autofocus>
             <button class="login-btn" onclick="doLogin()">Login</button>
@@ -435,7 +437,7 @@
     <div class="dashboard" id="dashboard">
         <div class="container">
             <div class="header">
-                <h1>Mock <span>Scalper</span></h1>
+                <h1>OI Flow <span>Rider</span></h1>
                 <div class="header-right">
                     <span class="refresh-timer" id="timer">Auto-refresh: 10s</span>
                     <span class="live-dot" id="liveDot"></span>
@@ -450,6 +452,11 @@
                     <div class="card-label">Status</div>
                     <div class="card-value" id="status">—</div>
                     <div class="card-sub" id="statusSub"></div>
+                </div>
+                <div class="card oi-card">
+                    <div class="card-label">OI Flow (5m)</div>
+                    <div class="card-value oi-indicator" id="oiChange">—</div>
+                    <div class="card-sub" id="oiSub">Waiting for data...</div>
                 </div>
                 <div class="card">
                     <div class="card-label">Today</div>
@@ -471,7 +478,7 @@
             <div class="panel active-trade" id="activePanel" style="display:none;">
                 <div class="panel-header">
                     <span class="panel-title">🔴 Active Trade</span>
-                    <span class="badge badge-blue" id="activeDirection">—</span>
+                    <span class="badge badge-cyan" id="activeDirection">—</span>
                 </div>
                 <div class="indicator-grid" id="activeDetails"></div>
             </div>
@@ -491,7 +498,7 @@
                                 <th>SL</th>
                                 <th>TP</th>
                                 <th>Qty</th>
-                                <th>Score</th>
+                                <th>OI Δ</th>
                                 <th>Status</th>
                                 <th>P&L</th>
                                 <th>Reason</th>
@@ -574,23 +581,23 @@
 
         async function refresh() {
             try {
-                const [statusRes, tradesRes, deltaRes] = await Promise.all([
+                const [statusRes, tradesRes, oiRes] = await Promise.all([
                     apiFetch('/api/status').catch(() => null),
                     apiFetch('/api/trades').catch(() => []),
-                    apiFetch('/api/delta').catch(() => null),
+                    apiFetch('/api/oi').catch(() => null),
                 ]);
                 if (statusRes) renderStatus(statusRes);
                 if (tradesRes) renderTrades(tradesRes);
-                if (deltaRes) renderDelta(deltaRes);
+                if (oiRes) renderOI(oiRes);
             } catch (e) { /* handled in apiFetch */ }
         }
 
         function renderStatus(s) {
             const el = document.getElementById('status');
             el.textContent = s.status;
-            el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-blue' : 'text-green');
+            el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-cyan' : 'text-green');
             document.getElementById('statusSub').textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
-            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 10`;
+            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 8`;
             document.getElementById('todayLosses').textContent = `${s.todayLosses || 0} losses today`;
             document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%';
             document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total`;
@@ -610,8 +617,28 @@
       <div class="ind-item"><div class="ind-label">Take Profit</div>${s.activeTrade.take_profit}</div>
       <div class="ind-item"><div class="ind-label">Quantity</div>${s.activeTrade.quantity}</div>
       <div class="ind-item"><div class="ind-label">Leverage</div>${s.activeTrade.leverage}x</div>
+      <div class="ind-item"><div class="ind-label">OI Δ at Entry</div>${s.activeTrade.oi_change_5m ? s.activeTrade.oi_change_5m.toFixed(3) + '%' : '—'}</div>
       <div class="ind-item"><div class="ind-label">Order ID</div><span class="text-dim">${(s.activeTrade.order_id || '').slice(0, 16)}</span></div>`;
             } else { panel.style.display = 'none'; }
+        }
+
+        function renderOI(oi) {
+            const changeEl = document.getElementById('oiChange');
+            const subEl = document.getElementById('oiSub');
+
+            if (oi.change5m !== null && oi.change5m !== undefined) {
+                const val = oi.change5m;
+                const arrow = val > 0.5 ? '📈' : val < -0.5 ? '📉' : '➡️';
+                const cls = val > 0 ? 'text-green' : val < 0 ? 'text-red' : 'text-dim';
+                changeEl.innerHTML = `<span class="oi-arrow">${arrow}</span><span class="${cls}">${val >= 0 ? '+' : ''}${val.toFixed(3)}%</span>`;
+
+                const oiFormatted = oi.currentOI ? (oi.currentOI / 1e6).toFixed(1) + 'M' : '—';
+                const change15m = oi.change15m !== null ? ` | 15m: ${oi.change15m >= 0 ? '+' : ''}${oi.change15m.toFixed(3)}%` : '';
+                subEl.textContent = `OI: ${oiFormatted}${change15m} | ${oi.snapshotCount} snapshots`;
+            } else {
+                changeEl.textContent = '—';
+                subEl.textContent = `Collecting data... (${oi.snapshotCount || 0} snapshots)`;
+            }
         }
 
         function renderTrades(trades) {
@@ -623,19 +650,23 @@
                 const sideClass = t.decision === 'BUY' ? 'text-green' : 'text-red';
                 const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
                 const pnlClass = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim';
-                const statusBadge = t.status === 'OPEN' ? 'badge-blue' : t.pnl > 0 ? 'badge-green' : t.pnl < 0 ? 'badge-red' : 'badge-amber';
+                const statusBadge = t.status === 'OPEN' ? 'badge-cyan' : t.pnl > 0 ? 'badge-green' : t.pnl < 0 ? 'badge-red' : 'badge-amber';
                 const pnlInr = t.pnl_inr != null ? (t.pnl_inr >= 0 ? '+' : '') + parseFloat(t.pnl_inr).toFixed(2) : null;
                 const pnlDisplay = pnlInr ? `${pnl} (₹${pnlInr})` : pnl;
+                const oiDelta = t.oi_change_5m != null ? `${t.oi_change_5m >= 0 ? '+' : ''}${parseFloat(t.oi_change_5m).toFixed(3)}%` : '—';
+                const oiClass = t.oi_change_5m > 0 ? 'text-green' : t.oi_change_5m < 0 ? 'text-red' : 'text-dim';
                 const fullReason = t.reason || '—';
-                const isLongReason = fullReason.length > 45;
+                const closeReason = t.close_reason ? `\nClose: ${t.close_reason}` : '';
+                const combinedReason = fullReason + closeReason;
+                const isLongReason = combinedReason.length > 45;
                 const reasonHtml = isLongReason
                     ? `<div class="reason-cell" onclick="toggleReason(this)">
-                        <div class="reason-content collapsed">${fullReason}</div>
+                        <div class="reason-content collapsed">${combinedReason}</div>
                         <span class="reason-more">Read More</span>
                        </div>`
-                    : `<div class="reason-cell"><div class="reason-content">${fullReason}</div></div>`;
+                    : `<div class="reason-cell"><div class="reason-content">${combinedReason}</div></div>`;
 
-                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
+                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td class="${oiClass}">${oiDelta}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
             }).join('');
         }
 
@@ -651,22 +682,6 @@
                 content.classList.remove('expanded');
                 more.textContent = 'Read More';
             }
-        }
-
-        function renderDelta(d) {
-            const el = document.getElementById('deltaStatus');
-            if (d.error) { el.textContent = 'NOT BOUND'; el.className = 'badge badge-red'; return; }
-            el.textContent = d.connected ? 'CONNECTED' : 'DISCONNECTED';
-            el.className = 'badge ' + (d.connected ? 'badge-green' : 'badge-red');
-            document.getElementById('deltaUptime').textContent = (d.uptimeMin || d.uptimeMin === 0) ? d.uptimeMin + ' min' : '—';
-            document.getElementById('deltaMsgs').textContent = d.messageCount != null ? d.messageCount.toLocaleString() : '—';
-            const fmtCvd = (data) => {
-                if (!data) return '—';
-                const cls = data.direction === 'rising' ? 'text-green' : data.direction === 'falling' ? 'text-red' : 'text-dim';
-                return `<span class="${cls}">${data.direction}</span> · ${data.slope} · ${data.minutesOfData || 0}min`;
-            };
-            document.getElementById('btcCvd').innerHTML = fmtCvd(d.btc);
-            document.getElementById('dogeCvd').innerHTML = fmtCvd(d.doge);
         }
 
         async function triggerRun() {

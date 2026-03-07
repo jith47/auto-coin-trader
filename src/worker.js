@@ -62,6 +62,35 @@ export default {
                 return Response.json(trades);
             }
 
+            // OI data endpoint — shows current institutional flow state
+            if (url.pathname === '/api/oi') {
+                try {
+                    const snapshots = await db.getOISnapshots(30);
+                    const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
+                    const fiveMinAgo = snapshots.find(s => s.timestamp <= Date.now() - 5 * 60 * 1000);
+                    const fifteenMinAgo = snapshots.find(s => s.timestamp <= Date.now() - 15 * 60 * 1000);
+
+                    let change5m = null, change15m = null;
+                    if (latest && fiveMinAgo) {
+                        change5m = ((latest.open_interest - fiveMinAgo.open_interest) / fiveMinAgo.open_interest) * 100;
+                    }
+                    if (latest && fifteenMinAgo) {
+                        change15m = ((latest.open_interest - fifteenMinAgo.open_interest) / fifteenMinAgo.open_interest) * 100;
+                    }
+
+                    return Response.json({
+                        currentOI: latest?.open_interest,
+                        price: latest?.price,
+                        change5m,
+                        change15m,
+                        snapshotCount: snapshots.length,
+                        oldestSnapshot: snapshots[0]?.timestamp ? new Date(snapshots[0].timestamp).toISOString() : null,
+                    });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
             if (url.pathname === '/api/run') {
                 const service = new StrategyService(env);
                 const result = await service.run(db);

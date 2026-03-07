@@ -3,14 +3,52 @@ export class D1Database {
         this.db = d1;
     }
 
-    // Log a trade
+    // ─── OI Snapshots ────────────────────────────────────────────────
+
+    // Store an OI reading for trend analysis
+    async saveOISnapshot(timestamp, symbol, openInterest, price) {
+        return await this.db.prepare(
+            'INSERT INTO oi_snapshots (timestamp, symbol, open_interest, price) VALUES (?, ?, ?, ?)'
+        ).bind(timestamp, symbol, openInterest, price).run();
+    }
+
+    // Get OI snapshots for the last N minutes (ordered oldest → newest)
+    async getOISnapshots(minutes = 30) {
+        const cutoff = Date.now() - (minutes * 60 * 1000);
+        const { results } = await this.db.prepare(
+            'SELECT * FROM oi_snapshots WHERE timestamp >= ? ORDER BY timestamp ASC'
+        ).bind(cutoff).all();
+        return results || [];
+    }
+
+    // Get the OI snapshot closest to N minutes ago
+    async getOISnapshotAt(minutesAgo) {
+        const target = Date.now() - (minutesAgo * 60 * 1000);
+        const result = await this.db.prepare(
+            'SELECT * FROM oi_snapshots WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1'
+        ).bind(target).first();
+        return result;
+    }
+
+    // Delete OI snapshots older than 2 hours to keep the table small
+    async cleanupOldOISnapshots() {
+        const cutoff = Date.now() - (2 * 60 * 60 * 1000);
+        return await this.db.prepare(
+            'DELETE FROM oi_snapshots WHERE timestamp < ?'
+        ).bind(cutoff).run();
+    }
+
+    // ─── Trade Logging ───────────────────────────────────────────────
+
+    // Log a trade with OI-enriched data
     async logTrade(data) {
         const stmt = this.db.prepare(`
             INSERT INTO trade_logs (
                 timestamp, decision, reason, asset, price, quantity,
                 leverage, stop_loss, take_profit, tp_levels, raw_response, status, order_id,
-                entry_value_inr, atr_pct, supporting_modules, module_states, entry_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                entry_value_inr, atr_pct, supporting_modules, module_states, entry_time,
+                oi_change_5m, oi_at_entry, top_trader_ratio, taker_ratio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         return await stmt.bind(
@@ -31,7 +69,11 @@ export class D1Database {
             data.atrPct || 0,
             data.supportingModules || 0,
             data.moduleStates || null,
-            data.entryTime || Date.now()
+            data.entryTime || Date.now(),
+            data.oiChange5m || null,
+            data.oiAtEntry || null,
+            data.topTraderRatio || null,
+            data.takerRatio || null
         ).run();
     }
 
@@ -135,7 +177,8 @@ export class D1Database {
         return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     }
 
-    // Mock Balance Management
+    // ─── Mock Balance Management ─────────────────────────────────────
+
     async getMockBalance() {
         const result = await this.db.prepare(
             "SELECT value FROM settings WHERE key = 'mock_balance_inr'"
@@ -149,7 +192,8 @@ export class D1Database {
         ).bind(newBalance.toFixed(2)).run();
     }
 
-    // Generic Setting Management
+    // ─── Generic Setting Management ──────────────────────────────────
+
     async getSetting(key, defaultValue = null) {
         const result = await this.db.prepare(
             "SELECT value FROM settings WHERE key = ?"
