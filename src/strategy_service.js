@@ -5,13 +5,13 @@ const CONFIG = {
     MARGIN_PERCENT: 70,
     LEVERAGE: 5,
     SL: {
-        SWEEP_RECLAIM: 0.7,
-        RELATIVE_WEAKNESS: 0.8,
-        RELATIVE_STRENGTH: 0.8,
-        TREND_CONTINUATION: 1.0,
+        SWEEP_RECLAIM: 0.9,
+        RELATIVE_WEAKNESS: 1.0,
+        RELATIVE_STRENGTH: 1.0,
+        TREND_CONTINUATION: 1.2,
     },
-    SL_MIN: 0.6,
-    SL_MAX: 1.2,
+    SL_MIN: 0.8,
+    SL_MAX: 1.5,
     MIN_RRR: 1.5,
     SCORE_THRESHOLD: 70,
     KILL_CORR_BTC: 1.5,
@@ -43,11 +43,11 @@ const CONFIG = {
     INITIAL_INR_BALANCE: 2500,
     USD_INR_RATE: 85, // Simple rate for conversion
     TP_PROFILES: {
-        // Simple 50/50 scheme for all setups as per Strategy 1
-        SWEEP_RECLAIM: [{ pctOfPosition: 50, fixedTpPct: 0.5 }, { pctOfPosition: 50, trailing: true, trailingDistance: 0.4 }],
-        RELATIVE_WEAKNESS: [{ pctOfPosition: 50, fixedTpPct: 0.5 }, { pctOfPosition: 50, trailing: true, trailingDistance: 0.4 }],
-        RELATIVE_STRENGTH: [{ pctOfPosition: 50, fixedTpPct: 0.5 }, { pctOfPosition: 50, trailing: true, trailingDistance: 0.4 }],
-        TREND_CONTINUATION: [{ pctOfPosition: 50, fixedTpPct: 0.5 }, { pctOfPosition: 50, trailing: true, trailingDistance: 0.4 }],
+        // R:R-based TP levels matching strategy doc
+        SWEEP_RECLAIM: [{ pctOfPosition: 80, rrMultiple: 1.5 }, { pctOfPosition: 20, rrMultiple: 2.5 }],
+        RELATIVE_WEAKNESS: [{ pctOfPosition: 100, rrMultiple: 1.5 }],
+        RELATIVE_STRENGTH: [{ pctOfPosition: 100, rrMultiple: 1.5 }],
+        TREND_CONTINUATION: [{ pctOfPosition: 50, rrMultiple: 1.5 }, { pctOfPosition: 30, rrMultiple: 2.0 }, { pctOfPosition: 20, trailing: true, trailingDistance: 0.4 }],
     },
 };
 export class StrategyService {
@@ -270,24 +270,24 @@ export class StrategyService {
         return null;
     }
     checkRelativeWeaknessShort(ind) {
-        // Hard gates: divergence confirmed + DOGE CVD aligned (4 gates)
+        // Hard gates: divergence confirmed + structure not bullish (4 gates)
         const checks = {
             btcPositive: ind.btc.change1h > 0,
             dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
             dogeWeaker: ind.doge.relativeStrength === 'weaker',
-            btcNotHoldingSupport: ind.btc.structure !== 'support_holding',
+            notBtcSupport: ind.btc.structure !== 'support_holding', // Don't short into BTC support bounce
         };
         console.log('[Strategy] Setup B (SELL) checks:', JSON.stringify(checks));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
         return null;
     }
     checkRelativeStrengthLong(ind) {
-        // Hard gates: divergence confirmed (4 gates)
+        // Hard gates: divergence confirmed + structure not bearish (4 gates)
         const checks = {
             btcNegative: ind.btc.change1h < 0,
             dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
             dogeStronger: ind.doge.relativeStrength === 'stronger',
-            btcNotRejecting: ind.btc.structure !== 'rejection',
+            notBtcRejection: ind.btc.structure !== 'rejection', // Don't long into BTC rejection
         };
         console.log('[Strategy] Setup B (BUY) checks:', JSON.stringify(checks));
         if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
@@ -324,24 +324,15 @@ export class StrategyService {
         let score = 0;
         const isLong = setup.direction === 'BUY';
 
-        // 1. BTC Structure (30/20/15/0/-10) — direction-aware
+        // 1. BTC Structure (30/20/15/0)
         const isSweep = ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish';
         const isExtremeRejection = (ind.btc.structure === 'rejection' && ind.btc.distFromHigh < 0.25) ||
             (ind.btc.structure === 'support_holding' && ind.btc.distFromLow < 0.25);
 
-        // Direction alignment: support_holding is bullish, rejection is bearish
-        const structureAligned = (isLong && ind.btc.structure === 'support_holding') ||
-            (!isLong && ind.btc.structure === 'rejection');
-        const structureConflicts = (isLong && ind.btc.structure === 'rejection') ||
-            (!isLong && ind.btc.structure === 'support_holding');
-
         if (isSweep || isExtremeRejection) {
             score += 30; // Both sweep and extreme rejection are high conviction
-        } else if (structureAligned) {
-            score += 20; // Structure supports trade direction
-        } else if (structureConflicts) {
-            score -= 10; // Structure opposes trade direction — penalty
-            console.log(`[Strategy] Structure penalty: -10 (${ind.btc.structure} conflicts with ${setup.direction})`);
+        } else if (ind.btc.structure === 'rejection' || ind.btc.structure === 'support_holding') {
+            score += 20;
         } else if (ind.btc.structure === 'breakout' || ind.btc.structure === 'breakdown') {
             score += 15;
         }

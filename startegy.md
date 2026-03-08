@@ -98,7 +98,7 @@ For take profit placement, maintain a minimum reward-to-risk ratio of 1.5. For s
 
 Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 80 or higher for longs, and 70 or higher for shorts.
 
-Award up to 30 points for structure confirmation: 30 points for sweep and reclaim or extreme rejection/support near key levels, 20 points for direction-aligned structure (support_holding on longs, rejection on shorts), 15 points for breakout or breakdown, 0 for ranging. Deduct 10 points if structure contradicts trade direction (shorting on support_holding, longing on rejection).
+Award up to 30 points for structure confirmation: 30 points for sweep and reclaim, 20 points for rejection or support holding, 15 points for breakout or breakdown, 0 for ranging.
 
 Award up to 20 points for BTC CVD alignment: 15 points if BTC spot CVD confirms direction, plus 5 bonus points if BTC CVD slope is steep (indicating aggressive directional flow).
 
