@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "crypto-autobot",
+	"name": "crypto-hypo-bot",
 	"main": "src/worker.js",
 	"compatibility_flags": [
 		"nodejs_compat"
@@ -13,25 +13,11 @@
 	"observability": {
 		"enabled": true
 	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": [
-				"BinanceDeltaFeed"
-			]
-		},
-		{
-			"tag": "v2",
-			"deleted_classes": [
-				"BinanceDeltaFeed"
-			]
-		}
-	],
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "trade_db",
-			"database_id": "adfd9b6d-0350-478f-b4dc-5ba9c228d7f7"
+			"database_name": "hypo_trade_db",
+			"database_id": "e976ac59-d2ab-48ae-a7fb-ce7637bb9be1"
 		}
 	],
 	"triggers": {

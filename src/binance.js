@@ -1,123 +1,138 @@
 /**
- * OI Flow Rider — Data Layer
- * Fetches institutional flow data from Binance Futures & Spot APIs
+ * OI Flow Rider v2.0 — Data Layer
+ * Multi-asset (BTC + ETH) institutional flow data from Binance Futures & Spot APIs
  */
-const BINANCE_SPOT = 'https://data-api.binance.vision';
-const BINANCE_FUTURES = 'https://fapi.binance.com';
+const SPOT_ENDPOINTS = [
+    'https://api-gcp.binance.com',
+    'https://api.binance.com',
+    'https://api1.binance.com',
+    'https://api2.binance.com',
+    'https://api3.binance.com'
+];
+
+const FUTURES_ENDPOINTS = [
+    'https://fapi.binance.com',
+    'https://api-gcp.binance.com',
+    'https://fapi1.binance.com',
+    'https://fapi2.binance.com',
+    'https://fapi3.binance.com'
+];
+
+/**
+ * Robust fetch with automatic fallback to multiple endpoints on 451/5xx errors.
+ */
+async function fetchWithFallback(endpoints, path, options = {}) {
+    let lastError = null;
+    for (const base of endpoints) {
+        try {
+            const url = `${base}${path}`;
+            const res = await fetch(url, options);
+            if (res.ok) return res;
+
+            const body = await res.text();
+            lastError = `HTTP ${res.status}: ${body}`;
+
+            if (res.status === 451 || res.status >= 500) {
+                console.warn(`[Data] Fallback triggered for ${path} from ${base} (${res.status})`);
+                continue;
+            }
+            return res; // Return 4xx errors other than 451
+        } catch (err) {
+            lastError = `EXCEPTION: ${err.message}`;
+            continue;
+        }
+    }
+    throw new Error(`All endpoints failed for ${path}. Last error: ${lastError}`);
+}
+
+// Assets to track — BTC primary, ETH secondary
+export const ASSETS = ['BTCUSDT', 'ETHUSDT'];
 
 // ─── Main Data Fetch ─────────────────────────────────────────────
 
 /**
- * Fetch all market data needed for the OI Flow Rider strategy.
- * Returns institutional flow signals + price data.
+ * Fetch all data for a single asset. Called per-asset each tick.
  */
-export async function fetchAllMarketData() {
-    const symbol = 'DOGEUSDT';
-    const [
-        openInterest,
-        globalLSRatio,
-        topTraderLSRatio,
-        takerBuySellRatio,
-        fundingData,
-        klines5m,
-        klines1m,
-        ticker24h,
-    ] = await Promise.all([
+export async function fetchAssetData(symbol) {
+    // Batch 1: Spot API calls (data-api.binance.vision) — max 4 concurrent
+    const [klines5m, klines1m, klines5m_older, ticker24h] = await Promise.all([
+        fetchKlines(symbol, '5m', 30),
+        fetchKlines(symbol, '1m', 20),
+        fetchKlines(symbol, '5m', 60),
+        fetch24hTicker(symbol),
+    ]);
+
+    // Batch 2: Futures API calls (www.binance.com) — max 5 concurrent
+    // Kept separate from spot to stay under CF Worker's 6 concurrent fetch limit
+    const [openInterest, globalLSRatio, topTraderLSRatio, takerBuySellRatio, fundingData] = await Promise.all([
         fetchOpenInterest(symbol),
         fetchGlobalLongShortRatio(symbol),
         fetchTopTraderLongShortRatio(symbol),
         fetchTakerBuySellRatio(symbol),
         fetchFundingRate(symbol),
-        fetchKlines(symbol, '5m', 30),
-        fetchKlines(symbol, '1m', 10),
-        fetch24hTicker(symbol),
     ]);
 
     return {
-        openInterest,
-        globalLSRatio,
-        topTraderLSRatio,
-        takerBuySellRatio,
-        funding: fundingData,
-        klines5m,
-        klines1m,
-        ticker24h,
+        symbol, openInterest, globalLSRatio, topTraderLSRatio,
+        takerBuySellRatio, funding: fundingData,
+        klines5m, klines1m, klines5m_older, ticker24h,
     };
+}
+
+/**
+ * Fetch data for all tracked assets in parallel.
+ */
+export async function fetchAllAssetsData() {
+    // Sequential per-asset to stay under CF Worker's 6 concurrent fetch limit
+    const map = {};
+    for (const s of ASSETS) {
+        map[s] = await fetchAssetData(s);
+    }
+    return map;
 }
 
 // ─── Institutional Flow Endpoints ────────────────────────────────
 
-/**
- * Fetch current Open Interest for a symbol.
- * This is the core signal — shows total outstanding contracts.
- */
 export async function fetchOpenInterest(symbol) {
     try {
-        const url = `${BINANCE_FUTURES}/fapi/v1/openInterest?symbol=${symbol}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.warn(`[Data] fetchOI ${symbol} HTTP ${res.status}`);
-            return null;
-        }
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, `/fapi/v1/openInterest?symbol=${symbol}`);
         const data = await res.json();
-        return {
-            openInterest: parseFloat(data.openInterest || 0),
-            time: data.time,
-        };
+        const oi = parseFloat(data.openInterest || 0);
+        console.log(`[Data] OI ${symbol}: ${oi}`);
+        return { openInterest: oi, time: Date.now() };
     } catch (err) {
-        console.error(`[Data] fetchOI error:`, err.message);
-        return null;
+        console.error(`[Data] fetchOI ${symbol} EXCEPTION:`, err.message);
+        return { openInterest: 0, time: Date.now() };
     }
 }
 
-/**
- * Fetch global long/short account ratio (retail sentiment).
- * High longAccount = retail is long = potential short opportunity.
- * Returns last 2 data points (each 5-min bucket).
- */
 export async function fetchGlobalLongShortRatio(symbol) {
     try {
-        const url = `${BINANCE_FUTURES}/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=2`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.warn(`[Data] fetchGlobalLS ${symbol} HTTP ${res.status}`);
-            return null;
-        }
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, `/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=3`);
         const data = await res.json();
         if (!Array.isArray(data) || data.length === 0) return null;
         const latest = data[data.length - 1];
-        const prev = data.length > 1 ? data[0] : null;
+        const prev = data.length > 1 ? data[data.length - 2] : null;
         return {
             longAccount: parseFloat(latest.longAccount),
             shortAccount: parseFloat(latest.shortAccount),
             longShortRatio: parseFloat(latest.longShortRatio),
-            // Delta: how much the ratio changed in the last 5 min
             delta: prev ? parseFloat(latest.longAccount) - parseFloat(prev.longAccount) : 0,
             timestamp: latest.timestamp,
         };
     } catch (err) {
-        console.error(`[Data] fetchGlobalLS error:`, err.message);
+        console.error(`[Data] fetchGlobalLS ${symbol} error:`, err.message);
         return null;
     }
 }
 
-/**
- * Fetch top trader long/short ratio (smart money / whale positioning).
- * This is the most reliable directional signal.
- * Returns last 2 data points for delta calculation.
- */
 export async function fetchTopTraderLongShortRatio(symbol) {
     try {
-        const url = `${BINANCE_FUTURES}/futures/data/topLongShortPositionRatio?symbol=${symbol}&period=5m&limit=2`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.warn(`[Data] fetchTopTraderLS ${symbol} HTTP ${res.status}`);
-            return null;
-        }
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, `/futures/data/topLongShortPositionRatio?symbol=${symbol}&period=5m&limit=3`);
         const data = await res.json();
         if (!Array.isArray(data) || data.length === 0) return null;
         const latest = data[data.length - 1];
-        const prev = data.length > 1 ? data[0] : null;
+        const prev = data.length > 1 ? data[data.length - 2] : null;
         return {
             longAccount: parseFloat(latest.longAccount),
             shortAccount: parseFloat(latest.shortAccount),
@@ -126,28 +141,18 @@ export async function fetchTopTraderLongShortRatio(symbol) {
             timestamp: latest.timestamp,
         };
     } catch (err) {
-        console.error(`[Data] fetchTopTraderLS error:`, err.message);
+        console.error(`[Data] fetchTopTraderLS ${symbol} error:`, err.message);
         return null;
     }
 }
 
-/**
- * Fetch taker buy/sell volume ratio (aggressive order flow).
- * buySellRatio > 1 = more aggressive buying, < 1 = more aggressive selling.
- * This is the hardest signal to fake — shows actual executed trades.
- */
 export async function fetchTakerBuySellRatio(symbol) {
     try {
-        const url = `${BINANCE_FUTURES}/futures/data/takerlongshortRatio?symbol=${symbol}&period=5m&limit=2`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.warn(`[Data] fetchTakerRatio ${symbol} HTTP ${res.status}`);
-            return null;
-        }
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, `/futures/data/takerlongshortRatio?symbol=${symbol}&period=5m&limit=3`);
         const data = await res.json();
         if (!Array.isArray(data) || data.length === 0) return null;
         const latest = data[data.length - 1];
-        const prev = data.length > 1 ? data[0] : null;
+        const prev = data.length > 1 ? data[data.length - 2] : null;
         return {
             buySellRatio: parseFloat(latest.buySellRatio),
             buyVol: parseFloat(latest.buyVol),
@@ -156,46 +161,27 @@ export async function fetchTakerBuySellRatio(symbol) {
             timestamp: latest.timestamp,
         };
     } catch (err) {
-        console.error(`[Data] fetchTakerRatio error:`, err.message);
+        console.error(`[Data] fetchTakerRatio ${symbol} error:`, err.message);
         return null;
     }
 }
 
-/**
- * Fetch funding rate — kept from previous strategy.
- * Extreme funding = crowded trade = contrarian signal.
- */
 export async function fetchFundingRate(symbol) {
     try {
-        const url = `${BINANCE_FUTURES}/fapi/v1/premiumIndex?symbol=${symbol}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.warn(`[Data] fetchFunding ${symbol} HTTP ${res.status} — fallback to neutral`);
-            return { fundingRate: 0 };
-        }
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, `/fapi/v1/premiumIndex?symbol=${symbol}`);
         const data = await res.json();
-        return {
-            fundingRate: parseFloat(data.lastFundingRate || 0),
-        };
+        return { fundingRate: parseFloat(data.lastFundingRate || 0) };
     } catch (err) {
-        console.warn(`[Data] fetchFunding error (using neutral):`, err.message);
+        console.warn(`[Data] fetchFunding ${symbol} error:`, err.message);
         return { fundingRate: 0 };
     }
 }
 
 // ─── Price Data ──────────────────────────────────────────────────
 
-/**
- * Fetch kline (candlestick) data from Binance Spot.
- */
 export async function fetchKlines(symbol, interval, limit) {
     try {
-        const url = `${BINANCE_SPOT}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.error(`[Data] fetchKlines ${symbol} ${interval} HTTP ${res.status}`);
-            return [];
-        }
+        const res = await fetchWithFallback(SPOT_ENDPOINTS, `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
         const data = await res.json();
         if (!Array.isArray(data)) return [];
         return data.map(k => ({
@@ -210,14 +196,9 @@ export async function fetchKlines(symbol, interval, limit) {
     }
 }
 
-/**
- * Fetch 24h ticker stats for kill switch checks.
- */
 export async function fetch24hTicker(symbol) {
     try {
-        const url = `${BINANCE_SPOT}/api/v3/ticker/24hr?symbol=${symbol}`;
-        const res = await fetch(url);
-        if (!res.ok) return { lastPrice: 0, highPrice: 0, lowPrice: 0, priceChangePercent: 0, volume: 0 };
+        const res = await fetchWithFallback(SPOT_ENDPOINTS, `/api/v3/ticker/24hr?symbol=${symbol}`);
         const data = await res.json();
         return {
             lastPrice: parseFloat(data.lastPrice || 0),
@@ -227,7 +208,6 @@ export async function fetch24hTicker(symbol) {
             volume: parseFloat(data.volume || 0),
         };
     } catch (err) {
-        console.error(`[Data] fetch24hTicker error:`, err.message);
         return { lastPrice: 0, highPrice: 0, lowPrice: 0, priceChangePercent: 0, volume: 0 };
     }
 }
@@ -235,8 +215,7 @@ export async function fetch24hTicker(symbol) {
 // ─── Technical Helpers ───────────────────────────────────────────
 
 /**
- * Compute ATR (Average True Range) from 5-minute klines.
- * Used for position sizing — SL/TP distances scale with volatility.
+ * ATR from 5-minute klines.
  */
 export function computeATR(klines5m, periods = 12) {
     if (!klines5m || klines5m.length < periods + 1) return { atr: 0, atrPct: 0 };
@@ -244,22 +223,54 @@ export function computeATR(klines5m, periods = 12) {
     for (let i = klines5m.length - periods; i < klines5m.length; i++) {
         const k = klines5m[i];
         const prevClose = klines5m[i - 1].close;
-        const tr = Math.max(
-            k.high - k.low,
-            Math.abs(k.high - prevClose),
-            Math.abs(k.low - prevClose)
-        );
-        trs.push(tr);
+        trs.push(Math.max(k.high - k.low, Math.abs(k.high - prevClose), Math.abs(k.low - prevClose)));
     }
     const atr = trs.reduce((s, v) => s + v, 0) / trs.length;
     const currentPrice = klines5m[klines5m.length - 1].close;
-    const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
-    return { atr, atrPct };
+    return { atr, atrPct: currentPrice > 0 ? (atr / currentPrice) * 100 : 0 };
 }
 
 /**
- * Compute price change over the last N 1-minute candles.
- * Used for price momentum confirmation.
+ * ATR at an earlier offset — for price compression comparison.
+ * Computes ATR using klines ending at `offsetFromEnd` candles back.
+ */
+export function computeATRAtOffset(klines5m, offsetFromEnd, periods = 12) {
+    const endIdx = klines5m.length - offsetFromEnd;
+    if (endIdx < periods + 1) return { atr: 0, atrPct: 0 };
+    const slice = klines5m.slice(0, endIdx);
+    return computeATR(slice, periods);
+}
+
+/**
+ * Linear regression slope of close prices over N candles.
+ * Returns slope as percentage change per candle.
+ */
+export function linearRegressionSlope(klines, periods) {
+    if (!klines || klines.length < periods) return 0;
+    const slice = klines.slice(-periods);
+    const n = slice.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (let i = 0; i < n; i++) {
+        sumX += i;
+        sumY += slice[i].close;
+        sumXY += i * slice[i].close;
+        sumXX += i * i;
+    }
+    const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const avgPrice = sumY / n;
+    return avgPrice > 0 ? (slope / avgPrice) * 100 : 0; // % per candle
+}
+
+/**
+ * Sum volume over last N 1-minute candles.
+ */
+export function sumVolume(klines1m, periods) {
+    if (!klines1m || klines1m.length < periods) return 0;
+    return klines1m.slice(-periods).reduce((s, k) => s + k.quoteVolume, 0);
+}
+
+/**
+ * Price change over last N candles (percentage).
  */
 export function priceChange(klines, periods) {
     if (!klines || klines.length < periods + 1) return 0;
@@ -267,13 +278,4 @@ export function priceChange(klines, periods) {
     const past = klines[klines.length - 1 - periods]?.close;
     if (!past || past === 0) return 0;
     return ((current - past) / past) * 100;
-}
-
-/**
- * Compute average volume over the last N candles.
- */
-export function avgVolume(klines, periods) {
-    if (!klines || klines.length < periods) return 0;
-    const slice = klines.slice(-periods);
-    return slice.reduce((sum, k) => sum + k.volume, 0) / periods;
 }

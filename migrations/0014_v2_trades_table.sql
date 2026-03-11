@@ -1,0 +1,26 @@
+-- Migration 0014: Authoritative trades table restoration
+CREATE TABLE IF NOT EXISTS trades (
+  id TEXT PRIMARY KEY,
+  symbol TEXT,
+  direction TEXT,
+  entry_price REAL,
+  exit_price REAL,
+  entry_time INTEGER,
+  exit_time INTEGER,
+  quantity REAL,
+  leverage REAL,
+  sl_price REAL,
+  tp_price REAL,
+  pnl_inr REAL,
+  exit_reason TEXT,
+  acc_score_at_entry REAL,
+  acc_duration_at_entry INTEGER,
+  oi_at_entry REAL,
+  oi_at_exit REAL,
+  cross_asset_status_at_entry TEXT,
+  direction_signals_at_entry TEXT,
+  partial_tp_hit INTEGER DEFAULT 0,
+  hold_time_minutes REAL,
+  status TEXT DEFAULT 'OPEN',
+  created_at INTEGER DEFAULT (unixepoch())
+);

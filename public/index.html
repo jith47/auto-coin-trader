@@ -4,14 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OI Flow Rider Dashboard</title>
+    <title>OI Flow Rider v2.0</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
         * {
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
+            box-sizing: border-box
         }
 
         :root {
@@ -27,31 +27,38 @@
             --amber: #f59e0b;
             --purple: #a855f7;
             --cyan: #06b6d4;
+            --orange: #f97316
         }
 
         body {
             font-family: 'Inter', sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            min-height: 100vh
         }
 
         .container {
-            max-width: 1280px;
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 20px
         }
 
         h1 {
             font-size: 1.5rem;
-            font-weight: 700;
+            font-weight: 700
         }
 
         h1 span {
-            color: var(--cyan);
+            color: var(--cyan)
         }
 
-        /* Login Screen */
+        h1 .version {
+            color: var(--amber);
+            font-size: .8rem;
+            font-weight: 500
+        }
+
+        /* Login */
         .login-overlay {
             position: fixed;
             inset: 0;
@@ -59,7 +66,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 100;
+            z-index: 100
         }
 
         .login-box {
@@ -68,18 +75,18 @@
             border-radius: 16px;
             padding: 40px;
             width: 380px;
-            text-align: center;
+            text-align: center
         }
 
         .login-box h2 {
             margin-bottom: 8px;
-            font-size: 1.25rem;
+            font-size: 1.25rem
         }
 
         .login-box p {
             color: var(--dim);
-            font-size: 0.85rem;
-            margin-bottom: 24px;
+            font-size: .85rem;
+            margin-bottom: 24px
         }
 
         .login-input {
@@ -89,13 +96,13 @@
             border: 1px solid var(--border);
             background: var(--surface2);
             color: var(--text);
-            font-size: 0.9rem;
+            font-size: .9rem;
             margin-bottom: 16px;
-            outline: none;
+            outline: none
         }
 
         .login-input:focus {
-            border-color: var(--blue);
+            border-color: var(--blue)
         }
 
         .login-btn {
@@ -104,257 +111,257 @@
             border-radius: 8px;
             border: none;
             background: var(--cyan);
-            color: white;
-            font-size: 0.9rem;
+            color: #fff;
+            font-size: .9rem;
             font-weight: 600;
-            cursor: pointer;
-            transition: opacity .15s;
-        }
-
-        .login-btn:hover {
-            opacity: 0.85;
+            cursor: pointer
         }
 
         .login-error {
             color: var(--red);
-            font-size: 0.8rem;
+            font-size: .8rem;
             margin-top: 12px;
-            display: none;
+            display: none
         }
 
         /* Dashboard */
         .dashboard {
-            display: none;
+            display: none
         }
 
         .header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
+            margin-bottom: 20px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border)
         }
 
         .header-right {
             display: flex;
-            gap: 12px;
-            align-items: center;
+            gap: 10px;
+            align-items: center
         }
 
         .badge {
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 16px;
+            font-size: .72rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: .04em
         }
 
         .badge-green {
             background: rgba(34, 197, 94, .15);
-            color: var(--green);
+            color: var(--green)
         }
 
         .badge-red {
             background: rgba(239, 68, 68, .15);
-            color: var(--red);
+            color: var(--red)
         }
 
         .badge-amber {
             background: rgba(245, 158, 11, .15);
-            color: var(--amber);
+            color: var(--amber)
         }
 
         .badge-blue {
             background: rgba(59, 130, 246, .15);
-            color: var(--blue);
+            color: var(--blue)
         }
 
         .badge-cyan {
             background: rgba(6, 182, 212, .15);
-            color: var(--cyan);
+            color: var(--cyan)
+        }
+
+        .badge-purple {
+            background: rgba(168, 85, 247, .15);
+            color: var(--purple)
         }
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin-bottom: 20px
         }
 
         .card {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
+            border-radius: 10px;
+            padding: 16px
         }
 
         .card-label {
-            font-size: 0.75rem;
+            font-size: .7rem;
             color: var(--dim);
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 8px;
+            letter-spacing: .07em;
+            margin-bottom: 6px
         }
 
         .card-value {
-            font-size: 1.5rem;
+            font-size: 1.35rem;
             font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'JetBrains Mono', monospace
         }
 
         .card-sub {
-            font-size: 0.8rem;
+            font-size: .75rem;
             color: var(--dim);
-            margin-top: 4px;
+            margin-top: 3px
         }
 
         .panel {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-bottom: 24px;
-            overflow: hidden;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            overflow: hidden
         }
 
         .panel-header {
-            padding: 16px 20px;
+            padding: 14px 18px;
             border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: space-between
         }
 
         .panel-title {
             font-weight: 600;
-            font-size: 0.95rem;
+            font-size: .9rem
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.85rem;
+            font-size: .8rem
         }
 
         th {
             text-align: left;
-            padding: 10px 16px;
+            padding: 8px 14px;
             color: var(--dim);
             font-weight: 500;
-            font-size: 0.75rem;
+            font-size: .7rem;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border-bottom: 1px solid var(--border);
+            letter-spacing: .04em;
+            border-bottom: 1px solid var(--border)
         }
 
         td {
-            padding: 12px 16px;
+            padding: 10px 14px;
             border-bottom: 1px solid var(--border);
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
+            font-size: .75rem
         }
 
         tr:last-child td {
-            border-bottom: none;
+            border-bottom: none
         }
 
         tr:hover {
-            background: var(--surface2);
+            background: var(--surface2)
         }
 
         .text-green {
-            color: var(--green);
+            color: var(--green)
         }
 
         .text-red {
-            color: var(--red);
+            color: var(--red)
         }
 
         .text-dim {
-            color: var(--dim);
+            color: var(--dim)
         }
 
         .text-amber {
-            color: var(--amber);
+            color: var(--amber)
         }
 
         .text-blue {
-            color: var(--blue);
+            color: var(--blue)
         }
 
         .text-cyan {
-            color: var(--cyan);
+            color: var(--cyan)
+        }
+
+        .text-purple {
+            color: var(--purple)
         }
 
         .btn {
-            padding: 8px 16px;
-            border-radius: 8px;
+            padding: 7px 14px;
+            border-radius: 7px;
             border: 1px solid var(--border);
             background: var(--surface2);
             color: var(--text);
             cursor: pointer;
-            font-size: 0.8rem;
+            font-size: .78rem;
             font-weight: 500;
-            transition: all .15s;
+            transition: all .15s
         }
 
         .btn:hover {
-            background: var(--border);
+            background: var(--border)
         }
 
         .btn-primary {
             background: var(--cyan);
-            border-color: var(--cyan);
-        }
-
-        .btn-primary:hover {
-            opacity: 0.85;
+            border-color: var(--cyan)
         }
 
         .btn-danger {
             background: transparent;
             border-color: var(--red);
             color: var(--red);
-            font-size: 0.75rem;
+            font-size: .72rem
         }
 
         .active-trade {
             background: linear-gradient(135deg, rgba(6, 182, 212, .08), rgba(168, 85, 247, .08));
-            border-color: var(--cyan);
+            border-color: var(--cyan)
         }
 
         .indicator-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            padding: 16px 20px;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            padding: 14px 18px
         }
 
         .ind-item {
-            font-size: 0.8rem;
+            font-size: .78rem
         }
 
         .ind-label {
             color: var(--dim);
-            font-size: 0.7rem;
-            text-transform: uppercase;
+            font-size: .68rem;
+            text-transform: uppercase
         }
 
         .refresh-timer {
-            font-size: 0.75rem;
-            color: var(--dim);
+            font-size: .72rem;
+            color: var(--dim)
         }
 
         @keyframes pulse {
 
             0%,
             100% {
-                opacity: 1;
+                opacity: 1
             }
 
             50% {
-                opacity: .5;
+                opacity: .5
             }
         }
 
@@ -364,69 +371,110 @@
             background: var(--green);
             border-radius: 50%;
             display: inline-block;
-            animation: pulse 2s infinite;
+            animation: pulse 2s infinite
+        }
+
+        /* Accumulation Score Gauge */
+        .acc-gauge {
+            position: relative;
+            width: 100%;
+            height: 8px;
+            background: var(--surface2);
+            border-radius: 4px;
+            margin-top: 8px;
+            overflow: hidden
+        }
+
+        .acc-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width .5s ease
+        }
+
+        .acc-parts {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+            font-size: .65rem
+        }
+
+        .acc-part {
+            flex: 1;
+            text-align: center
+        }
+
+        .acc-part-bar {
+            height: 4px;
+            border-radius: 2px;
+            background: var(--surface2);
+            margin-bottom: 2px
+        }
+
+        /* Tabs */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            padding: 0 18px
+        }
+
+        .tab {
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: .8rem;
+            font-weight: 500;
+            color: var(--dim);
+            border-bottom: 2px solid transparent;
+            transition: all .15s
+        }
+
+        .tab.active {
+            color: var(--cyan);
+            border-bottom-color: var(--cyan)
+        }
+
+        .tab:hover {
+            color: var(--text)
+        }
+
+        .tab-content {
+            display: none
+        }
+
+        .tab-content.active {
+            display: block
         }
 
         .reason-cell {
-            max-width: 250px;
-            min-width: 180px;
+            max-width: 220px;
+            min-width: 160px
         }
 
         .reason-content {
             cursor: pointer;
-            transition: all 0.2s;
-            line-height: 1.4;
+            line-height: 1.4
         }
 
         .reason-content.collapsed {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 250px;
+            max-width: 220px
         }
 
         .reason-content.expanded {
             white-space: pre-wrap;
-            max-width: none;
-            color: var(--text);
-            padding: 8px 0;
-        }
-
-        .reason-more {
-            color: var(--cyan);
-            font-size: 0.7rem;
-            cursor: pointer;
-            margin-top: 4px;
-            display: block;
-            font-family: 'Inter', sans-serif;
-            font-weight: 600;
-        }
-
-        /* OI Flow Card styling */
-        .oi-card {
-            border-color: var(--cyan);
-            background: linear-gradient(135deg, var(--surface), rgba(6, 182, 212, .05));
-        }
-
-        .oi-indicator {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .oi-arrow {
-            font-size: 1.2rem;
+            padding: 6px 0
         }
     </style>
 </head>
 
 <body>
-
-    <!-- Login Screen -->
+    <!-- Login -->
     <div class="login-overlay" id="loginScreen">
         <div class="login-box">
-            <h2>OI Flow Rider</h2>
-            <p>Enter your dashboard password</p>
+            <h2>OI Flow Rider v2.0</h2>
+            <p>Accumulation · Distribution · Lifecycle</p>
             <input type="password" class="login-input" id="passwordInput" placeholder="Password" autofocus>
             <button class="login-btn" onclick="doLogin()">Login</button>
             <div class="login-error" id="loginError">Incorrect password</div>
@@ -437,26 +485,38 @@
     <div class="dashboard" id="dashboard">
         <div class="container">
             <div class="header">
-                <h1>OI Flow <span>Rider</span></h1>
+                <h1>OI Flow <span>Rider</span> <span class="version">v2.0</span></h1>
                 <div class="header-right">
-                    <span class="refresh-timer" id="timer">Auto-refresh: 10s</span>
-                    <span class="live-dot" id="liveDot"></span>
-                    <button class="btn btn-primary" onclick="triggerRun()">▶ Run Now</button>
-                    <button class="btn" onclick="refresh()">↻ Refresh</button>
+                    <span class="refresh-timer" id="timer">10s</span>
+                    <span class="live-dot"></span>
+                    <button class="btn btn-primary" onclick="triggerRun()">▶ Run</button>
+                    <button class="btn" onclick="refresh()">↻</button>
                     <button class="btn btn-danger" onclick="logout()">Logout</button>
                 </div>
             </div>
 
+            <!-- Stats Grid -->
             <div class="grid" id="statsGrid">
                 <div class="card">
                     <div class="card-label">Status</div>
                     <div class="card-value" id="status">—</div>
                     <div class="card-sub" id="statusSub"></div>
                 </div>
-                <div class="card oi-card">
-                    <div class="card-label">OI Flow (5m)</div>
-                    <div class="card-value oi-indicator" id="oiChange">—</div>
-                    <div class="card-sub" id="oiSub">Waiting for data...</div>
+                <div class="card" style="border-color:var(--amber)">
+                    <div class="card-label">BTC Acc. Score</div>
+                    <div class="card-value text-amber" id="btcAccScore">—</div>
+                    <div class="acc-gauge">
+                        <div class="acc-fill" id="btcAccFill" style="width:0%;background:var(--amber)"></div>
+                    </div>
+                    <div class="card-sub" id="btcAccSub">Collecting...</div>
+                </div>
+                <div class="card" style="border-color:var(--purple)">
+                    <div class="card-label">ETH Acc. Score</div>
+                    <div class="card-value text-purple" id="ethAccScore">—</div>
+                    <div class="acc-gauge">
+                        <div class="acc-fill" id="ethAccFill" style="width:0%;background:var(--purple)"></div>
+                    </div>
+                    <div class="card-sub" id="ethAccSub">Collecting...</div>
                 </div>
                 <div class="card">
                     <div class="card-label">Today</div>
@@ -475,235 +535,238 @@
                 </div>
             </div>
 
-            <div class="panel active-trade" id="activePanel" style="display:none;">
+            <!-- Active Trade -->
+            <div class="panel active-trade" id="activePanel" style="display:none">
                 <div class="panel-header">
                     <span class="panel-title">🔴 Active Trade</span>
-                    <span class="badge badge-cyan" id="activeDirection">—</span>
+                    <div><span class="badge badge-cyan" id="activeSymbol">—</span> <span class="badge"
+                            id="activeDirection">—</span></div>
                 </div>
                 <div class="indicator-grid" id="activeDetails"></div>
             </div>
 
+            <!-- Tabs: Trades / Tick Log / Last Run -->
             <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">📊 Trade Log</span>
-                    <span class="text-dim" id="tradeCount">0 trades</span>
+                <div class="tab-bar">
+                    <div class="tab active" onclick="switchTab('trades',this)">📊 Trades</div>
+                    <div class="tab" onclick="switchTab('signals',this)">🎯 Signals</div>
+                    <div class="tab" onclick="switchTab('ticks',this)">📡 Tick Log</div>
+                    <div class="tab" onclick="switchTab('run',this)">🔍 Last Run</div>
                 </div>
-                <div style="overflow-x:auto;">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Side</th>
-                                <th>Entry</th>
-                                <th>SL</th>
-                                <th>TP</th>
-                                <th>Qty</th>
-                                <th>OI Δ</th>
-                                <th>Status</th>
-                                <th>P&L</th>
-                                <th>Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tradeBody"></tbody>
-                    </table>
-                </div>
-            </div>
 
-            <div class="panel">
-                <div class="panel-header"><span class="panel-title">🔍 Last Run Result</span></div>
-                <pre style="padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--dim);max-height:300px;overflow:auto;white-space:pre-wrap;"
-                    id="lastRun">Click "Run Now" to trigger strategy evaluation</pre>
+                <div class="tab-content active" id="tab-trades">
+                    <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+                        <span class="text-dim" id="tradeCount">0 trades</span>
+                    </div>
+                    <div style="overflow-x:auto">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th>Entry</th>
+                                    <th>SL</th>
+                                    <th>TP</th>
+                                    <th>Acc Score</th>
+                                    <th>Status</th>
+                                    <th>P&L</th>
+                                    <th>Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tradeBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-signals">
+                    <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+                        <span class="text-dim" id="signalCount">0 signals</span>
+                    </div>
+                    <div style="overflow-x:auto">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th>Entry</th>
+                                    <th>Acc Score</th>
+                                    <th>Outcome</th>
+                                    <th>15m</th>
+                                    <th>30m</th>
+                                    <th>45m</th>
+                                </tr>
+                            </thead>
+                            <tbody id="signalBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-ticks">
+                    <div style="padding:12px 18px;display:flex;gap:10px;align-items:center">
+                        <button class="btn" onclick="loadTicks('BTCUSDT')" id="tickBtnBTC"
+                            style="border-color:var(--amber);color:var(--amber)">BTC</button>
+                        <button class="btn" onclick="loadTicks('ETHUSDT')" id="tickBtnETH">ETH</button>
+                        <span class="text-dim" id="tickCount">0 ticks</span>
+                    </div>
+                    <div style="overflow-x:auto">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Price</th>
+                                    <th>Acc Score</th>
+                                    <th>Dur</th>
+                                    <th>Funding</th>
+                                    <th>OI Con.</th>
+                                    <th>OI Acc.</th>
+                                    <th>Absorb.</th>
+                                    <th>Compress.</th>
+                                    <th>Taker</th>
+                                    <th>Direction</th>
+                                    <th>Signal</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tickBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-run">
+                    <pre style="padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--dim);max-height:400px;overflow:auto;white-space:pre-wrap"
+                        id="lastRun">Click "Run" to trigger</pre>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        const TOKEN_KEY = 'scalper_token';
-        let refreshInterval;
-
-        function getToken() { return localStorage.getItem(TOKEN_KEY); }
-
-        function authHeaders() {
-            return { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' };
-        }
-
-        async function apiFetch(path) {
-            const res = await fetch(path, { headers: authHeaders() });
-            if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
-            return res.json();
-        }
-
-        // Check if already logged in
-        if (getToken()) { showDashboard(); }
-
-        // Enter key on password input
-        document.getElementById('passwordInput').addEventListener('keydown', e => {
-            if (e.key === 'Enter') doLogin();
-        });
+        const TOKEN_KEY = 'scalper_token'; let refreshInterval;
+        function getToken() { return localStorage.getItem(TOKEN_KEY) }
+        function authHeaders() { return { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } }
+        async function apiFetch(path) { const res = await fetch(path, { headers: authHeaders() }); if (res.status === 401) { logout(); throw new Error('Unauth') } return res.json() }
+        if (getToken()) showDashboard();
+        document.getElementById('passwordInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin() });
 
         async function doLogin() {
-            const password = document.getElementById('passwordInput').value;
-            const errEl = document.getElementById('loginError');
-            errEl.style.display = 'none';
+            const pw = document.getElementById('passwordInput').value; const errEl = document.getElementById('loginError'); errEl.style.display = 'none';
             try {
-                const res = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password }),
-                });
-                const data = await res.json();
-                if (data.success) {
-                    localStorage.setItem(TOKEN_KEY, data.token);
-                    showDashboard();
-                } else {
-                    errEl.textContent = data.error || 'Incorrect password';
-                    errEl.style.display = 'block';
-                }
-            } catch (e) {
-                errEl.textContent = 'Connection error';
-                errEl.style.display = 'block';
+                const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) }); const d = await res.json();
+                if (d.success) { localStorage.setItem(TOKEN_KEY, d.token); showDashboard() } else { errEl.textContent = d.error || 'Wrong'; errEl.style.display = 'block' }
             }
+            catch { errEl.textContent = 'Connection error'; errEl.style.display = 'block' }
         }
 
-        function showDashboard() {
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('dashboard').style.display = 'block';
-            startAutoRefresh();
-        }
-
-        function logout() {
-            localStorage.removeItem(TOKEN_KEY);
-            clearInterval(refreshInterval);
-            document.getElementById('loginScreen').style.display = 'flex';
-            document.getElementById('dashboard').style.display = 'none';
-            document.getElementById('passwordInput').value = '';
-        }
+        function showDashboard() { document.getElementById('loginScreen').style.display = 'none'; document.getElementById('dashboard').style.display = 'block'; startAutoRefresh() }
+        function logout() { localStorage.removeItem(TOKEN_KEY); clearInterval(refreshInterval); document.getElementById('loginScreen').style.display = 'flex'; document.getElementById('dashboard').style.display = 'none' }
 
         async function refresh() {
             try {
-                const [statusRes, tradesRes, oiRes] = await Promise.all([
-                    apiFetch('/api/status').catch(() => null),
-                    apiFetch('/api/trades').catch(() => []),
-                    apiFetch('/api/oi').catch(() => null),
-                ]);
-                if (statusRes) renderStatus(statusRes);
-                if (tradesRes) renderTrades(tradesRes);
-                if (oiRes) renderOI(oiRes);
-            } catch (e) { /* handled in apiFetch */ }
+                const [s, t, btc, eth] = await Promise.all([apiFetch('/api/status').catch(() => null), apiFetch('/api/trades').catch(() => []), apiFetch('/api/ticks?symbol=BTCUSDT&limit=1').catch(() => []), apiFetch('/api/ticks?symbol=ETHUSDT&limit=1').catch(() => [])]);
+                if (s) renderStatus(s); if (t) renderTrades(t); renderAccScore('btc', btc?.[0]); renderAccScore('eth', eth?.[0]);
+                if (document.getElementById('tab-signals').classList.contains('active')) loadSignals();
+            } catch { }
+        }
+
+        function renderAccScore(prefix, tick) {
+            const scoreEl = document.getElementById(prefix + 'AccScore'); const fillEl = document.getElementById(prefix + 'AccFill'); const subEl = document.getElementById(prefix + 'AccSub');
+            if (!tick) { scoreEl.textContent = '—'; subEl.textContent = 'Collecting...'; fillEl.style.width = '0%'; return }
+            const score = tick.accumulation_score || 0; scoreEl.textContent = score.toFixed(0) + '/100';
+            fillEl.style.width = Math.min(score, 100) + '%';
+            fillEl.style.background = score >= 60 ? 'var(--green)' : score >= 30 ? 'var(--amber)' : 'var(--dim)';
+            const parts = [`OI:${(tick.oi_trend_consistency || 0).toFixed(0)}`, `Acc:${(tick.oi_acceleration || 0)}`, `Abs:${(tick.absorption_ratio || 0).toFixed(0)}`, `Cmp:${(tick.price_compression || 0)}`];
+            subEl.textContent = parts.join(' | ') + ' | ' + (tick.direction || '—')
         }
 
         function renderStatus(s) {
-            const el = document.getElementById('status');
-            el.textContent = s.status;
-            el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-cyan' : 'text-green');
+            const el = document.getElementById('status'); el.textContent = s.status; el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-cyan' : 'text-green');
             document.getElementById('statusSub').textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
-            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 8`;
-            document.getElementById('todayLosses').textContent = `${s.todayLosses || 0} losses today`;
-            document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%';
-            document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total`;
-            const pnl = s.stats?.totalPnL || 0;
-            const pnlEl = document.getElementById('totalPnl');
-            pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
-            pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
-            document.getElementById('mockBalance').textContent = 'Mock Balance: ₹' + (s.stats?.balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-            const panel = document.getElementById('activePanel');
+            document.getElementById('todayTrades').textContent = (s.todayTrades || 0) + ' / 8'; document.getElementById('todayLosses').textContent = (s.todayLosses || 0) + ' losses';
+            document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%'; document.getElementById('totalTrades').textContent = (s.stats?.totalTrades || 0) + ' total';
+            const pnl = s.stats?.totalPnL || 0; const pnlEl = document.getElementById('totalPnl'); pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%'; pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
+            document.getElementById('mockBalance').textContent = '₹' + (s.stats?.balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+            const ap = document.getElementById('activePanel');
             if (s.activeTrade) {
-                panel.style.display = 'block';
-                document.getElementById('activeDirection').textContent = s.activeTrade.decision;
-                document.getElementById('activeDirection').className = 'badge ' + (s.activeTrade.decision === 'BUY' ? 'badge-green' : 'badge-red');
+                ap.style.display = 'block'; document.getElementById('activeSymbol').textContent = s.activeTrade.symbol || 'BTC';
+                const d = document.getElementById('activeDirection'); d.textContent = s.activeTrade.decision; d.className = 'badge ' + (s.activeTrade.decision === 'BUY' ? 'badge-green' : 'badge-red');
                 document.getElementById('activeDetails').innerHTML = `
-      <div class="ind-item"><div class="ind-label">Entry</div>${s.activeTrade.price}</div>
-      <div class="ind-item"><div class="ind-label">Stop Loss</div>${s.activeTrade.stop_loss}</div>
-      <div class="ind-item"><div class="ind-label">Take Profit</div>${s.activeTrade.take_profit}</div>
-      <div class="ind-item"><div class="ind-label">Quantity</div>${s.activeTrade.quantity}</div>
-      <div class="ind-item"><div class="ind-label">Leverage</div>${s.activeTrade.leverage}x</div>
-      <div class="ind-item"><div class="ind-label">OI Δ at Entry</div>${s.activeTrade.oi_change_5m ? s.activeTrade.oi_change_5m.toFixed(3) + '%' : '—'}</div>
-      <div class="ind-item"><div class="ind-label">Order ID</div><span class="text-dim">${(s.activeTrade.order_id || '').slice(0, 16)}</span></div>`;
-            } else { panel.style.display = 'none'; }
-        }
-
-        function renderOI(oi) {
-            const changeEl = document.getElementById('oiChange');
-            const subEl = document.getElementById('oiSub');
-
-            if (oi.change5m !== null && oi.change5m !== undefined) {
-                const val = oi.change5m;
-                const arrow = val > 0.5 ? '📈' : val < -0.5 ? '📉' : '➡️';
-                const cls = val > 0 ? 'text-green' : val < 0 ? 'text-red' : 'text-dim';
-                changeEl.innerHTML = `<span class="oi-arrow">${arrow}</span><span class="${cls}">${val >= 0 ? '+' : ''}${val.toFixed(3)}%</span>`;
-
-                const oiFormatted = oi.currentOI ? (oi.currentOI / 1e6).toFixed(1) + 'M' : '—';
-                const change15m = oi.change15m !== null ? ` | 15m: ${oi.change15m >= 0 ? '+' : ''}${oi.change15m.toFixed(3)}%` : '';
-                subEl.textContent = `OI: ${oiFormatted}${change15m} | ${oi.snapshotCount} snapshots`;
-            } else {
-                changeEl.textContent = '—';
-                subEl.textContent = `Collecting data... (${oi.snapshotCount || 0} snapshots)`;
+        <div class="ind-item"><div class="ind-label">Entry</div>${s.activeTrade.price}</div>
+        <div class="ind-item"><div class="ind-label">SL</div>${s.activeTrade.stop_loss}</div>
+        <div class="ind-item"><div class="ind-label">TP</div>${s.activeTrade.take_profit}</div>
+        <div class="ind-item"><div class="ind-label">Qty</div>${s.activeTrade.quantity}</div>
+        <div class="ind-item"><div class="ind-label">Lev</div>${s.activeTrade.leverage}x</div>
+        <div class="ind-item"><div class="ind-label">Acc Score</div>${s.activeTrade.accumulation_score ? s.activeTrade.accumulation_score.toFixed(0) : '—'}/100</div>
+        <div class="ind-item"><div class="ind-label">Duration</div>${s.activeTrade.accumulation_duration_min || '—'} min</div>`
             }
+            else { ap.style.display = 'none' }
         }
 
         function renderTrades(trades) {
-            document.getElementById('tradeCount').textContent = trades.length + ' trades';
-            const body = document.getElementById('tradeBody');
-            if (!trades.length) { body.innerHTML = '<tr><td colspan="10" class="text-dim" style="text-align:center;padding:24px;">No trades yet</td></tr>'; return; }
-            body.innerHTML = trades.map(t => {
+            document.getElementById('tradeCount').textContent = trades.length + ' trades'; const b = document.getElementById('tradeBody');
+            if (!trades.length) { b.innerHTML = '<tr><td colspan="10" class="text-dim" style="text-align:center;padding:20px">No trades yet</td></tr>'; return }
+            b.innerHTML = trades.map(t => {
                 const time = new Date(t.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-                const sideClass = t.decision === 'BUY' ? 'text-green' : 'text-red';
-                const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
-                const pnlClass = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim';
-                const statusBadge = t.status === 'OPEN' ? 'badge-cyan' : t.pnl > 0 ? 'badge-green' : t.pnl < 0 ? 'badge-red' : 'badge-amber';
-                const pnlInr = t.pnl_inr != null ? (t.pnl_inr >= 0 ? '+' : '') + parseFloat(t.pnl_inr).toFixed(2) : null;
-                const pnlDisplay = pnlInr ? `${pnl} (₹${pnlInr})` : pnl;
-                const oiDelta = t.oi_change_5m != null ? `${t.oi_change_5m >= 0 ? '+' : ''}${parseFloat(t.oi_change_5m).toFixed(3)}%` : '—';
-                const oiClass = t.oi_change_5m > 0 ? 'text-green' : t.oi_change_5m < 0 ? 'text-red' : 'text-dim';
-                const fullReason = t.reason || '—';
-                const closeReason = t.close_reason ? `\nClose: ${t.close_reason}` : '';
-                const combinedReason = fullReason + closeReason;
-                const isLongReason = combinedReason.length > 45;
-                const reasonHtml = isLongReason
-                    ? `<div class="reason-cell" onclick="toggleReason(this)">
-                        <div class="reason-content collapsed">${combinedReason}</div>
-                        <span class="reason-more">Read More</span>
-                       </div>`
-                    : `<div class="reason-cell"><div class="reason-content">${combinedReason}</div></div>`;
-
-                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td class="${oiClass}">${oiDelta}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
-            }).join('');
+                const sideC = t.decision === 'BUY' ? 'text-green' : 'text-red'; const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
+                const pnlC = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim'; const sb = t.status === 'OPEN' ? 'badge-cyan' : t.pnl > 0 ? 'badge-green' : 'badge-red';
+                const pnlInr = t.pnl_inr != null ? ` (₹${parseFloat(t.pnl_inr).toFixed(0)})` : ''; const accS = t.accumulation_score ? t.accumulation_score.toFixed(0) : '—';
+                const sym = t.symbol || t.asset || '—'; const r = t.reason || '—'; const cr = t.close_reason ? '\n' + t.close_reason : ''; const full = r + cr;
+                return `<tr><td>${time}</td><td>${sym.replace('USDT', '')}</td><td class="${sideC}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(2)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(2)}</td><td>${parseFloat(t.take_profit || 0).toFixed(2)}</td><td>${accS}</td><td><span class="badge ${sb}">${t.status}</span></td><td class="${pnlC}">${pnl}${pnlInr}</td><td><div class="reason-cell" onclick="toggleR(this)"><div class="reason-content collapsed">${full}</div></div></td></tr>`
+            }).join('')
         }
 
-        function toggleReason(el) {
-            const content = el.querySelector('.reason-content');
-            const more = el.querySelector('.reason-more');
-            if (content.classList.contains('collapsed')) {
-                content.classList.remove('collapsed');
-                content.classList.add('expanded');
-                more.textContent = 'Show Less';
-            } else {
-                content.classList.add('collapsed');
-                content.classList.remove('expanded');
-                more.textContent = 'Read More';
-            }
+        function toggleR(el) { const c = el.querySelector('.reason-content'); c.classList.toggle('collapsed'); c.classList.toggle('expanded') }
+
+        async function loadTicks(symbol) {
+            document.getElementById('tickBtnBTC').style.borderColor = symbol === 'BTCUSDT' ? 'var(--amber)' : 'var(--border)';
+            document.getElementById('tickBtnBTC').style.color = symbol === 'BTCUSDT' ? 'var(--amber)' : 'var(--text)';
+            document.getElementById('tickBtnETH').style.borderColor = symbol === 'ETHUSDT' ? 'var(--purple)' : 'var(--border)';
+            document.getElementById('tickBtnETH').style.color = symbol === 'ETHUSDT' ? 'var(--purple)' : 'var(--text)';
+            try {
+                const ticks = await apiFetch('/api/ticks?symbol=' + symbol + '&limit=30'); document.getElementById('tickCount').textContent = ticks.length + ' ticks';
+                const b = document.getElementById('tickBody');
+                b.innerHTML = ticks.map(t => {
+                    const time = new Date(t.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const acc = (t.accumulation_score || 0).toFixed(0); const accC = t.accumulation_score >= 60 ? 'text-green' : t.accumulation_score >= 30 ? 'text-amber' : 'text-dim';
+                    const dir = t.direction || '—'; const dirC = dir === 'long' ? 'text-green' : dir === 'short' ? 'text-red' : 'text-dim';
+                    const sig = t.signal_fired ? '<span class="badge badge-green">FIRED</span>' : '<span class="text-dim">—</span>';
+                    return `<tr><td>${time}</td><td>${parseFloat(t.price || 0).toFixed(2)}</td><td class="${accC}">${acc}</td><td>${t.minutes_accumulating || 0}m</td><td>${(t.funding_rate * 100).toFixed(4)}%</td><td>${(t.oi_trend_consistency || 0).toFixed(0)}</td><td>${t.oi_acceleration || 0}</td><td>${(t.absorption_ratio || 0).toFixed(1)}</td><td>${t.price_compression || 0}</td><td>${(t.taker_ratio || 0).toFixed(3)}</td><td class="${dirC}">${dir}</td><td>${sig}</td></tr>`
+                }).join('')
+            } catch { }
+        }
+
+        async function loadSignals() {
+            try {
+                const signals = await apiFetch('/api/signals'); document.getElementById('signalCount').textContent = signals.length + ' signals';
+                const b = document.getElementById('signalBody');
+                if (!signals.length) { b.innerHTML = '<tr><td colspan="9" class="text-dim" style="text-align:center;padding:20px">No signals yet</td></tr>'; return }
+                b.innerHTML = signals.map(s => {
+                    const time = new Date(s.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+                    const sideC = s.direction === 'LONG' ? 'text-green' : 'text-red';
+                    const outcomeC = s.outcome === 'WIN' ? 'badge-green' : s.outcome === 'LOSS' ? 'badge-red' : 'badge-amber';
+                    const p15 = s.price_after_15m ? parseFloat(s.price_after_15m).toFixed(2) : '—';
+                    const p30 = s.price_after_30m ? parseFloat(s.price_after_30m).toFixed(2) : '—';
+                    const p45 = s.price_after_45m ? parseFloat(s.price_after_45m).toFixed(2) : '—';
+                    return `<tr><td>${time}</td><td>${s.symbol.replace('USDT', '')}</td><td class="${sideC}">${s.direction}</td><td>${parseFloat(s.entry_price || 0).toFixed(2)}</td><td>${s.accumulation_score}</td><td><span class="badge ${outcomeC}">${s.outcome || 'TRACKING'}</span></td><td>${p15}</td><td>${p30}</td><td>${p45}</td></tr>`
+                }).join('')
+            } catch { }
+        }
+
+        function switchTab(id, el) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active')); document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + id).classList.add('active'); el.classList.add('active');
+            if (id === 'ticks') loadTicks('BTCUSDT');
+            if (id === 'signals') loadSignals();
         }
 
         async function triggerRun() {
-            const pre = document.getElementById('lastRun');
-            pre.textContent = 'Running strategy...';
-            try {
-                const data = await apiFetch('/api/run');
-                pre.textContent = JSON.stringify(data, null, 2);
-                setTimeout(refresh, 500);
-            } catch (e) { pre.textContent = 'Error: ' + e.message; }
+            const p = document.getElementById('lastRun'); p.textContent = 'Running...';
+            try { const d = await apiFetch('/api/run'); p.textContent = JSON.stringify(d, null, 2); setTimeout(refresh, 500) } catch (e) { p.textContent = 'Error: ' + e.message }
         }
 
         function startAutoRefresh() {
-            refresh();
-            let countdown = 10;
-            const timerEl = document.getElementById('timer');
-            clearInterval(refreshInterval);
-            refreshInterval = setInterval(() => {
-                countdown--;
-                timerEl.textContent = `Auto-refresh: ${countdown}s`;
-                if (countdown <= 0) { refresh(); countdown = 10; }
-            }, 1000);
+            refresh(); let c = 10; const tEl = document.getElementById('timer'); clearInterval(refreshInterval);
+            refreshInterval = setInterval(() => { c--; tEl.textContent = c + 's'; if (c <= 0) { refresh(); c = 10 } }, 1000)
         }
     </script>
 </body>

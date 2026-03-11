@@ -1,15 +1,12 @@
 import { StrategyService } from './strategy_service.js';
 import { D1Database } from './db_d1.js';
 
-
-// SHA-256 hash helper
 async function sha256(text) {
     const data = new TextEncoder().encode(text);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     return [...new Uint8Array(hashBuffer)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Validate auth token
 async function isAuthed(request, env) {
     const authHeader = request.headers.get('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
@@ -22,7 +19,7 @@ export default {
     async fetch(request, env) {
         const url = new URL(request.url);
 
-        // Login endpoint — no auth required
+        // Login — no auth
         if (url.pathname === '/api/login' && request.method === 'POST') {
             try {
                 const { password } = await request.json();
@@ -36,7 +33,7 @@ export default {
             }
         }
 
-        // All /api/* routes require auth
+        // All /api/* require auth
         if (url.pathname.startsWith('/api/')) {
             if (!await isAuthed(request, env)) {
                 return Response.json({ error: 'Unauthorized' }, { status: 401 });
@@ -45,14 +42,14 @@ export default {
             const db = new D1Database(env.DB);
 
             if (url.pathname === '/api/status') {
-                const activeTrade = await db.getActiveTrade();
+                const btcTrade = await db.getActiveTrade('BTCUSDT');
+                const ethTrade = await db.getActiveTrade('ETHUSDT');
                 const stats = await db.getStats();
                 const todayCount = await db.getTodayTradeCount();
                 const todayLosses = await db.getTodayLossCount();
                 return Response.json({
-                    status: activeTrade ? 'IN_TRADE' : 'SCANNING',
-                    activeTrade, stats,
-                    todayTrades: todayCount, todayLosses,
+                    status: (btcTrade || ethTrade) ? 'IN_TRADE' : 'SCANNING',
+                    btcTrade, ethTrade, stats, todayTrades: todayCount, todayLosses,
                     timestamp: new Date().toISOString(),
                 });
             }
@@ -62,30 +59,45 @@ export default {
                 return Response.json(trades);
             }
 
-            // OI data endpoint — shows current institutional flow state
+            // OI data for a specific symbol
             if (url.pathname === '/api/oi') {
+                const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
                 try {
-                    const snapshots = await db.getOISnapshots(30);
+                    const snapshots = await db.getOISnapshots(symbol, 60);
                     const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
-                    const fiveMinAgo = snapshots.find(s => s.timestamp <= Date.now() - 5 * 60 * 1000);
-                    const fifteenMinAgo = snapshots.find(s => s.timestamp <= Date.now() - 15 * 60 * 1000);
-
                     let change5m = null, change15m = null;
-                    if (latest && fiveMinAgo) {
-                        change5m = ((latest.open_interest - fiveMinAgo.open_interest) / fiveMinAgo.open_interest) * 100;
+                    if (latest) {
+                        const s5 = snapshots.find(s => s.timestamp <= Date.now() - 5 * 60 * 1000);
+                        const s15 = snapshots.find(s => s.timestamp <= Date.now() - 15 * 60 * 1000);
+                        if (s5) change5m = ((latest.open_interest - s5.open_interest) / s5.open_interest) * 100;
+                        if (s15) change15m = ((latest.open_interest - s15.open_interest) / s15.open_interest) * 100;
                     }
-                    if (latest && fifteenMinAgo) {
-                        change15m = ((latest.open_interest - fifteenMinAgo.open_interest) / fifteenMinAgo.open_interest) * 100;
-                    }
-
                     return Response.json({
-                        currentOI: latest?.open_interest,
-                        price: latest?.price,
-                        change5m,
-                        change15m,
-                        snapshotCount: snapshots.length,
-                        oldestSnapshot: snapshots[0]?.timestamp ? new Date(snapshots[0].timestamp).toISOString() : null,
+                        symbol, currentOI: latest?.open_interest, price: latest?.price,
+                        change5m, change15m, snapshotCount: snapshots.length,
                     });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            // Recent tick logs for calibration
+            if (url.pathname === '/api/ticks') {
+                const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
+                const limit = parseInt(url.searchParams.get('limit') || '30');
+                try {
+                    const ticks = await db.getRecentTicks(symbol, limit);
+                    return Response.json(ticks);
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            // Recent hypothetical signals
+            if (url.pathname === '/api/signals') {
+                try {
+                    const signals = await db.getRecentSignals(50);
+                    return Response.json(signals);
                 } catch (err) {
                     return Response.json({ error: err.message }, { status: 500 });
                 }
@@ -97,23 +109,13 @@ export default {
                 return Response.json(result);
             }
 
-            if (url.pathname === '/api/debug') {
-                return Response.json({
-                    hasAssets: !!env.ASSETS,
-                    pathname: url.pathname,
-                    envKeys: Object.keys(env)
-                });
-            }
-
             return Response.json({ error: 'Not found' }, { status: 404 });
         }
 
-        // Dashboard (static assets)
+        // Static assets
         if (env.ASSETS) {
-            // Explicitly serve index.html for root or empty path
             if (url.pathname === '/' || url.pathname === '') {
-                const indexRequest = new Request(new URL('/index.html', request.url), request);
-                return env.ASSETS.fetch(indexRequest);
+                return env.ASSETS.fetch(new Request(new URL('/index.html', request.url), request));
             }
             return env.ASSETS.fetch(request);
         }
