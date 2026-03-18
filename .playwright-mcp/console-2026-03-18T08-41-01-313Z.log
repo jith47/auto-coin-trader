@@ -1,0 +1,2 @@
+[     505ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://crypto-hypo-bot.jithin-thomas.workers.dev/favicon.ico:0
+[    7279ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://crypto-hypo-bot.jithin-thomas.workers.dev/api/login:0

@@ -1,0 +1,2 @@
+[     229ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://crypto-hypo-bot.jithin-thomas.workers.dev/favicon.ico:0
+[  397290ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://crypto-hypo-bot.jithin-thomas.workers.dev/api/status:0

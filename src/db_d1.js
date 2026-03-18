@@ -6,9 +6,19 @@ export class D1Database {
     // ─── OI Snapshots ────────────────────────────────────────────────
 
     async saveOISnapshot(timestamp, symbol, openInterest, price) {
-        return await this.db.prepare(
-            'INSERT INTO oi_snapshots (timestamp, symbol, open_interest, price) VALUES (?, ?, ?, ?)'
-        ).bind(timestamp, symbol, openInterest, price).run();
+        try {
+            return await this.db.prepare(
+                'INSERT INTO oi_snapshots (timestamp, symbol, open_interest, price) VALUES (?, ?, ?, ?)'
+            ).bind(
+                timestamp || Date.now(),
+                symbol || 'UNKNOWN',
+                openInterest || 0,
+                price || 0
+            ).run();
+        } catch (err) {
+            console.error('[DB ERROR] saveOISnapshot failed:', err.message);
+            throw err;
+        }
     }
 
     // Get OI snapshots for the last N minutes (oldest → newest)

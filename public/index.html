@@ -706,12 +706,17 @@
             document.getElementById('tradeCount').textContent = trades.length + ' trades'; const b = document.getElementById('tradeBody');
             if (!trades.length) { b.innerHTML = '<tr><td colspan="10" class="text-dim" style="text-align:center;padding:20px">No trades yet</td></tr>'; return }
             b.innerHTML = trades.map(t => {
-                const time = new Date(t.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-                const sideC = t.decision === 'BUY' ? 'text-green' : 'text-red'; const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
-                const pnlC = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim'; const sb = t.status === 'OPEN' ? 'badge-cyan' : t.pnl > 0 ? 'badge-green' : 'badge-red';
-                const pnlInr = t.pnl_inr != null ? ` (₹${parseFloat(t.pnl_inr).toFixed(0)})` : ''; const accS = t.accumulation_score ? t.accumulation_score.toFixed(0) : '—';
-                const sym = t.symbol || t.asset || '—'; const r = t.reason || '—'; const cr = t.close_reason ? '\n' + t.close_reason : ''; const full = r + cr;
-                return `<tr><td>${time}</td><td>${sym.replace('USDT', '')}</td><td class="${sideC}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(2)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(2)}</td><td>${parseFloat(t.take_profit || 0).toFixed(2)}</td><td>${accS}</td><td><span class="badge ${sb}">${t.status}</span></td><td class="${pnlC}">${pnl}${pnlInr}</td><td><div class="reason-cell" onclick="toggleR(this)"><div class="reason-content collapsed">${full}</div></div></td></tr>`
+                const time = t.entry_time ? new Date(t.entry_time).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+                const side = t.direction || '—';
+                const sideC = side === 'LONG' ? 'text-green' : side === 'SHORT' ? 'text-red' : 'text-dim';
+                const pnlVal = t.pnl_inr;
+                const pnlInr = pnlVal != null ? `₹${parseFloat(pnlVal).toFixed(0)}` : '—';
+                const pnlC = pnlVal > 0 ? 'text-green' : pnlVal < 0 ? 'text-red' : 'text-dim';
+                const sb = t.status === 'OPEN' ? 'badge-cyan' : pnlVal > 0 ? 'badge-green' : 'badge-red';
+                const accS = t.acc_score_at_entry ? parseFloat(t.acc_score_at_entry).toFixed(0) : '—';
+                const sym = (t.symbol || '—').replace('USDT', '');
+                const reason = t.exit_reason || '—';
+                return `<tr><td>${time}</td><td>${sym}</td><td class="${sideC}">${side}</td><td>${parseFloat(t.entry_price || 0).toFixed(2)}</td><td>${parseFloat(t.sl_price || 0).toFixed(2)}</td><td>${parseFloat(t.tp_price || 0).toFixed(2)}</td><td>${accS}</td><td><span class="badge ${sb}">${t.status}</span></td><td class="${pnlC}">${pnlInr}</td><td>${reason}</td></tr>`
             }).join('')
         }
 
@@ -728,9 +733,11 @@
                 b.innerHTML = ticks.map(t => {
                     const time = new Date(t.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     const acc = (t.accumulation_score || 0).toFixed(0); const accC = t.accumulation_score >= 60 ? 'text-green' : t.accumulation_score >= 30 ? 'text-amber' : 'text-dim';
-                    const dir = t.direction || '—'; const dirC = dir === 'long' ? 'text-green' : dir === 'short' ? 'text-red' : 'text-dim';
-                    const sig = t.signal_fired ? '<span class="badge badge-green">FIRED</span>' : '<span class="text-dim">—</span>';
-                    return `<tr><td>${time}</td><td>${parseFloat(t.price || 0).toFixed(2)}</td><td class="${accC}">${acc}</td><td>${t.minutes_accumulating || 0}m</td><td>${(t.funding_rate * 100).toFixed(4)}%</td><td>${(t.oi_trend_consistency || 0).toFixed(0)}</td><td>${t.oi_acceleration || 0}</td><td>${(t.absorption_ratio || 0).toFixed(1)}</td><td>${t.price_compression || 0}</td><td>${(t.taker_ratio || 0).toFixed(3)}</td><td class="${dirC}">${dir}</td><td>${sig}</td></tr>`
+                    const dir = t.direction || '—'; const dirC = dir === 'LONG' ? 'text-green' : dir === 'SHORT' ? 'text-red' : 'text-dim';
+                    const action = t.trade_action || '—';
+                    const actionBadge = action === 'ENTER_LONG' || action === 'ENTER_SHORT' ? `<span class="badge badge-green">${action}</span>` : `<span class="text-dim">${action}</span>`;
+                    const fr = t.funding_rate != null ? (t.funding_rate * 100).toFixed(4) + '%' : '—';
+                    return `<tr><td>${time}</td><td>${parseFloat(t.price || 0).toFixed(2)}</td><td class="${accC}">${acc}</td><td>${t.minutes_accumulating || 0}m</td><td>${fr}</td><td>${(t.tick_oi_consistency || 0).toFixed(0)}</td><td>${(t.tick_oi_acceleration || 0).toFixed(1)}</td><td>${(t.tick_absorption || 0).toFixed(1)}</td><td>${(t.tick_compression || 0).toFixed(1)}</td><td>${(t.taker_ratio || 0).toFixed(3)}</td><td class="${dirC}">${dir}</td><td>${actionBadge}</td></tr>`
                 }).join('')
             } catch { }
         }

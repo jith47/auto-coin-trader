@@ -120,7 +120,15 @@ export class StrategyService {
 
     async preprocessAsset(symbol, data) {
         if (!data || !data.ticker24h) return null;
-        const currentPrice = data.ticker24h.lastPrice;
+        const currentPrice = parseFloat(data.ticker24h.lastPrice);
+        if (!currentPrice || currentPrice <= 0 || isNaN(currentPrice)) return null;
+        const openInterest = parseFloat(data.openInterest.openInterest);
+
+        // PERSIST SNAPSHOT FOR LOOKBACK
+        if (!isNaN(currentPrice) && !isNaN(openInterest)) {
+            await this.db.saveOISnapshot(Date.now(), symbol, openInterest, currentPrice);
+        }
+
         const oiAnalysis = await this.analyzeOI(symbol, data.openInterest);
         const { atrPct } = computeATR(data.klines5m);
         const dirSignals = this.detectDirection(data);
@@ -206,12 +214,15 @@ export class StrategyService {
     async analyzeOI(symbol, currentOI) {
         if (!currentOI) return null;
         const snapshots = await this.db.getOISnapshots(symbol, 60);
+
+        const change1m = snapshots.length >= 1 ? (currentOI.openInterest - snapshots[0].open_interest) / snapshots[0].open_interest * 100 : 0;
         const change5m = snapshots.length >= 5 ? (currentOI.openInterest - snapshots[4].open_interest) / snapshots[4].open_interest * 100 : 0;
         const change15m = snapshots.length >= 15 ? (currentOI.openInterest - snapshots[14].open_interest) / snapshots[14].open_interest * 100 : 0;
+
         const recentROC = snapshots.length >= 5 ? (currentOI.openInterest - snapshots[4].open_interest) / 5 : 0;
         const olderROC = snapshots.length >= 15 ? (snapshots[4].open_interest - snapshots[14].open_interest) / 10 : 0;
 
-        return { currentOI: currentOI.openInterest, change5m, change15m, recentROC, olderROC, snapshots };
+        return { currentOI: currentOI.openInterest, change1m, change5m, change15m, recentROC, olderROC, snapshots };
     }
 
     async calculateAccumulationScore(symbol, data, currentPrice, oiAnalysis) {

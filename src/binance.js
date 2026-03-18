@@ -4,18 +4,12 @@
  */
 const SPOT_ENDPOINTS = [
     'https://api-gcp.binance.com',
-    'https://api.binance.com',
-    'https://api1.binance.com',
-    'https://api2.binance.com',
-    'https://api3.binance.com'
+    'https://api.binance.com'
 ];
 
 const FUTURES_ENDPOINTS = [
     'https://fapi.binance.com',
-    'https://api-gcp.binance.com',
-    'https://fapi1.binance.com',
-    'https://fapi2.binance.com',
-    'https://fapi3.binance.com'
+    'https://api-gcp.binance.com' // Fallback for 451 geoblocks
 ];
 
 /**
@@ -36,9 +30,12 @@ async function fetchWithFallback(endpoints, path, options = {}) {
                 console.warn(`[Data] Fallback triggered for ${path} from ${base} (${res.status})`);
                 continue;
             }
-            return res; // Return 4xx errors other than 451
+            return res;
         } catch (err) {
             lastError = `EXCEPTION: ${err.message}`;
+            if (err.message.includes('Too many subrequests')) {
+                throw new Error(`CRITICAL: Subrequest limit hit. ${lastError}`);
+            }
             continue;
         }
     }
@@ -208,7 +205,7 @@ export async function fetch24hTicker(symbol) {
             volume: parseFloat(data.volume || 0),
         };
     } catch (err) {
-        return { lastPrice: 0, highPrice: 0, lowPrice: 0, priceChangePercent: 0, volume: 0 };
+        return { lastPrice: null, highPrice: null, lowPrice: null, priceChangePercent: 0, volume: 0 };
     }
 }
 
