@@ -1,6 +1,5 @@
-import { StrategyService } from './strategy_service.js';
+import { StrategyService, CONFIG } from './strategy_service.js';
 import { D1Database } from './db_d1.js';
-
 
 // SHA-256 hash helper
 async function sha256(text) {
@@ -11,6 +10,7 @@ async function sha256(text) {
 
 // Validate auth token
 async function isAuthed(request, env) {
+    if (!env.DASHBOARD_PASSWORD) return true; // no password = no auth
     const authHeader = request.headers.get('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
     const token = authHeader.slice(7);
@@ -22,7 +22,7 @@ export default {
     async fetch(request, env) {
         const url = new URL(request.url);
 
-        // Login endpoint — no auth required
+        // Login endpoint
         if (url.pathname === '/api/login' && request.method === 'POST') {
             try {
                 const { password } = await request.json();
@@ -36,7 +36,7 @@ export default {
             }
         }
 
-        // All /api/* routes require auth
+        // API routes (auth required if password is set)
         if (url.pathname.startsWith('/api/')) {
             if (!await isAuthed(request, env)) {
                 return Response.json({ error: 'Unauthorized' }, { status: 401 });
@@ -47,18 +47,30 @@ export default {
             if (url.pathname === '/api/status') {
                 const activeTrade = await db.getActiveTrade();
                 const stats = await db.getStats();
-                const todayCount = await db.getTodayTradeCount();
-                const todayLosses = await db.getTodayLossCount();
                 return Response.json({
                     status: activeTrade ? 'IN_TRADE' : 'SCANNING',
-                    activeTrade, stats,
-                    todayTrades: todayCount, todayLosses,
+                    symbol: CONFIG.SYMBOL,
+                    interval: CONFIG.INTERVAL,
+                    activeTrade,
+                    stats,
+                    config: {
+                        fastEma: CONFIG.FAST_EMA,
+                        slowEma: CONFIG.SLOW_EMA,
+                        trendEma: CONFIG.TREND_EMA,
+                        rsiLen: CONFIG.RSI_LEN,
+                        atrLen: CONFIG.ATR_LEN,
+                        stopAtr: CONFIG.STOP_ATR,
+                        targetAtr: CONFIG.TARGET_ATR,
+                        trailAtr: CONFIG.TRAIL_ATR,
+                        maxBars: CONFIG.MAX_BARS_IN_TRADE,
+                    },
                     timestamp: new Date().toISOString(),
                 });
             }
 
             if (url.pathname === '/api/trades') {
-                const trades = await db.getRecentTrades(50);
+                const limit = parseInt(url.searchParams.get('limit') || '50');
+                const trades = await db.getRecentTrades(limit);
                 return Response.json(trades);
             }
 
@@ -71,7 +83,7 @@ export default {
             return Response.json({ error: 'Not found' }, { status: 404 });
         }
 
-        // Dashboard (static assets) — no auth on HTML, auth is done client-side
+        // Dashboard (static assets)
         if (env.ASSETS) {
             return env.ASSETS.fetch(request);
         }

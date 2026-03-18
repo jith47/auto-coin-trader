@@ -1,2 +1,3 @@
--- Migration: Add tp_levels column to trade_logs
-ALTER TABLE trade_logs ADD COLUMN tp_levels TEXT;
+-- Migration 0010: No-op (tp_levels column already exists in DB)
+-- This migration was previously applied manually. Keeping as placeholder for migration tracker.
+SELECT 1;

@@ -3,149 +3,137 @@ export class D1Database {
         this.db = d1;
     }
 
-    // Log a trade
+    // ─────────────────────────────────────────────────────────────────────────
+    // Trade Logging
+    // ─────────────────────────────────────────────────────────────────────────
+
     async logTrade(data) {
         const stmt = this.db.prepare(`
             INSERT INTO trade_logs (
                 timestamp, decision, reason, asset, price, quantity,
-                leverage, stop_loss, take_profit, tp_levels, raw_response, status, order_id, entry_value_inr
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                stop_loss, take_profit, trail_points, atr,
+                entry_value_usd, status, order_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
-
         return await stmt.bind(
             Date.now(),
             data.decision,
             data.reason,
-            data.asset || 'B-DOGE_USDT',
+            data.asset || 'BTCUSDT',
             data.entry || 0,
             data.quantity || 0,
-            data.leverage || 0,
             data.stopLoss || 0,
             data.takeProfit || 0,
-            data.tpLevels ? JSON.stringify(data.tpLevels) : null,
-            JSON.stringify(data),
-            data.status || 'OPEN',
+            data.trailPoints || 0,
+            data.atr || 0,
+            data.entryValueUsd || 0,
+            'OPEN',
             data.orderId || null,
-            data.entryValueInr || 0
         ).run();
     }
 
-    // Update trade status
-    async updateTradeStatus(orderId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
-        const stmt = this.db.prepare(`
+    async updateTradeStatus(orderId, status, exitPrice = null, pnlPct = null, closeReason = null, pnlUsd = null) {
+        return await this.db.prepare(`
             UPDATE trade_logs
-            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?
+            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, pnl_usd = ?
             WHERE order_id = ?
-        `);
-        return await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, orderId).run();
+        `).bind(status, exitPrice, pnlPct, closeReason, pnlUsd, orderId).run();
     }
 
-    // Update TP levels status
-    async updateTPLevels(orderId, tpLevels) {
-        const stmt = this.db.prepare(`
-            UPDATE trade_logs
-            SET tp_levels = ?
-            WHERE order_id = ?
-        `);
-        return await stmt.bind(JSON.stringify(tpLevels), orderId).run();
-    }
-
-    // Get active trade
     async getActiveTrade() {
-        return await this.db.prepare(
-            "SELECT * FROM trade_logs WHERE status = 'OPEN' OR status = 'FILLED' ORDER BY timestamp DESC LIMIT 1"
+        const trade = await this.db.prepare(
+            "SELECT * FROM trade_logs WHERE status = 'OPEN' ORDER BY timestamp DESC LIMIT 1"
         ).first();
+        if (!trade) return null;
+        // Attach peak price from settings if available
+        const peak = await this.getSetting(`peak_${trade.order_id}`);
+        if (peak) trade.peak_price = parseFloat(peak);
+        return trade;
     }
 
-    // Get recent trades
-    async getRecentTrades(limit = 10) {
+    async getRecentTrades(limit = 20) {
         const { results } = await this.db.prepare(
             'SELECT * FROM trade_logs ORDER BY timestamp DESC LIMIT ?'
         ).bind(limit).all();
         return results;
     }
 
-    // Get overall stats
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stats
+    // ─────────────────────────────────────────────────────────────────────────
+
     async getStats() {
         const stats = await this.db.prepare(`
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                SUM(pnl) as total_pnl
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                SUM(pnl_usd) as total_pnl_usd,
+                AVG(pnl) as avg_pnl_pct
             FROM trade_logs
             WHERE status = 'CLOSED'
         `).first();
 
+        const balance = await this.getMockBalance();
         const totalTrades = stats?.total_trades || 0;
         const wins = stats?.wins || 0;
         const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
 
-        const currentBalance = await this.getMockBalance();
-
         return {
             totalTrades,
+            wins,
+            losses: stats?.losses || 0,
             winRate: parseFloat(winRate.toFixed(1)),
-            totalPnL: stats?.total_pnl || 0,
-            balance: currentBalance
+            totalPnlUsd: parseFloat((stats?.total_pnl_usd || 0).toFixed(2)),
+            avgPnlPct: parseFloat((stats?.avg_pnl_pct || 0).toFixed(3)),
+            balance: parseFloat(balance.toFixed(2)),
         };
     }
 
-    // Get today's trade count (UTC day)
-    async getTodayTradeCount() {
-        const todayStart = this.getTodayStartMs();
-        const result = await this.db.prepare(
-            'SELECT COUNT(*) as count FROM trade_logs WHERE timestamp >= ?'
-        ).bind(todayStart).first();
-        return result?.count || 0;
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mock Balance
+    // ─────────────────────────────────────────────────────────────────────────
 
-    // Get today's loss count
-    async getTodayLossCount() {
-        const todayStart = this.getTodayStartMs();
-        const result = await this.db.prepare(
-            "SELECT COUNT(*) as count FROM trade_logs WHERE timestamp >= ? AND status = 'CLOSED' AND pnl < 0"
-        ).bind(todayStart).first();
-        return result?.count || 0;
-    }
-
-    // Get last loss timestamp
-    async getLastLossTime() {
-        const result = await this.db.prepare(
-            "SELECT timestamp FROM trade_logs WHERE status = 'CLOSED' AND pnl < 0 ORDER BY timestamp DESC LIMIT 1"
-        ).first();
-        return result?.timestamp || null;
-    }
-
-    // Get today's PnL in INR
-    async getTodayPnLInr() {
-        const todayStart = this.getTodayStartMs();
-        const result = await this.db.prepare(
-            "SELECT SUM(pnl_inr) as total_pnl FROM trade_logs WHERE timestamp >= ? AND status = 'CLOSED'"
-        ).bind(todayStart).first();
-        return result?.total_pnl || 0;
-    }
-
-    // Helper: get today's start timestamp in ms (UTC midnight)
-    getTodayStartMs() {
-        const now = new Date();
-        return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    }
-
-    // Mock Balance Management
     async getMockBalance() {
         const result = await this.db.prepare(
-            "SELECT value FROM settings WHERE key = 'mock_balance_inr'"
+            "SELECT value FROM settings WHERE key = 'mock_balance_usd'"
         ).first();
-        return parseFloat(result?.value || '2500');
+        return parseFloat(result?.value || '100000');
     }
 
     async updateMockBalance(newBalance) {
-        return await this.db.prepare(
-            "UPDATE settings SET value = ? WHERE key = 'mock_balance_inr'"
-        ).bind(newBalance.toFixed(2)).run();
+        // Upsert pattern
+        const existing = await this.db.prepare(
+            "SELECT value FROM settings WHERE key = 'mock_balance_usd'"
+        ).first();
+        if (existing) {
+            return await this.db.prepare(
+                "UPDATE settings SET value = ? WHERE key = 'mock_balance_usd'"
+            ).bind(newBalance.toFixed(2)).run();
+        } else {
+            return await this.db.prepare(
+                "INSERT INTO settings (key, value) VALUES ('mock_balance_usd', ?)"
+            ).bind(newBalance.toFixed(2)).run();
+        }
     }
 
-    // Generic Setting Management
+    // ─────────────────────────────────────────────────────────────────────────
+    // Bars-in-trade counter (for time stop)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async getBarsInTrade(orderId) {
+        const val = await this.getSetting(`bars_${orderId}`);
+        return parseInt(val || '0');
+    }
+
+    async updateBarsInTrade(orderId, bars) {
+        return await this.updateSetting(`bars_${orderId}`, bars);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Generic Settings (key-value store)
+    // ─────────────────────────────────────────────────────────────────────────
+
     async getSetting(key, defaultValue = null) {
         const result = await this.db.prepare(
             "SELECT value FROM settings WHERE key = ?"
@@ -154,7 +142,6 @@ export class D1Database {
     }
 
     async updateSetting(key, value) {
-        // Use UPSERT pattern
         const existing = await this.getSetting(key);
         if (existing !== null) {
             return await this.db.prepare(
@@ -165,5 +152,11 @@ export class D1Database {
                 "INSERT INTO settings (key, value) VALUES (?, ?)"
             ).bind(key, value.toString()).run();
         }
+    }
+
+    async deleteSetting(key) {
+        return await this.db.prepare(
+            "DELETE FROM settings WHERE key = ?"
+        ).bind(key).run();
     }
 }

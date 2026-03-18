@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "scalper-assistant",
+	"name": "ema-scalper-bot",
 	"main": "src/worker.js",
 	"compatibility_flags": [
 		"nodejs_compat"
@@ -12,6 +12,9 @@
 	"compatibility_date": "2025-09-17",
 	"observability": {
 		"enabled": true
+	},
+	"vars": {
+		"DASHBOARD_PASSWORD": "greed2025@A"
 	},
 	"migrations": [
 		{
@@ -30,8 +33,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "trade_db",
-			"database_id": "739e432a-f0ec-4f61-b0f2-913570686a46"
+			"database_name": "ema_scalper_db",
+			"database_id": "6121aac0-8ab7-4b47-ab0a-d1b61211f1d2"
 		}
 	],
 	"triggers": {
