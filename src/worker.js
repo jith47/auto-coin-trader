@@ -109,6 +109,17 @@ export default {
                 return Response.json(result);
             }
 
+            if (url.pathname === '/api/backtest' && request.method === 'POST') {
+                try {
+                    const { runBacktest } = await import('./backtest_engine.js');
+                    const params = await request.json();
+                    const result = await runBacktest(env.DB, params);
+                    return Response.json(result);
+                } catch (err) {
+                    return Response.json({ error: err.message, stack: err.stack }, { status: 500 });
+                }
+            }
+
             return Response.json({ error: 'Not found' }, { status: 404 });
         }
 

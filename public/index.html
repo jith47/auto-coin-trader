@@ -466,6 +466,142 @@
             white-space: pre-wrap;
             padding: 6px 0
         }
+
+        /* Backtest */
+        .bt-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 14px;
+            padding: 18px
+        }
+
+        .bt-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px
+        }
+
+        .bt-field label {
+            font-size: .72rem;
+            color: var(--dim);
+            text-transform: uppercase;
+            letter-spacing: .04em
+        }
+
+        .bt-field input[type=range] {
+            width: 100%;
+            accent-color: var(--cyan)
+        }
+
+        .bt-field .bt-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: .8rem;
+            color: var(--cyan);
+            font-weight: 600
+        }
+
+        .bt-field .bt-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between
+        }
+
+        .bt-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: .82rem
+        }
+
+        .bt-toggle input {
+            accent-color: var(--cyan);
+            width: 16px;
+            height: 16px
+        }
+
+        .bt-actions {
+            padding: 0 18px 14px;
+            display: flex;
+            gap: 10px;
+            align-items: center
+        }
+
+        .bt-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 12px;
+            padding: 18px
+        }
+
+        .bt-stat {
+            background: var(--surface2);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center
+        }
+
+        .bt-stat-label {
+            font-size: .68rem;
+            color: var(--dim);
+            text-transform: uppercase;
+            margin-bottom: 4px
+        }
+
+        .bt-stat-value {
+            font-size: 1.2rem;
+            font-weight: 700
+        }
+
+        .bt-dist {
+            padding: 0 18px 18px
+        }
+
+        .bt-dist-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px
+        }
+
+        .bt-dist-col h4 {
+            font-size: .78rem;
+            color: var(--dim);
+            margin-bottom: 8px;
+            text-transform: uppercase
+        }
+
+        .bt-dist-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: .75rem
+        }
+
+        .bt-dist-bar .bar {
+            flex: 1;
+            height: 6px;
+            background: var(--surface2);
+            border-radius: 3px;
+            overflow: hidden
+        }
+
+        .bt-dist-bar .bar-fill {
+            height: 100%;
+            border-radius: 3px
+        }
+
+        .bt-diff-pos {
+            color: var(--green)
+        }
+
+        .bt-diff-neg {
+            color: var(--red)
+        }
+
+        .bt-diff-zero {
+            color: var(--dim)
+        }
     </style>
 </head>
 
@@ -551,6 +687,7 @@
                     <div class="tab active" onclick="switchTab('trades',this)">📊 Trades</div>
                     <div class="tab" onclick="switchTab('signals',this)">🎯 Signals</div>
                     <div class="tab" onclick="switchTab('ticks',this)">📡 Tick Log</div>
+                    <div class="tab" onclick="switchTab('backtest',this)">🔬 Backtest</div>
                     <div class="tab" onclick="switchTab('run',this)">🔍 Last Run</div>
                 </div>
 
@@ -630,6 +767,82 @@
                             </thead>
                             <tbody id="tickBody"></tbody>
                         </table>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-backtest">
+                    <div class="bt-controls">
+                        <div class="bt-field">
+                            <label>VOL_WT_OI Threshold</label>
+                            <div class="bt-row"><input type="range" id="btVolWtOi" min="0.01" max="0.5" step="0.01"
+                                    value="0.2" oninput="btUpdate('btVolWtOi')"><span class="bt-val"
+                                    id="btVolWtOi_v">0.20%</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Min Hold (Grace Period)</label>
+                            <div class="bt-row"><input type="range" id="btMinHold" min="0" max="15" step="1" value="5"
+                                    oninput="btUpdate('btMinHold')"><span class="bt-val" id="btMinHold_v">5 min</span>
+                            </div>
+                        </div>
+                        <div class="bt-field">
+                            <label>TP/SL Ratio</label>
+                            <div class="bt-row"><input type="range" id="btTpSlRatio" min="1.0" max="4.0" step="0.1"
+                                    value="2.5" oninput="btUpdate('btTpSlRatio')"><span class="bt-val"
+                                    id="btTpSlRatio_v">2.5x</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Acc. Score Threshold</label>
+                            <div class="bt-row"><input type="range" id="btAccThresh" min="40" max="90" step="5"
+                                    value="70" oninput="btUpdate('btAccThresh')"><span class="bt-val"
+                                    id="btAccThresh_v">70</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Leverage</label>
+                            <div class="bt-row"><input type="range" id="btLeverage" min="1" max="50" step="1" value="10"
+                                    oninput="btUpdate('btLeverage')"><span class="bt-val" id="btLeverage_v">10x</span>
+                            </div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Vol/OI Divergence</label>
+                            <div class="bt-row"><input type="range" id="btVolDiv" min="1.0" max="3.0" step="0.1"
+                                    value="1.5" oninput="btUpdate('btVolDiv')"><span class="bt-val"
+                                    id="btVolDiv_v">1.5x</span></div>
+                        </div>
+                        <div class="bt-field" style="justify-content:center">
+                            <label class="bt-toggle"><input type="checkbox" id="btBlockQuiet" checked> Block BOTH_QUIET
+                                Entries</label>
+                        </div>
+                    </div>
+                    <div class="bt-actions">
+                        <button class="btn btn-primary" onclick="runBacktest()" id="btRunBtn">▶ Run Backtest</button>
+                        <button class="btn btn-dim" onclick="restoreBtDefaults()" id="btRestoreBtn">↺ Restore
+                            Defaults</button>
+                        <span class="text-dim" id="btStatus">Configure parameters above</span>
+                    </div>
+                    <div id="btResults" style="display:none">
+                        <div class="bt-summary" id="btSummary"></div>
+                        <div class="bt-dist" id="btDist"></div>
+                        <div style="padding:0 18px 6px"><span class="text-dim" style="font-size:.78rem">Trade-by-Trade
+                                Comparison</span></div>
+                        <div style="overflow-x:auto">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Dir</th>
+                                        <th>Gate</th>
+                                        <th title="Old Reason">O-Reason</th>
+                                        <th>Old P&L</th>
+                                        <th>Old Hold</th>
+                                        <th title="New Reason">N-Reason</th>
+                                        <th>New P&L</th>
+                                        <th>New Hold</th>
+                                        <th>Diff</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="btBody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -764,6 +977,100 @@
             document.getElementById('tab-' + id).classList.add('active'); el.classList.add('active');
             if (id === 'ticks') loadTicks('BTCUSDT');
             if (id === 'signals') loadSignals();
+        }
+
+        // ─── Backtest UI ─────────────────────────
+        function btUpdate(id) {
+            const el = document.getElementById(id); if (!el) return;
+            const v = parseFloat(el.value);
+            const fmt = { btVolWtOi: v.toFixed(2) + '%', btMinHold: v + ' min', btTpSlRatio: v.toFixed(1) + 'x', btAccThresh: v.toFixed(0), btVolDiv: v.toFixed(1) + 'x', btLeverage: v.toFixed(0) + 'x' };
+            const label = document.getElementById(id + '_v'); if (label) label.textContent = fmt[id] || v;
+        }
+
+        function restoreBtDefaults() {
+            const defaults = { btVolWtOi: 0.20, btMinHold: 5, btTpSlRatio: 2.5, btAccThresh: 70, btVolDiv: 1.5, btBlockQuiet: true, btLeverage: 10 };
+            Object.keys(defaults).forEach(id => {
+                const el = document.getElementById(id); if (!el) return;
+                if (el.type === 'checkbox') el.checked = defaults[id];
+                else { el.value = defaults[id]; btUpdate(id); }
+            });
+            document.getElementById('btStatus').textContent = 'Defaults restored';
+        }
+
+        async function runBacktest() {
+            const btn = document.getElementById('btRunBtn'); const status = document.getElementById('btStatus');
+            btn.disabled = true; btn.textContent = '⏳ Running...'; status.textContent = 'Querying database & replaying trades...';
+            try {
+                const params = {
+                    volWtOiThreshold: parseFloat(document.getElementById('btVolWtOi').value),
+                    minHoldMinutes: parseFloat(document.getElementById('btMinHold').value),
+                    tpSlRatio: parseFloat(document.getElementById('btTpSlRatio').value),
+                    accEntryThreshold: parseFloat(document.getElementById('btAccThresh').value),
+                    volOiDivergence: parseFloat(document.getElementById('btVolDiv').value),
+                    blockBothQuiet: document.getElementById('btBlockQuiet').checked,
+                    leverage: parseFloat(document.getElementById('btLeverage').value),
+                };
+                const res = await fetch('/api/backtest', { method: 'POST', headers: authHeaders(), body: JSON.stringify(params) });
+                if (res.status === 401) { logout(); return; }
+                const data = await res.json();
+                if (data.error) { status.textContent = '❌ ' + data.error; return; }
+                renderBacktest(data);
+                status.textContent = `✅ Replayed ${data.tradeCount} trades across ${data.tickCount.toLocaleString()} ticks`;
+            } catch (e) { status.textContent = '❌ ' + e.message; }
+            finally { btn.disabled = false; btn.textContent = '▶ Run Backtest'; }
+        }
+
+        function renderBacktest(d) {
+            console.log('Backtest Results:', d.comparison);
+            document.getElementById('btResults').style.display = 'block';
+            const os = d.oldSummary, ns = d.newSummary;
+            const pnlDiff = d.pnlImpact;
+            const pnlC = pnlDiff > 0 ? 'bt-diff-pos' : pnlDiff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
+            const wrDiff = ns.winRate - os.winRate;
+            const wrC = wrDiff > 0 ? 'bt-diff-pos' : wrDiff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
+
+            document.getElementById('btSummary').innerHTML = `
+                <div class="bt-stat"><div class="bt-stat-label">Old Trades</div><div class="bt-stat-value">${os.traded}</div></div>
+                <div class="bt-stat"><div class="bt-stat-label">New Trades</div><div class="bt-stat-value">${ns.traded} <span class="text-dim" style="font-size:.7rem">(${ns.blocked} blocked)</span></div></div>
+                <div class="bt-stat"><div class="bt-stat-label">Old Win Rate</div><div class="bt-stat-value">${os.winRate}%</div></div>
+                <div class="bt-stat"><div class="bt-stat-label">New Win Rate</div><div class="bt-stat-value ${wrC}">${ns.winRate}% <span style="font-size:.7rem">(${wrDiff > 0 ? '+' : ''}${wrDiff}pp)</span></div></div>
+                <div class="bt-stat"><div class="bt-stat-label">Old P&L</div><div class="bt-stat-value ${os.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${os.totalPnl.toFixed(0)}</div></div>
+                <div class="bt-stat"><div class="bt-stat-label">New P&L</div><div class="bt-stat-value ${ns.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${ns.totalPnl.toFixed(0)}</div></div>
+                <div class="bt-stat"><div class="bt-stat-label">P&L Impact</div><div class="bt-stat-value ${pnlC}">${pnlDiff > 0 ? '+' : ''}₹${pnlDiff.toFixed(0)}</div></div>
+                <div class="bt-stat"><div class="bt-stat-label">Avg P&L/Trade</div><div class="bt-stat-value ${ns.avgPnl >= 0 ? 'text-green' : 'text-red'}">₹${ns.avgPnl.toFixed(0)}</div></div>
+            `;
+
+            // Exit distributions
+            const maxCnt = Math.max(...[...d.oldExitDist, ...d.newExitDist].map(x => x.count));
+            const distBar = (items, color) => items.map(x => {
+                const w = Math.max(5, (x.count / maxCnt * 100));
+                const pC = x.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                return `<div class="bt-dist-bar"><span style="min-width:140px">${x.reason}</span><span style="min-width:24px;text-align:right">${x.count}</span><div class="bar"><div class="bar-fill" style="width:${w}%;background:${color}"></div></div><span style="color:${pC};min-width:60px;text-align:right">₹${x.pnl.toFixed(0)}</span></div>`;
+            }).join('');
+            document.getElementById('btDist').innerHTML = `<div class="bt-dist-grid">
+                <div class="bt-dist-col"><h4>Old Exit Distribution</h4>${distBar(d.oldExitDist, 'var(--amber)')}</div>
+                <div class="bt-dist-col"><h4>New Exit Distribution</h4>${distBar(d.newExitDist, 'var(--cyan)')}</div>
+            </div>`;
+
+            // Trade table
+            const b = document.getElementById('btBody');
+            b.innerHTML = d.comparison.map(c => {
+                const diffC = c.diff > 0 ? 'bt-diff-pos' : c.diff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
+                const diffIcon = c.diff > 0 ? '✅' : c.diff < 0 ? '🔻' : '➖';
+                const dirC = c.direction === 'LONG' ? 'text-green' : 'text-red';
+                const sym = c.symbol.replace('USDT', '');
+                const oC = c.old.pnl >= 0 ? 'text-green' : 'text-red';
+                const nC = c.new.pnl >= 0 ? 'text-green' : 'text-red';
+                const gate = (c.cross_asset || '').replace('_', ' ');
+                const gateC = c.new.reason === 'BLOCKED' || c.new.reason === 'SCORE_BLOCKED' ? 'text-red' : 'text-green';
+                return `<tr>
+                    <td>${sym}</td><td class="${dirC}">${c.direction}</td>
+                    <td class="${gateC}" style="font-size:.7rem">${c.new.reason === 'BLOCKED' || c.new.reason === 'SCORE_BLOCKED' ? 'OFF' : 'ON'}</td>
+                    <td style="font-size:.72rem">${c.old.reason}</td><td class="${oC}">₹${c.old.pnl}</td><td>${c.old.hold.toFixed(1)}m</td>
+                    <td style="font-size:.72rem">${c.new.reason}</td><td class="${nC}">₹${c.new.pnl}</td><td>${c.new.hold.toFixed(1)}m</td>
+                    <td class="${diffC}">${diffIcon} ₹${c.diff}</td>
+                </tr>`;
+            }).join('');
         }
 
         async function triggerRun() {

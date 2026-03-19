@@ -35,7 +35,7 @@ const CONFIG = {
     USD_INR_RATE: 85,
 
     // Accumulation Score Thresholds
-    ACC_ENTRY_THRESHOLD: 55,    // v2.0: score >= 55
+    ACC_ENTRY_THRESHOLD: 70,    // v2.1: raised from 55 for higher conviction
     ACC_MIN_DURATION_MIN: 7,    // v2.0: duration >= 7 min
 
     // Direction Detection
@@ -55,6 +55,8 @@ const CONFIG = {
     OI_DROP_EXIT_PCT: 0.3,      // 0.3% in 3 min
     OI_DECEL_MINUTES: 3,
     VOLUME_OI_DIVERGENCE: 1.5,  // Vol > 1.5x avg
+    VOL_WT_OI_THRESHOLD: 0.002, // 0.2% change required (was 0.05%)
+    MIN_HOLD_MINUTES: 5,        // 5-min grace period for noise exits
     TIME_STOP_MIN: 45,
 
     // Anti-Trap
@@ -337,6 +339,7 @@ export class StrategyService {
         const bias = dirSignals.direction === 'long' ? retail : (1 - retail);
         if (bias > CONFIG.RETAIL_CROWD_LIMIT) return { action: 'NO_SIGNAL', reason: 'RETAIL_TRAP' };
         if (crossAssetStatus === 'CONFLICT') return { action: 'NO_SIGNAL', reason: 'GATE_CONFLICT' };
+        if (crossAssetStatus === 'BOTH_QUIET') return { action: 'NO_SIGNAL', reason: 'GATE_QUIET' };
 
         return await this.executeTrade(symbol, context, dirSignals.direction, trigger);
     }
@@ -415,14 +418,18 @@ export class StrategyService {
             }
         }
 
-        const vol15 = sumVolume(data.klines1m, 15);
-        if (vol15 > (sumVolume(data.klines1m, 60) / 4) * CONFIG.VOLUME_OI_DIVERGENCE && Math.abs(oiAnalysis?.change5m || 0) < 0.05)
-            return this.closePosition(trade, currentPrice, 'VOL_WT_OI');
+        // NOISE-BASED EXITS (Subject to Grace Period)
+        const holdTimeMinutes = (Date.now() - trade.entry_time) / 60000;
+        if (holdTimeMinutes >= CONFIG.MIN_HOLD_MINUTES) {
+            const vol15 = sumVolume(data.klines1m, 15);
+            if (vol15 > (sumVolume(data.klines1m, 60) / 4) * CONFIG.VOLUME_OI_DIVERGENCE && Math.abs(oiAnalysis?.change5m || 0) < CONFIG.VOL_WT_OI_THRESHOLD * 100)
+                return this.closePosition(trade, currentPrice, 'VOL_WT_OI');
 
-        const vol3 = sumVolume(data.klines1m, 3);
-        const s3Vol = sumVolume(data.klines1m.slice(-6, -3), 3);
-        if (pnlPct > 0 && vol3 < s3Vol * 0.7 && Math.abs(priceChange(data.klines1m, 3)) > 0.02)
-            return this.closePosition(trade, currentPrice, 'ABSORPTION_FLIP');
+            const vol3 = sumVolume(data.klines1m, 3);
+            const s3Vol = sumVolume(data.klines1m.slice(-6, -3), 3);
+            if (pnlPct > 0 && vol3 < s3Vol * 0.7 && Math.abs(priceChange(data.klines1m, 3)) > 0.02)
+                return this.closePosition(trade, currentPrice, 'ABSORPTION_FLIP');
+        }
 
         if ((Date.now() - trade.entry_time) / 60000 >= CONFIG.TIME_STOP_MIN) return this.closePosition(trade, currentPrice, 'TIME_STOP');
 
