@@ -209,6 +209,44 @@ export async function fetch24hTicker(symbol) {
     }
 }
 
+export async function fetchHistoricalKlines(symbol, interval, limit, startTime = null) {
+    try {
+        let path = `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        if (startTime) path += `&startTime=${startTime}`;
+        const res = await fetchWithFallback(SPOT_ENDPOINTS, path);
+        const data = await res.json();
+        if (!Array.isArray(data)) return [];
+        return data.map(k => ({
+            openTime: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
+            low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
+            closeTime: k[6], quoteVolume: parseFloat(k[7]), trades: k[8],
+            takerBuyVolume: parseFloat(k[9]), takerBuyQuoteVolume: parseFloat(k[10]),
+        }));
+    } catch (err) {
+        console.error(`[Data] fetchHistoricalKlines error:`, err.message);
+        return [];
+    }
+}
+
+export async function fetchHistoricalOI(symbol, period, limit, startTime = null) {
+    try {
+        let path = `/futures/data/openInterestHist?symbol=${symbol}&period=${period}&limit=${limit}`;
+        if (startTime) path += `&startTime=${startTime}`;
+        const res = await fetchWithFallback(FUTURES_ENDPOINTS, path);
+        const data = await res.json();
+        if (!Array.isArray(data)) return [];
+        return data.map(d => ({
+            symbol: d.symbol,
+            sumOpenInterest: parseFloat(d.sumOpenInterest),
+            sumOpenInterestValue: parseFloat(d.sumOpenInterestValue),
+            timestamp: d.timestamp
+        }));
+    } catch (err) {
+        console.error(`[Data] fetchHistoricalOI error:`, err.message);
+        return [];
+    }
+}
+
 // ─── Technical Helpers ───────────────────────────────────────────
 
 /**

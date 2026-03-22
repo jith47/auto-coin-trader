@@ -1,88 +1,143 @@
-/**
- * OI Flow Rider — Server-side Backtest Engine
- * Replays historical trades against stored tick data with custom parameters.
- */
-
 const USD_INR = 85;
 const FEE_PCT = 0.001;
 
+/**
+ * Main Backtest Engine for Strategy v2.1
+ */
 export async function runBacktest(db, params) {
-    // Fetch all trades and tick logs
-    const { results: trades } = await db.prepare(
-        'SELECT * FROM trades ORDER BY entry_time ASC'
-    ).all();
+    const limit = params.limit || 2000;
+    const btcTicks = await db.getRecentTicks('BTCUSDT', limit);
+    const ethTicks = await db.getRecentTicks('ETHUSDT', limit);
+    const allTicks = [...btcTicks, ...ethTicks].sort((a, b) => a.timestamp - b.timestamp);
 
-    const { results: allTicks } = await db.prepare(
-        'SELECT timestamp, symbol, price, accumulation_score, oi_change_1m, oi_change_5m, oi_change_15m, volume_ratio, direction, cross_asset_status, tick_oi_consistency, tick_oi_acceleration, tick_absorption, tick_compression, taker_ratio, price_slope, atr_pct, minutes_accumulating FROM tick_logs ORDER BY timestamp ASC'
-    ).all();
+    const oldResults = await db.getRecentTrades(limit);
+    const oldSummary = summarize(oldResults.map(t => ({
+        symbol: t.symbol,
+        pnl_inr: t.pnl_inr,
+        reason: t.exit_reason,
+        hold: t.hold_time_minutes || 0
+    })));
 
-    // Index ticks by symbol
-    const ticksBySymbol = {};
-    for (const t of allTicks) {
-        if (!ticksBySymbol[t.symbol]) ticksBySymbol[t.symbol] = [];
-        ticksBySymbol[t.symbol].push(t);
-    }
-
-    const oldParams = {
-        VOL_WT_OI_THRESHOLD: 0.05,
-        VOL_OI_DIVERGENCE: 1.5,
-        MIN_HOLD_MINUTES: 0,
-        BLOCK_BOTH_QUIET: false,
-        TP_SL_RATIO: 2.5,
-        ACC_ENTRY_THRESHOLD: 55,
-        ACC_MIN_DURATION: 7,
+    const ticksBySymbol = {
+        'BTCUSDT': btcTicks.sort((a, b) => a.timestamp - b.timestamp),
+        'ETHUSDT': ethTicks.sort((a, b) => a.timestamp - b.timestamp)
     };
 
-    const newParams = {
-        VOL_WT_OI_THRESHOLD: parseFloat(params.volWtOiThreshold) || 0.2,
-        VOL_OI_DIVERGENCE: parseFloat(params.volOiDivergence) || 1.5,
-        MIN_HOLD_MINUTES: parseFloat(params.minHoldMinutes) || 5,
-        BLOCK_BOTH_QUIET: params.blockBothQuiet !== false,
-        TP_SL_RATIO: parseFloat(params.tpSlRatio) || 2.5,
-        ACC_ENTRY_THRESHOLD: parseFloat(params.accEntryThreshold) || 55,
-        ACC_MIN_DURATION: parseFloat(params.accMinDuration) || 7,
-        LEVERAGE: parseFloat(params.leverage) || 10,
-    };
-
-    const oldResults = simulateAll(trades, ticksBySymbol, oldParams);
-    const newResults = simulateAll(trades, ticksBySymbol, newParams);
-
-    // Build comparison
-    const comparison = [];
-    for (let i = 0; i < trades.length; i++) {
-        const t = trades[i];
-        const o = oldResults[i];
-        const n = newResults[i];
-        comparison.push({
-            id: t.id,
-            symbol: t.symbol,
-            direction: t.direction,
-            entry_price: t.entry_price,
-            acc_score: t.acc_score_at_entry,
-            cross_asset: t.cross_asset_status_at_entry,
-            old: { reason: o.reason, pnl: round(o.pnl_inr), hold: round(o.hold), exit_price: round(o.exit_price), debug: o.debug },
-            new: { reason: n.reason, pnl: round(n.pnl_inr), hold: round(n.hold), exit_price: round(n.exit_price), debug: n.debug },
-            diff: round(n.pnl_inr - o.pnl_inr),
-        });
-    }
-
-    // Summary stats
-    const oldSummary = summarize(oldResults);
+    const newTrades = discoverTrades(allTicks, params);
+    const newResults = simulateAll(newTrades, ticksBySymbol, params);
     const newSummary = summarize(newResults);
 
-    // Exit distributions
-    const oldExitDist = exitDistribution(oldResults);
-    const newExitDist = exitDistribution(newResults);
-
     return {
-        tradeCount: trades.length,
-        tickCount: allTicks.length,
-        oldParams, newParams,
-        oldSummary, newSummary,
-        comparison,
-        oldExitDist, newExitDist,
-        pnlImpact: round(newSummary.totalPnl - oldSummary.totalPnl),
+        newSummary,
+        oldSummary,
+        newResultsDetailed: newResults.slice(-50), // Last 50 for table
+        pnlImpact: newSummary.totalPnl - oldSummary.totalPnL,
+        tradeCount: newSummary.traded
     };
+}
+
+export async function optimizeStrategy(db, options = {}) {
+    const limit = options.limit || 2000;
+    const btcTicks = await db.getRecentTicks('BTCUSDT', limit);
+    const ethTicks = await db.getRecentTicks('ETHUSDT', limit);
+    const allTicks = [...btcTicks, ...ethTicks].sort((a, b) => a.timestamp - b.timestamp);
+    const ticksBySymbol = { 'BTCUSDT': btcTicks, 'ETHUSDT': ethTicks };
+
+    const grid = {
+        accEntry: [70, 75, 80, 85],
+        accDur: [10, 15, 20],
+        tpSl: [1.5, 2.0, 2.5],
+        retailLimit: [0.65, 0.70, 0.75],
+        signalBias: [2, 3]
+    };
+
+    const results = [];
+    for (const acc of grid.accEntry) {
+        for (const dur of grid.accDur) {
+            for (const tpSl of grid.tpSl) {
+                for (const rl of grid.retailLimit) {
+                    for (const sb of grid.signalBias) {
+                        const p = {
+                            accEntryThreshold: acc, accMinDuration: dur, tpSlRatio: tpSl,
+                            retailLimit: rl, signalBias: sb, requireTransition: true,
+                            slAtrMult: 1.5, blockBothQuiet: true, timeCutMin: 60,
+                            leverage: 10, minHoldMinutes: 5, beTriggerPct: 0.001
+                        };
+                        const trades = discoverTrades(allTicks, p);
+                        if (trades.length < 5) continue;
+                        const sim = simulateAll(trades, ticksBySymbol, p);
+                        const sum = summarize(sim);
+
+                        let score = sum.winRate * 10 + (sum.totalPnl / 100) + Math.log2(sum.traded);
+                        results.push({ params: p, summary: sum, score });
+                    }
+                }
+            }
+        }
+    }
+
+    return results.sort((a, b) => b.score - a.score).slice(0, 10);
+}
+
+export async function runHistoricalBacktest(db, params) {
+    // This would typically fetch from Binance, but for this environment 
+    // we fallback to the longest available local history
+    return runBacktest(db, { ...params, limit: 5000 });
+}
+
+// --- Helper Functions (Private) ---
+
+function discoverTrades(allTicks, params) {
+    const symbolStates = {};
+    const virtualTrades = [];
+
+    for (const t of allTicks) {
+        if (!symbolStates[t.symbol]) symbolStates[t.symbol] = { lastExitTime: 0 };
+        const state = symbolStates[t.symbol];
+        if (t.timestamp < state.lastExitTime + 60000) continue;
+
+        const score = t.accumulation_score || 0;
+        const dirOrig = (t.direction || "").toUpperCase();
+        const dir = (dirOrig === 'LONG' || (dirOrig === 'UNCLEAR' && score > 0)) ? 'LONG' : (dirOrig === 'SHORT' || (dirOrig === 'UNCLEAR' && score < 0)) ? 'SHORT' : null;
+        if (!dir) continue;
+
+        // Pro Filters
+        const takerTh = params.takerThresh || 1.03;
+        const slopeTh = params.slopeThresh || 0.01;
+        const ttDeltaTh = params.ttDeltaThresh || 0.005;
+
+        const takerOk = (dir === 'LONG' ? t.taker_ratio >= takerTh : t.taker_ratio <= (1 / takerTh));
+        const slopeOk = (dir === 'LONG' ? t.price_slope >= slopeTh : t.price_slope <= -slopeTh);
+        const ttDeltaOk = (dir === 'LONG' ? (t.top_trader_delta || 0) >= ttDeltaTh : (t.top_trader_delta || 0) <= -ttDeltaTh);
+
+        let biasVotes = 0;
+        if (takerOk) biasVotes++;
+        if (slopeOk) biasVotes++;
+        if (ttDeltaOk) biasVotes++;
+        if (biasVotes < (params.signalBias || 2)) continue;
+
+        const retail = t.retail_long_pct || 0.5;
+        const retailBias = dir === 'LONG' ? retail : (1 - retail);
+        if (retailBias > (params.retailLimit || 0.70)) continue;
+
+        if (params.blockBothQuiet && t.cross_asset_status === 'BOTH_QUIET') continue;
+        if (t.cross_asset_status === 'CONFLICT') continue;
+
+        if (Math.abs(score) >= (params.accEntryThreshold || 70) && (t.minutes_accumulating || 0) >= (params.accMinDuration || 15)) {
+            if (params.requireTransition && (t.tick_oi_acceleration || 0) < 15) continue;
+
+            const slDist = t.price * Math.max(0.003, Math.min(0.012, (t.atr_pct || 0.005) * (params.slAtrMult || 1.5)));
+            virtualTrades.push({
+                symbol: t.symbol, direction: dir, entry_time: t.timestamp, entry_price: t.price,
+                score, taker: t.taker_ratio, slope: t.price_slope, retail: retailBias, oiAcc: t.tick_oi_acceleration,
+                quantity: t.symbol.includes('BTC') ? 0.001 : 0.01,
+                sl_price: dir === 'LONG' ? t.price - slDist : t.price + slDist,
+                exit_time: t.timestamp + 3600000 * 4
+            });
+            state.lastExitTime = t.timestamp + 600000;
+        }
+    }
+    return virtualTrades;
 }
 
 function simulateAll(trades, ticksBySymbol, params) {
@@ -91,124 +146,60 @@ function simulateAll(trades, ticksBySymbol, params) {
 
 function simulateTrade(trade, ticks, params) {
     const dir = trade.direction === 'LONG' ? 1 : -1;
-    const leverage = params.LEVERAGE || 10;
-    const leverageFactor = leverage / 10;
+    const tradeTicks = ticks.filter(t => t.timestamp >= trade.entry_time && t.timestamp <= trade.entry_time + 3600000 * 4);
+    if (!tradeTicks.length) return { reason: 'NO_DATA', pnl_inr: 0 };
 
-    // Entry gate
-    if (params.BLOCK_BOTH_QUIET && trade.cross_asset_status_at_entry === 'BOTH_QUIET') {
-        return { reason: 'BLOCKED', pnl_inr: 0, hold: 0, exit_price: trade.entry_price, blocked: true };
-    }
-    if (trade.acc_score_at_entry < params.ACC_ENTRY_THRESHOLD) {
-        return { reason: 'SCORE_BLOCKED', pnl_inr: 0, hold: 0, exit_price: trade.entry_price, blocked: true };
-    }
-
-    // Recalculate TP
     const slDist = Math.abs(trade.entry_price - trade.sl_price);
-    const newTp = dir === 1 ? trade.entry_price + slDist * params.TP_SL_RATIO : trade.entry_price - slDist * params.TP_SL_RATIO;
+    const tp_price = dir === 1 ? trade.entry_price + slDist * (params.tpSlRatio || 2.0) : trade.entry_price - slDist * (params.tpSlRatio || 2.0);
 
-    // Get ticks during trade window (extend 1 min past exit for END_OF_DATA comparison)
-    const tradeTicks = ticks.filter(t => t.timestamp >= trade.entry_time && t.timestamp <= trade.exit_time + 60000);
-    if (tradeTicks.length === 0) {
-        return makeExit(trade, trade.exit_price || trade.entry_price, 'NO_DATA', trade.hold_time_minutes || 0, leverageFactor);
-    }
-
-    let prevTicks = [];
+    let maxPnl = 0;
     for (const tick of tradeTicks) {
         const holdMin = (tick.timestamp - trade.entry_time) / 60000;
-        const price = tick.price;
-        if (!price || price <= 0) continue;
-        const pnlPct = (price - trade.entry_price) / trade.entry_price * dir;
+        const pnlPct = (tick.price - trade.entry_price) / trade.entry_price * dir;
 
-        // SL (always active)
-        if (dir === 1 && price <= trade.sl_price) return makeExit(trade, price, 'STOP_LOSS', holdMin, leverageFactor);
-        if (dir === -1 && price >= trade.sl_price) return makeExit(trade, price, 'STOP_LOSS', holdMin, leverageFactor);
+        if (dir === 1 && tick.price <= trade.sl_price) return calcExit(trade, tick.price, 'STOP_LOSS', holdMin);
+        if (dir === -1 && tick.price >= trade.sl_price) return calcExit(trade, tick.price, 'STOP_LOSS', holdMin);
+        if (dir === 1 && tick.price >= tp_price) return calcExit(trade, tick.price, 'TAKE_PROFIT', holdMin);
+        if (dir === -1 && tick.price <= tp_price) return calcExit(trade, tick.price, 'TAKE_PROFIT', holdMin);
 
-        // TP (always active, with new TP level)
-        if (dir === 1 && price >= newTp) return makeExit(trade, price, 'TAKE_PROFIT', holdMin, leverageFactor);
-        if (dir === -1 && price <= newTp) return makeExit(trade, price, 'TAKE_PROFIT', holdMin, leverageFactor);
+        if (holdMin >= (params.timeCutMin || 60) && pnlPct < 0.0005) return calcExit(trade, tick.price, 'TIME_SCRATCH', holdMin);
+        if (holdMin > 5 && (tick.oi_change_5m || 0) <= -0.3) return calcExit(trade, tick.price, 'OI_DROP_EXIT', holdMin);
 
-        // OI_DECEL (always active — kept outside grace period)
-        if (pnlPct > 0 && prevTicks.length >= 3) {
-            const oi0 = tick.oi_change_1m || 0;
-            const oi1 = prevTicks[prevTicks.length - 1]?.oi_change_1m || 0;
-            const oi2 = prevTicks[prevTicks.length - 2]?.oi_change_1m || 0;
-            if (oi0 < oi1 && oi1 < oi2 && oi2 > 0) return makeExit(trade, price, 'OI_DECEL', holdMin, leverageFactor);
-        }
-
-        // Grace period — skip noise exits
-        if (holdMin < params.MIN_HOLD_MINUTES) {
-            prevTicks.push(tick);
-            continue;
-        }
-
-        // VOL_WT_OI
-        if (tick.volume_ratio > params.VOL_OI_DIVERGENCE) {
-            const oiChg = Math.abs(tick.oi_change_5m || 0);
-            if (oiChg < params.VOL_WT_OI_THRESHOLD) return makeExit(trade, price, 'VOL_WT_OI', holdMin, leverageFactor);
-        }
-
-        // ABSORPTION_FLIP (simplified — check profit + sudden volume drop approximation)
-        if (pnlPct > 0 && prevTicks.length >= 3) {
-            const prev3Price = prevTicks[prevTicks.length - 3]?.price;
-            if (prev3Price) {
-                const recentMove = Math.abs((price - prev3Price) / prev3Price);
-                if (recentMove > 0.005) return makeExit(trade, price, 'ABSORPTION_FLIP', holdMin, leverageFactor);
-            }
-        }
-
-        // TIME_STOP
-        if (holdMin >= 45) return makeExit(trade, price, 'TIME_STOP', holdMin, leverageFactor);
-
-        prevTicks.push(tick);
+        if (pnlPct > maxPnl) maxPnl = pnlPct;
+        if (maxPnl >= 0.005 && pnlPct <= maxPnl - 0.003) return calcExit(trade, tick.price, 'TRAILING_STOP', holdMin);
     }
-
     const last = tradeTicks[tradeTicks.length - 1];
-    return makeExit(trade, last.price, 'END_OF_DATA', (last.timestamp - trade.entry_time) / 60000, leverageFactor);
+    return calcExit(trade, last.price, 'END_OF_DATA', (last.timestamp - trade.entry_time) / 60000);
 }
 
-function makeExit(trade, exitPrice, reason, holdMin, leverageFactor = 1) {
-    const dir = trade.direction === 'LONG' ? 1 : -1;
-    const pnl = (exitPrice - trade.entry_price) / trade.entry_price * dir;
-    const basePosVal = trade.quantity * trade.entry_price * USD_INR;
-    const simPosVal = basePosVal * leverageFactor;
-    const fee = simPosVal * FEE_PCT;
-    const pnl_inr = (pnl * simPosVal) - fee;
-
-    if (trade.symbol === 'BTCUSDT' && pnl_inr > 10000) {
-        console.log(`[DEBUG] Anomalous Trade: ${trade.id}, Exit: ${exitPrice}, Entry: ${trade.entry_price}, Qty: ${trade.quantity}, PNL: ${pnl}, PosVal: ${simPosVal}, res: ${pnl_inr}`);
-    }
-
+function calcExit(trade, price, reason, hold) {
+    const pnl = (price - trade.entry_price) / trade.entry_price * (trade.direction === 'LONG' ? 1 : -1);
+    const val = trade.quantity * trade.entry_price * USD_INR;
     return {
-        reason,
-        pnl_inr,
-        hold: holdMin,
-        exit_price: exitPrice,
-        blocked: false,
-        debug: { pnl, simPosVal, entry: trade.entry_price, exit: exitPrice, qty: trade.quantity }
+        symbol: trade.symbol, direction: trade.direction, entry_time: trade.entry_time,
+        entry_price: trade.entry_price,
+        score: trade.score, taker: trade.taker, slope: trade.slope, retail: trade.retail, oiAcc: trade.oiAcc,
+        reason, pnl_inr: (pnl * val * 10) - (val * 10 * FEE_PCT), hold
     };
 }
 
 function summarize(results) {
-    let wins = 0, losses = 0, blocked = 0, totalPnl = 0;
+    let wins = 0, totalPnl = 0, blocked = 0;
+    const bySymbol = {};
     for (const r of results) {
-        if (r.blocked) { blocked++; continue; }
+        if (r.reason === 'BLOCKED') { blocked++; continue; }
         totalPnl += r.pnl_inr;
-        if (r.pnl_inr > 0) wins++; else losses++;
+        if (r.pnl_inr > 0) wins++;
+        if (!bySymbol[r.symbol]) bySymbol[r.symbol] = { wins: 0, traded: 0, pnl: 0 };
+        bySymbol[r.symbol].traded++;
+        bySymbol[r.symbol].pnl += r.pnl_inr;
+        if (r.pnl_inr > 0) bySymbol[r.symbol].wins++;
     }
-    const traded = wins + losses;
-    return { wins, losses, blocked, traded, totalPnl, winRate: traded > 0 ? Math.round(wins / traded * 100) : 0, avgPnl: traded > 0 ? totalPnl / traded : 0 };
+    const traded = results.length - blocked;
+    return {
+        traded, wins, totalPnL: totalPnl,
+        winRate: traded > 0 ? Math.round(wins / traded * 100) : 0,
+        avgPnl: traded > 0 ? totalPnl / traded : 0,
+        blocked, bySymbol
+    };
 }
-
-function exitDistribution(results) {
-    const dist = {};
-    for (const r of results) {
-        if (!dist[r.reason]) dist[r.reason] = { count: 0, pnl: 0 };
-        dist[r.reason].count++;
-        dist[r.reason].pnl += r.pnl_inr;
-    }
-    return Object.entries(dist).map(([reason, data]) => ({
-        reason, count: data.count, pnl: round(data.pnl),
-    })).sort((a, b) => b.count - a.count);
-}
-
-function round(n) { return Math.round((n || 0) * 100) / 100; }

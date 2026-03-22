@@ -1,0 +1,2 @@
+INSERT INTO tick_logs (timestamp, symbol, price, open_interest, accumulation_score, minutes_accumulating, direction, taker_ratio, top_trader_delta, retail_long_pct, price_slope, atr_pct, cross_asset_status, tick_oi_acceleration) VALUES 
+(undefined, 'undefined', undefined, undefined, 0, 0, 'UNCLEAR', 1, 0, 0.5, 0, 0.005, 'BOTH_QUIET', 0);

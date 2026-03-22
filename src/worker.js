@@ -1,5 +1,6 @@
 import { StrategyService } from './strategy_service.js';
 import { D1Database } from './db_d1.js';
+import { runBacktest, optimizeStrategy, runHistoricalBacktest } from './backtest_engine.js';
 
 async function sha256(text) {
     const data = new TextEncoder().encode(text);
@@ -41,7 +42,9 @@ export default {
 
             const db = new D1Database(env.DB);
 
-            if (url.pathname === '/api/status') {
+            const path = url.pathname.replace(/\/$/, ''); // Remove trailing slash
+
+            if (path === '/api/status' || url.pathname === '/api/status') {
                 const btcTrade = await db.getActiveTrade('BTCUSDT');
                 const ethTrade = await db.getActiveTrade('ETHUSDT');
                 const stats = await db.getStats();
@@ -54,13 +57,13 @@ export default {
                 });
             }
 
-            if (url.pathname === '/api/trades') {
+            if (path === '/api/trades') {
                 const trades = await db.getRecentTrades(50);
                 return Response.json(trades);
             }
 
             // OI data for a specific symbol
-            if (url.pathname === '/api/oi') {
+            if (path === '/api/oi') {
                 const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
                 try {
                     const snapshots = await db.getOISnapshots(symbol, 60);
@@ -82,7 +85,7 @@ export default {
             }
 
             // Recent tick logs for calibration
-            if (url.pathname === '/api/ticks') {
+            if (path === '/api/ticks') {
                 const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
                 const limit = parseInt(url.searchParams.get('limit') || '30');
                 try {
@@ -94,7 +97,7 @@ export default {
             }
 
             // Recent hypothetical signals
-            if (url.pathname === '/api/signals') {
+            if (path === '/api/signals') {
                 try {
                     const signals = await db.getRecentSignals(50);
                     return Response.json(signals);
@@ -103,17 +106,47 @@ export default {
                 }
             }
 
-            if (url.pathname === '/api/run') {
+            if (path === '/api/run') {
                 const service = new StrategyService(env);
                 const result = await service.run(db);
                 return Response.json(result);
             }
 
-            if (url.pathname === '/api/backtest' && request.method === 'POST') {
+            if (path === '/api/backtest' && request.method === 'POST') {
                 try {
-                    const { runBacktest } = await import('./backtest_engine.js');
                     const params = await request.json();
-                    const result = await runBacktest(env.DB, params);
+                    const result = await runBacktest(db, params);
+                    return Response.json(result);
+                } catch (err) {
+                    return Response.json({ error: err.message, stack: err.stack }, { status: 500 });
+                }
+            }
+
+            if (path === '/api/backtest/historical' && request.method === 'POST') {
+                try {
+                    const params = await request.json();
+                    const result = await runHistoricalBacktest(env.DB, params);
+                    return Response.json(result);
+                } catch (err) {
+                    return Response.json({ error: err.message, stack: err.stack }, { status: 500 });
+                }
+            }
+
+            if (path === '/api/backtest/data') {
+                const limit = parseInt(url.searchParams.get('limit') || '2000');
+                try {
+                    const btcTicks = await db.getRecentTicks('BTCUSDT', limit);
+                    const ethTicks = await db.getRecentTicks('ETHUSDT', limit);
+                    return Response.json([...btcTicks, ...ethTicks].sort((a, b) => a.timestamp - b.timestamp));
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            if (path === '/api/optimize' && request.method === 'POST') {
+                try {
+                    const options = await request.json().catch(() => ({}));
+                    const result = await optimizeStrategy(db, options);
                     return Response.json(result);
                 } catch (err) {
                     return Response.json({ error: err.message, stack: err.stack }, { status: 500 });

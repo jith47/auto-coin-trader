@@ -178,6 +178,50 @@
             color: var(--cyan)
         }
 
+        /* Optimization Grid */
+
+
+        .opt-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid #333;
+            padding: 10px 15px;
+            border-radius: 6px;
+            gap: 15px;
+        }
+
+        .opt-params {
+            flex: 1;
+            font-size: 0.82rem;
+            line-height: 1.4;
+            color: #888;
+        }
+
+        .opt-stats {
+            text-align: right;
+            min-width: 120px;
+        }
+
+        .opt-apply {
+            min-width: 80px;
+        }
+
+        .slider-pulse {
+            animation: pulse 0.5s ease-out;
+        }
+
+        @keyframes pulse {
+            0% {
+                outline: 2px solid var(--green);
+            }
+
+            100% {
+                outline: 0px solid transparent;
+            }
+        }
+
         .badge-purple {
             background: rgba(168, 85, 247, .15);
             color: var(--purple)
@@ -438,11 +482,118 @@
         }
 
         .tab-content {
-            display: none
+            display: none;
+            padding-top: 20px
         }
 
         .tab-content.active {
             display: block
+        }
+
+        /* Backtest Specialized Styles */
+        .bt-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .bt-field {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .bt-field label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            color: var(--text-dim);
+        }
+
+        .bt-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .bt-row input[type="range"] {
+            flex: 1;
+            accent-color: var(--cyan);
+        }
+
+        .bt-val {
+            min-width: 45px;
+            text-align: right;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--cyan);
+        }
+
+        .bt-actions {
+            background: rgba(0, 255, 255, 0.05);
+            border: 1px dashed var(--cyan);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .bt-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            color: var(--text);
+        }
+
+        .bt-equity-container {
+            height: 180px;
+            width: 100%;
+            margin-bottom: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .bt-equity-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .bt-summary {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+
+        #bkTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        #bkTable th {
+            text-align: left;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-dim);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 1px;
+        }
+
+        #bkTable td {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         .reason-cell {
@@ -551,6 +702,21 @@
         .bt-stat-value {
             font-size: 1.2rem;
             font-weight: 700
+        }
+
+        /* Equity Curve Styles */
+        .bt-equity-container {
+            margin: 20px 18px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .bt-equity-canvas {
+            width: 100%;
+            height: 150px;
+            display: block;
         }
 
         .bt-dist {
@@ -685,10 +851,9 @@
             <div class="panel">
                 <div class="tab-bar">
                     <div class="tab active" onclick="switchTab('trades',this)">📊 Trades</div>
+                    <div class="tab" onclick="switchTab('backtest',this)">📊 Backtest</div>
                     <div class="tab" onclick="switchTab('signals',this)">🎯 Signals</div>
                     <div class="tab" onclick="switchTab('ticks',this)">📡 Tick Log</div>
-                    <div class="tab" onclick="switchTab('backtest',this)">🔬 Backtest</div>
-                    <div class="tab" onclick="switchTab('run',this)">🔍 Last Run</div>
                 </div>
 
                 <div class="tab-content active" id="tab-trades">
@@ -740,6 +905,92 @@
                     </div>
                 </div>
 
+                <div class="tab-content" id="tab-backtest">
+                    <div class="bt-controls">
+                        <div class="bt-field">
+                            <label>Acc. Entry Threshold</label>
+                            <div class="bt-row"><input type="range" id="bkAccThresh" min="40" max="95" step="5"
+                                    value="85" oninput="btUpdate('bkAccThresh')"><span class="bt-val"
+                                    id="bkAccThresh_v">85</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Min. Duration (Min)</label>
+                            <div class="bt-row"><input type="range" id="bkAccDur" min="1" max="60" step="1" value="20"
+                                    oninput="btUpdate('bkAccDur')"><span class="bt-val" id="bkAccDur_v">20m</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Retail Crowd Limit</label>
+                            <div class="bt-row"><input type="range" id="bkRetailLimit" min="0.50" max="0.90" step="0.05"
+                                    value="0.65" oninput="btUpdate('bkRetailLimit')"><span class="bt-val"
+                                    id="bkRetailLimit_v">0.65</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>TP/SL Ratio</label>
+                            <div class="bt-row"><input type="range" id="bkTpSlRatio" min="1.0" max="4.0" step="0.1"
+                                    value="1.5" oninput="btUpdate('bkTpSlRatio')"><span class="bt-val"
+                                    id="bkTpSlRatio_v">1.5x</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Time-Cut (Min)</label>
+                            <div class="bt-row"><input type="range" id="bkTimeCut" min="15" max="180" step="15"
+                                    value="90" oninput="btUpdate('bkTimeCut')"><span class="bt-val"
+                                    id="bkTimeCut_v">90m</span></div>
+                        </div>
+                        <div class="bt-field">
+                            <label>Signal Bias (Req)</label>
+                            <div class="bt-row"><input type="range" id="bkSignalBias" min="1" max="3" step="1" value="2"
+                                    oninput="btUpdate('bkSignalBias')"><span class="bt-val"
+                                    id="bkSignalBias_v">2/3</span></div>
+                        </div>
+                        <div class="bt-field" style="justify-content:center">
+                            <label class="bt-toggle"><input type="checkbox" id="bkReqTrans" checked> Require Transition
+                                (OI Accel)</label>
+                        </div>
+                        <div class="bt-field" style="justify-content:center">
+                            <label class="bt-toggle"><input type="checkbox" id="bkBlockQuiet" checked> Block
+                                BOTH_QUIET</label>
+                        </div>
+                        <div class="bt-field">
+                            <label>Lookback (Ticks)</label>
+                            <div class="bt-row"><input type="range" id="bkLimit" min="500" max="20000" step="500"
+                                    value="15000" oninput="btUpdate('bkLimit')"><span class="bt-val"
+                                    id="bkLimit_v">15000</span></div>
+                        </div>
+                    </div>
+                    <div class="bt-actions">
+                        <button class="btn btn-primary" onclick="runDedicatedBacktest()" id="bkRunBtn">▶ Run
+                            Professional Backtest</button>
+                        <span class="text-dim" id="bkStatus" style="margin-left:15px">Ready to test ultra-conviction
+                            parameters</span>
+                    </div>
+                    <div id="bkResults" style="display:none">
+                        <div class="bt-equity-container">
+                            <canvas id="bkEquityCanvas" class="bt-equity-canvas"></canvas>
+                        </div>
+                        <div class="bt-summary" id="bkSummary"></div>
+                        <div style="overflow-x:auto">
+                            <table id="bkTable">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Dir</th>
+                                        <th>Entry</th>
+                                        <th>Score</th>
+                                        <th>Taker</th>
+                                        <th>Slope</th>
+                                        <th>RetBias</th>
+                                        <th>OIAcc</th>
+                                        <th>Reason</th>
+                                        <th>PnL (INR)</th>
+                                        <th>Hold</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="bkBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="tab-content" id="tab-ticks">
                     <div style="padding:12px 18px;display:flex;gap:10px;align-items:center">
                         <button class="btn" onclick="loadTicks('BTCUSDT')" id="tickBtnBTC"
@@ -770,95 +1021,26 @@
                     </div>
                 </div>
 
-                <div class="tab-content" id="tab-backtest">
-                    <div class="bt-controls">
-                        <div class="bt-field">
-                            <label>VOL_WT_OI Threshold</label>
-                            <div class="bt-row"><input type="range" id="btVolWtOi" min="0.01" max="0.5" step="0.01"
-                                    value="0.2" oninput="btUpdate('btVolWtOi')"><span class="bt-val"
-                                    id="btVolWtOi_v">0.20%</span></div>
-                        </div>
-                        <div class="bt-field">
-                            <label>Min Hold (Grace Period)</label>
-                            <div class="bt-row"><input type="range" id="btMinHold" min="0" max="15" step="1" value="5"
-                                    oninput="btUpdate('btMinHold')"><span class="bt-val" id="btMinHold_v">5 min</span>
-                            </div>
-                        </div>
-                        <div class="bt-field">
-                            <label>TP/SL Ratio</label>
-                            <div class="bt-row"><input type="range" id="btTpSlRatio" min="1.0" max="4.0" step="0.1"
-                                    value="2.5" oninput="btUpdate('btTpSlRatio')"><span class="bt-val"
-                                    id="btTpSlRatio_v">2.5x</span></div>
-                        </div>
-                        <div class="bt-field">
-                            <label>Acc. Score Threshold</label>
-                            <div class="bt-row"><input type="range" id="btAccThresh" min="40" max="90" step="5"
-                                    value="70" oninput="btUpdate('btAccThresh')"><span class="bt-val"
-                                    id="btAccThresh_v">70</span></div>
-                        </div>
-                        <div class="bt-field">
-                            <label>Leverage</label>
-                            <div class="bt-row"><input type="range" id="btLeverage" min="1" max="50" step="1" value="10"
-                                    oninput="btUpdate('btLeverage')"><span class="bt-val" id="btLeverage_v">10x</span>
-                            </div>
-                        </div>
-                        <div class="bt-field">
-                            <label>Vol/OI Divergence</label>
-                            <div class="bt-row"><input type="range" id="btVolDiv" min="1.0" max="3.0" step="0.1"
-                                    value="1.5" oninput="btUpdate('btVolDiv')"><span class="bt-val"
-                                    id="btVolDiv_v">1.5x</span></div>
-                        </div>
-                        <div class="bt-field" style="justify-content:center">
-                            <label class="bt-toggle"><input type="checkbox" id="btBlockQuiet" checked> Block BOTH_QUIET
-                                Entries</label>
-                        </div>
-                    </div>
-                    <div class="bt-actions">
-                        <button class="btn btn-primary" onclick="runBacktest()" id="btRunBtn">▶ Run Backtest</button>
-                        <button class="btn btn-dim" onclick="restoreBtDefaults()" id="btRestoreBtn">↺ Restore
-                            Defaults</button>
-                        <span class="text-dim" id="btStatus">Configure parameters above</span>
-                    </div>
-                    <div id="btResults" style="display:none">
-                        <div class="bt-summary" id="btSummary"></div>
-                        <div class="bt-dist" id="btDist"></div>
-                        <div style="padding:0 18px 6px"><span class="text-dim" style="font-size:.78rem">Trade-by-Trade
-                                Comparison</span></div>
-                        <div style="overflow-x:auto">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Symbol</th>
-                                        <th>Dir</th>
-                                        <th>Gate</th>
-                                        <th title="Old Reason">O-Reason</th>
-                                        <th>Old P&L</th>
-                                        <th>Old Hold</th>
-                                        <th title="New Reason">N-Reason</th>
-                                        <th>New P&L</th>
-                                        <th>New Hold</th>
-                                        <th>Diff</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="btBody"></tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+            </div>
 
-                <div class="tab-content" id="tab-run">
-                    <pre style="padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--dim);max-height:400px;overflow:auto;white-space:pre-wrap"
-                        id="lastRun">Click "Run" to trigger</pre>
-                </div>
+            <div class="tab-content" id="tab-run">
+                <pre style="padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--dim);max-height:400px;overflow:auto;white-space:pre-wrap"
+                    id="lastRun">Click "Run" to trigger</pre>
             </div>
         </div>
     </div>
-
     <script>
         const TOKEN_KEY = 'scalper_token'; let refreshInterval;
         function getToken() { return localStorage.getItem(TOKEN_KEY) }
         function authHeaders() { return { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } }
-        async function apiFetch(path) { const res = await fetch(path, { headers: authHeaders() }); if (res.status === 401) { logout(); throw new Error('Unauth') } return res.json() }
+        async function apiFetch(path, options = {}) {
+            const res = await fetch(path, {
+                ...options,
+                headers: { ...authHeaders(), ...(options.headers || {}) }
+            });
+            if (res.status === 401) { logout(); throw new Error('Unauth') }
+            return res.json()
+        }
         if (getToken()) showDashboard();
         document.getElementById('passwordInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin() });
 
@@ -983,21 +1165,122 @@
         function btUpdate(id) {
             const el = document.getElementById(id); if (!el) return;
             const v = parseFloat(el.value);
-            const fmt = { btVolWtOi: v.toFixed(2) + '%', btMinHold: v + ' min', btTpSlRatio: v.toFixed(1) + 'x', btAccThresh: v.toFixed(0), btVolDiv: v.toFixed(1) + 'x', btLeverage: v.toFixed(0) + 'x' };
+            const fmt = {
+                btVolWtOi: v.toFixed(2) + '%',
+                btVolWtOiNoise: v.toFixed(2) + '%',
+                btMinHold: v + ' min',
+                btTpSlRatio: v.toFixed(1) + 'x',
+                btAccThresh: v.toFixed(0),
+                btVolDiv: v.toFixed(1) + 'x',
+                btLeverage: v.toFixed(0) + 'x',
+                btTakerThresh: v.toFixed(2),
+                btSlopeThresh: v.toFixed(3),
+                btAbsorptionThresh: v.toFixed(0),
+                btTimeCutMin: v + 'm',
+                btBeTriggerPct: v.toFixed(2) + '%',
+                bkAccThresh: v.toFixed(0),
+                bkAccDur: v + 'm',
+                bkRetailLimit: v.toFixed(2),
+                bkTpSlRatio: v.toFixed(1) + 'x',
+                bkTimeCut: v + 'm',
+                bkSignalBias: v + '/3',
+                bkLimit: v.toFixed(0)
+            };
             const label = document.getElementById(id + '_v'); if (label) label.textContent = fmt[id] || v;
         }
 
+        async function runDedicatedBacktest() {
+            const btn = document.getElementById('bkRunBtn'); const status = document.getElementById('bkStatus');
+            btn.disabled = true; btn.textContent = '⏳ Running...'; status.textContent = 'Replaying pro logic...';
+            try {
+                const params = {
+                    accEntryThreshold: parseFloat(document.getElementById('bkAccThresh').value),
+                    accMinDuration: parseFloat(document.getElementById('bkAccDur').value),
+                    retailLimit: parseFloat(document.getElementById('bkRetailLimit').value),
+                    tpSlRatio: parseFloat(document.getElementById('bkTpSlRatio').value),
+                    timeCutMin: parseFloat(document.getElementById('bkTimeCut').value),
+                    signalBias: parseFloat(document.getElementById('bkSignalBias').value),
+                    requireTransition: document.getElementById('bkReqTrans').checked,
+                    blockBothQuiet: document.getElementById('bkBlockQuiet').checked,
+                    slAtrMult: 1.5, leverage: 10,
+                    limit: parseInt(document.getElementById('bkLimit').value)
+                };
+                const res = await fetch('/api/backtest', { method: 'POST', headers: authHeaders(), body: JSON.stringify(params) });
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+
+                document.getElementById('bkResults').style.display = 'block';
+                const ns = data.newSummary;
+                document.getElementById('bkSummary').innerHTML = `
+                    <div class="bt-stat"><div class="bt-stat-label">Win Rate</div><div class="bt-stat-value text-cyan">${ns.winRate}%</div></div>
+                    <div class="bt-stat"><div class="bt-stat-label">Net P&L</div><div class="bt-stat-value ${ns.totalPnL >= 0 ? 'text-green' : 'text-red'}">₹${ns.totalPnL.toFixed(0)}</div></div>
+                    <div class="bt-stat"><div class="bt-stat-label">Trades</div><div class="bt-stat-value">${ns.traded}</div></div>
+                    <div class="bt-stat"><div class="bt-stat-label">Avg P&L</div><div class="bt-stat-value">₹${ns.avgPnl.toFixed(0)}</div></div>
+                `;
+
+                const b = document.getElementById('bkBody');
+                b.innerHTML = (data.newResultsDetailed || []).map(r => {
+                    const pnlC = r.pnl_inr >= 0 ? 'text-green' : 'text-red';
+                    const entryP = r.entry_price ? r.entry_price.toFixed(2) : '0.00';
+                    const retB = r.retail ? (r.retail * 100).toFixed(0) + '%' : '—';
+                    return `<tr>
+                        <td>${r.symbol.replace('USDT', '')}</td>
+                        <td>${r.direction}</td>
+                        <td style="font-family:monospace">${entryP}</td>
+                        <td>${r.score || 0}</td>
+                        <td>${(r.taker || 1).toFixed(2)}</td>
+                        <td>${(r.slope || 0).toFixed(3)}</td>
+                        <td>${retB}</td>
+                        <td>${(r.oiAcc || 0).toFixed(0)}</td>
+                        <td style="font-size:11px">${r.reason}</td>
+                        <td class="${pnlC}" style="font-weight:700">₹${r.pnl_inr.toFixed(0)}</td>
+                        <td>${r.hold.toFixed(1)}m</td>
+                    </tr>`;
+                }).join('');
+
+                drawSharedEquityCurve('bkEquityCanvas', data.newResultsDetailed);
+                status.textContent = '✅ Analysis complete.';
+            } catch (e) { status.textContent = '❌ ' + e.message; }
+            finally { btn.disabled = false; btn.textContent = '▶ Run Professional Backtest'; }
+        }
+
+        function drawSharedEquityCurve(canvasId, results) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width = canvas.offsetWidth * 2;
+            const h = canvas.height = canvas.offsetHeight * 2;
+            ctx.clearRect(0, 0, w, h);
+            if (!results.length) return;
+            let currentEquity = 0; const points = [0];
+            results.forEach(r => { currentEquity += r.pnl_inr || 0; points.push(currentEquity); });
+            const min = Math.min(...points, 0); const max = Math.max(...points, 100); const range = max - min; const margin = 40;
+            ctx.beginPath(); ctx.strokeStyle = 'var(--cyan)'; ctx.lineWidth = 4; ctx.lineJoin = 'round';
+            points.forEach((p, i) => {
+                const x = margin + (i / (points.length - 1)) * (w - 2 * margin);
+                const y = h - margin - ((p - min) / (range || 1)) * (h - 2 * margin);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            const grad = ctx.createLinearGradient(0, 0, 0, h);
+            grad.addColorStop(0, 'rgba(0, 255, 255, 0.2)'); grad.addColorStop(1, 'transparent');
+            ctx.lineTo(w - margin, h); ctx.lineTo(margin, h); ctx.fillStyle = grad; ctx.fill();
+        }
+
         function restoreBtDefaults() {
-            const defaults = { btVolWtOi: 0.20, btMinHold: 5, btTpSlRatio: 2.5, btAccThresh: 70, btVolDiv: 1.5, btBlockQuiet: true, btLeverage: 10 };
+            const defaults = {
+                btVolWtOi: 0.20, btVolWtOiNoise: 0.20, btMinHold: 10, btTpSlRatio: 2.0, btAccThresh: 50, btVolDiv: 1.5, btBlockQuiet: true, btLeverage: 10,
+                btTakerThresh: 1.15, btSlopeThresh: 0.01, btTimeCutMin: 15, btBeTriggerPct: 0.10, btAbsorptionThresh: 10
+            };
             Object.keys(defaults).forEach(id => {
                 const el = document.getElementById(id); if (!el) return;
                 if (el.type === 'checkbox') el.checked = defaults[id];
                 else { el.value = defaults[id]; btUpdate(id); }
             });
-            document.getElementById('btStatus').textContent = 'Defaults restored';
+            document.getElementById('btStatus').textContent = 'V3 Defaults restored';
         }
 
-        async function runBacktest() {
+        async function runBacktest(options = {}) {
             const btn = document.getElementById('btRunBtn'); const status = document.getElementById('btStatus');
             btn.disabled = true; btn.textContent = '⏳ Running...'; status.textContent = 'Querying database & replaying trades...';
             try {
@@ -1009,74 +1292,177 @@
                     volOiDivergence: parseFloat(document.getElementById('btVolDiv').value),
                     blockBothQuiet: document.getElementById('btBlockQuiet').checked,
                     leverage: parseFloat(document.getElementById('btLeverage').value),
+                    takerThresh: parseFloat(document.getElementById('btTakerThresh').value),
+                    slopeThresh: parseFloat(document.getElementById('btSlopeThresh').value),
+                    absorptionThresh: parseFloat(document.getElementById('btAbsorptionThresh').value),
+                    beTriggerPct: parseFloat(document.getElementById('btBeTriggerPct').value) / 100,
+                    slAtrMult: parseFloat(document.getElementById('btSlAtrMult').value),
+                    limit: options.limit || 0
                 };
                 const res = await fetch('/api/backtest', { method: 'POST', headers: authHeaders(), body: JSON.stringify(params) });
                 if (res.status === 401) { logout(); return; }
                 const data = await res.json();
                 if (data.error) { status.textContent = '❌ ' + data.error; return; }
                 renderBacktest(data);
-                status.textContent = `✅ Replayed ${data.tradeCount} trades across ${data.tickCount.toLocaleString()} ticks`;
             } catch (e) { status.textContent = '❌ ' + e.message; }
             finally { btn.disabled = false; btn.textContent = '▶ Run Backtest'; }
         }
 
+        async function runHistoricalBacktest() {
+            const btn = document.getElementById('btHistBtn'); const status = document.getElementById('btStatus');
+            btn.disabled = true; btn.textContent = '⏳ Fetching...'; status.textContent = 'Fetching 7 days of 1m data from Binance...';
+            try {
+                const params = {
+                    volWtOiThreshold: parseFloat(document.getElementById('btVolWtOi').value),
+                    minHoldMinutes: parseFloat(document.getElementById('btMinHold').value),
+                    tpSlRatio: parseFloat(document.getElementById('btTpSlRatio').value),
+                    accEntryThreshold: parseFloat(document.getElementById('btAccThresh').value),
+                    leverage: parseFloat(document.getElementById('btLeverage').value),
+                    takerThresh: parseFloat(document.getElementById('btTakerThresh').value),
+                    slopeThresh: parseFloat(document.getElementById('btSlopeThresh').value),
+                    absorptionThresh: parseFloat(document.getElementById('btAbsorptionThresh').value),
+                    timeCutMin: parseFloat(document.getElementById('btTimeCutMin').value),
+                    beTriggerPct: parseFloat(document.getElementById('btBeTriggerPct').value) / 100,
+                    symbol: 'BTCUSDT', days: 7
+                };
+                const res = await fetch('/api/backtest/historical', { method: 'POST', headers: authHeaders(), body: JSON.stringify(params) });
+                const data = await res.json();
+                if (data.error) { status.textContent = '❌ ' + data.error; return; }
+                renderBacktest(data);
+                status.textContent = `✅ Historical Backtest: ${data.tradeCount} trades found in 7 days.`;
+            } catch (e) { status.textContent = '❌ ' + e.message; }
+            finally { btn.disabled = false; btn.textContent = '📅 Historical (7d)'; }
+        }
+
         function renderBacktest(d) {
-            console.log('Backtest Results:', d.comparison);
             document.getElementById('btResults').style.display = 'block';
-            const os = d.oldSummary, ns = d.newSummary;
-            const pnlDiff = d.pnlImpact;
+            const ns = d.newSummary;
+            const os = d.oldSummary || { traded: 0, winRate: 0, totalPnl: 0, avgPnl: 0, blocked: 0 };
+            const isHist = !d.oldSummary;
+
+            const pnlDiff = d.pnlImpact || 0;
             const pnlC = pnlDiff > 0 ? 'bt-diff-pos' : pnlDiff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
-            const wrDiff = ns.winRate - os.winRate;
+            const wrDiff = os.traded > 0 ? ns.winRate - os.winRate : 0;
             const wrC = wrDiff > 0 ? 'bt-diff-pos' : wrDiff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
 
             document.getElementById('btSummary').innerHTML = `
-                <div class="bt-stat"><div class="bt-stat-label">Old Trades</div><div class="bt-stat-value">${os.traded}</div></div>
-                <div class="bt-stat"><div class="bt-stat-label">New Trades</div><div class="bt-stat-value">${ns.traded} <span class="text-dim" style="font-size:.7rem">(${ns.blocked} blocked)</span></div></div>
-                <div class="bt-stat"><div class="bt-stat-label">Old Win Rate</div><div class="bt-stat-value">${os.winRate}%</div></div>
-                <div class="bt-stat"><div class="bt-stat-label">New Win Rate</div><div class="bt-stat-value ${wrC}">${ns.winRate}% <span style="font-size:.7rem">(${wrDiff > 0 ? '+' : ''}${wrDiff}pp)</span></div></div>
-                <div class="bt-stat"><div class="bt-stat-label">Old P&L</div><div class="bt-stat-value ${os.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${os.totalPnl.toFixed(0)}</div></div>
-                <div class="bt-stat"><div class="bt-stat-label">New P&L</div><div class="bt-stat-value ${ns.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${ns.totalPnl.toFixed(0)}</div></div>
-                <div class="bt-stat"><div class="bt-stat-label">P&L Impact</div><div class="bt-stat-value ${pnlC}">${pnlDiff > 0 ? '+' : ''}₹${pnlDiff.toFixed(0)}</div></div>
+                ${!isHist ? `<div class="bt-stat"><div class="bt-stat-label">Old Trades</div><div class="bt-stat-value">${os.traded}</div></div>` : ''}
+                <div class="bt-stat"><div class="bt-stat-label">${isHist ? 'Trades Found' : 'New Trades'}</div><div class="bt-stat-value">${ns.traded} <span class="text-dim" style="font-size:.7rem">(${ns.blocked} blocked)</span></div></div>
+                ${!isHist ? `<div class="bt-stat"><div class="bt-stat-label">Old Win Rate</div><div class="bt-stat-value">${os.winRate}%</div></div>` : ''}
+                <div class="bt-stat"><div class="bt-stat-label">${isHist ? 'Win Rate' : 'New Win Rate'}</div><div class="bt-stat-value ${wrC}">${ns.winRate}% ${!isHist ? `<span style="font-size:.7rem">(${wrDiff > 0 ? '+' : ''}${wrDiff}pp)</span>` : ''}</div></div>
+                ${!isHist ? `<div class="bt-stat"><div class="bt-stat-label">Old P&L</div><div class="bt-stat-value ${os.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${os.totalPnl.toFixed(0)}</div></div>` : ''}
+                <div class="bt-stat"><div class="bt-stat-label">${isHist ? 'Net P&L' : 'New P&L'}</div><div class="bt-stat-value ${ns.totalPnl >= 0 ? 'text-green' : 'text-red'}">₹${ns.totalPnl.toFixed(0)}</div></div>
+                ${!isHist ? `<div class="bt-stat"><div class="bt-stat-label">P&L Impact</div><div class="bt-stat-value ${pnlC}">${pnlDiff > 0 ? '+' : ''}₹${pnlDiff.toFixed(0)}</div></div>` : ''}
                 <div class="bt-stat"><div class="bt-stat-label">Avg P&L/Trade</div><div class="bt-stat-value ${ns.avgPnl >= 0 ? 'text-green' : 'text-red'}">₹${ns.avgPnl.toFixed(0)}</div></div>
             `;
 
+
+
             // Exit distributions
-            const maxCnt = Math.max(...[...d.oldExitDist, ...d.newExitDist].map(x => x.count));
+            const oldDist = d.oldExitDist || [];
+            const newDist = d.newExitDist || [];
+            const maxCnt = Math.max(...[...oldDist, ...newDist].map(x => x.count || 0), 1);
+
             const distBar = (items, color) => items.map(x => {
                 const w = Math.max(5, (x.count / maxCnt * 100));
                 const pC = x.pnl >= 0 ? 'var(--green)' : 'var(--red)';
                 return `<div class="bt-dist-bar"><span style="min-width:140px">${x.reason}</span><span style="min-width:24px;text-align:right">${x.count}</span><div class="bar"><div class="bar-fill" style="width:${w}%;background:${color}"></div></div><span style="color:${pC};min-width:60px;text-align:right">₹${x.pnl.toFixed(0)}</span></div>`;
             }).join('');
+
             document.getElementById('btDist').innerHTML = `<div class="bt-dist-grid">
-                <div class="bt-dist-col"><h4>Old Exit Distribution</h4>${distBar(d.oldExitDist, 'var(--amber)')}</div>
-                <div class="bt-dist-col"><h4>New Exit Distribution</h4>${distBar(d.newExitDist, 'var(--cyan)')}</div>
+                ${!isHist ? `<div class="bt-dist-col"><h4>Old Exit Distribution</h4>${distBar(oldDist, 'var(--amber)')}</div>` : ''}
+                <div class="bt-dist-col"><h4>${isHist ? 'Exit Distribution' : 'New Exit Distribution'}</h4>${distBar(newDist, 'var(--cyan)')}</div>
             </div>`;
 
             // Trade table
             const b = document.getElementById('btBody');
-            b.innerHTML = d.comparison.map(c => {
+            const comp = d.comparison || (d.newResultsDetailed || []).map(r => ({
+                symbol: r.symbol,
+                direction: 'LONG', // placeholder if not in detailed
+                new: { reason: r.reason, pnl: r.pnl, hold: 0 },
+                old: { reason: '-', pnl: 0, hold: 0 },
+                diff: 0
+            }));
+
+            b.innerHTML = comp.map(c => {
                 const diffC = c.diff > 0 ? 'bt-diff-pos' : c.diff < 0 ? 'bt-diff-neg' : 'bt-diff-zero';
                 const diffIcon = c.diff > 0 ? '✅' : c.diff < 0 ? '🔻' : '➖';
-                const dirC = c.direction === 'LONG' ? 'text-green' : 'text-red';
+                const dir = c.direction || c.new?.direction || '';
+                const dirC = dir === 'LONG' ? 'text-green' : (dir === 'SHORT' ? 'text-red' : '');
                 const sym = c.symbol.replace('USDT', '');
-                const oC = c.old.pnl >= 0 ? 'text-green' : 'text-red';
-                const nC = c.new.pnl >= 0 ? 'text-green' : 'text-red';
-                const gate = (c.cross_asset || '').replace('_', ' ');
-                const gateC = c.new.reason === 'BLOCKED' || c.new.reason === 'SCORE_BLOCKED' ? 'text-red' : 'text-green';
+                const oC = (c.old?.pnl || 0) >= 0 ? 'text-green' : 'text-red';
+                const nC = (c.new?.pnl || 0) >= 0 ? 'text-green' : 'text-red';
                 return `<tr>
-                    <td>${sym}</td><td class="${dirC}">${c.direction}</td>
-                    <td class="${gateC}" style="font-size:.7rem">${c.new.reason === 'BLOCKED' || c.new.reason === 'SCORE_BLOCKED' ? 'OFF' : 'ON'}</td>
-                    <td style="font-size:.72rem">${c.old.reason}</td><td class="${oC}">₹${c.old.pnl}</td><td>${c.old.hold.toFixed(1)}m</td>
-                    <td style="font-size:.72rem">${c.new.reason}</td><td class="${nC}">₹${c.new.pnl}</td><td>${c.new.hold.toFixed(1)}m</td>
-                    <td class="${diffC}">${diffIcon} ₹${c.diff}</td>
-                </tr>`;
+            <td>${sym}</td><td class="${dirC}">${dir}</td>
+            <td style="font-size:.7rem">-</td>
+            ${!isHist ? `<td style="font-size:.72rem">${c.old?.reason || ''}</td><td class="${oC}">₹${(c.old?.pnl || 0).toFixed(0)}</td><td>${(c.old?.hold || 0).toFixed(1)}m</td>` : ''}
+            <td style="font-size:.72rem">${c.new?.reason || ''}</td><td class="${nC}">₹${(c.new?.pnl || 0).toFixed(0)}</td><td>${(c.new?.hold || 0).toFixed(1)}m</td>
+            ${!isHist ? `<td class="${diffC}">${diffIcon} ₹${(c.diff || 0).toFixed(0)}</td>` : '<td>-</td>'}
+        </tr>`;
             }).join('');
+
+            // Draw Equity Curve
+            drawEquityCurve(d.newResultsDetailed);
         }
 
-        async function triggerRun() {
-            const p = document.getElementById('lastRun'); p.textContent = 'Running...';
-            try { const d = await apiFetch('/api/run'); p.textContent = JSON.stringify(d, null, 2); setTimeout(refresh, 500) } catch (e) { p.textContent = 'Error: ' + e.message }
+        function drawEquityCurve(results) {
+            const canvas = document.getElementById('btEquityCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width = canvas.offsetWidth * 2;
+            const h = canvas.height = canvas.offsetHeight * 2;
+            ctx.clearRect(0, 0, w, h);
+
+            if (!results.length) return;
+
+            let currentEquity = 0;
+            const points = [0];
+            results.forEach(r => {
+                currentEquity += r.pnl || 0;
+                points.push(currentEquity);
+            });
+
+            const min = Math.min(...points, 0);
+            const max = Math.max(...points, 100);
+            const range = max - min;
+            const margin = 20;
+
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            const zeroY = h - margin - ((0 - min) / range) * (h - 2 * margin);
+            ctx.moveTo(margin, zeroY);
+            ctx.lineTo(w - margin, zeroY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.beginPath();
+            ctx.strokeStyle = 'var(--cyan)';
+            ctx.lineWidth = 4;
+            ctx.lineJoin = 'round';
+
+            points.forEach((p, i) => {
+                const x = margin + (i / (points.length - 1)) * (w - 2 * margin);
+                const y = h - margin - ((p - min) / range) * (h - 2 * margin);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Gradient Fill
+            const grad = ctx.createLinearGradient(0, 0, 0, h);
+            grad.addColorStop(0, 'rgba(0, 255, 255, 0.2)');
+            grad.addColorStop(1, 'transparent');
+            ctx.lineTo(w - margin, h);
+            ctx.lineTo(margin, h);
+            ctx.fillStyle = grad;
+            ctx.fill();
         }
+
+
+
+
 
         function startAutoRefresh() {
             refresh(); let c = 10; const tEl = document.getElementById('timer'); clearInterval(refreshInterval);
