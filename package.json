@@ -5,6 +5,8 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"deploy:wfa": "wrangler deploy --config wrangler-wfa.toml",
+		"dev:wfa": "wrangler dev --config wrangler-wfa.toml",
 		"test": "vitest"
 	},
 	"devDependencies": {

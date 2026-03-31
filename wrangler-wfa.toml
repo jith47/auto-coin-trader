@@ -1,0 +1,9 @@
+name = "crypto-walk-forward"
+main = "src/walk-forward.js"
+kv_namespaces = [
+  { binding = "BOT_STATE", id = "d8c63e9d60b2408e9755e324674473b4" }
+]
+compatibility_date = "2024-01-01"
+
+# No KV needed — stateless analysis
+# No secrets needed — only public Binance API

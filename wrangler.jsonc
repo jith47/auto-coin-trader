@@ -1,11 +1,7 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "crypto-autobot",
-	"main": "src/worker.js",
+	"name": "crypto-trading-bot",
+	"main": "src/index.js",
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
@@ -13,34 +9,15 @@
 	"observability": {
 		"enabled": true
 	},
-	"migrations": [
+	"kv_namespaces": [
 		{
-			"tag": "v1",
-			"new_sqlite_classes": [
-				"BinanceDeltaFeed"
-			]
-		},
-		{
-			"tag": "v2",
-			"deleted_classes": [
-				"BinanceDeltaFeed"
-			]
-		}
-	],
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "trade_db",
-			"database_id": "adfd9b6d-0350-478f-b4dc-5ba9c228d7f7"
+			"binding": "BOT_STATE",
+			"id": "d8c63e9d60b2408e9755e324674473b4"
 		}
 	],
 	"triggers": {
 		"crons": [
-			"* * * * *"
+			"*/5 * * * *"
 		]
-	},
-	"assets": {
-		"directory": "./public/",
-		"binding": "ASSETS"
 	}
 }
