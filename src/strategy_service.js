@@ -35,8 +35,8 @@ const CONFIG = {
     USD_INR_RATE: 85,
 
     // Accumulation Score Thresholds
-    ACC_ENTRY_THRESHOLD: 70,    // v2.1: raised from 55 for higher conviction
-    ACC_MIN_DURATION_MIN: 7,    // v2.0: duration >= 7 min
+    ACC_ENTRY_THRESHOLD: 85,    // v2.1: raised from 55 for higher conviction
+    ACC_MIN_DURATION_MIN: 20,    // v2.0: duration >= 7 min
 
     // Direction Detection
     SIGNAL_BIAS_THRESHOLD: 2,   // Need 2 of 3 signals
@@ -55,12 +55,12 @@ const CONFIG = {
     OI_DROP_EXIT_PCT: 0.3,      // 0.3% in 3 min
     OI_DECEL_MINUTES: 3,
     VOLUME_OI_DIVERGENCE: 1.5,  // Vol > 1.5x avg
-    VOL_WT_OI_THRESHOLD: 0.002, // 0.2% change required (was 0.05%)
-    MIN_HOLD_MINUTES: 5,        // 5-min grace period for noise exits
-    TIME_STOP_MIN: 45,
+    VOL_WT_OI_THRESHOLD: 0.005, // 0.5% change required (was 0.2% — too sensitive per prod analysis)
+    MIN_HOLD_MINUTES: 15,       // 15-min grace period (was 5 — exits were chopping trades at 5-10min)
+    TIME_STOP_MIN: 60,          // 60-min time stop (was 45 — give trades more room)
 
     // Anti-Trap
-    RETAIL_CROWD_LIMIT: 0.70,   // v2.0: retail < 70%
+    RETAIL_CROWD_LIMIT: 0.65,   // v2.0: retail < 70%
 
     // Partial TP Settings
     PARTIAL_TP_ATR: 1.5,
@@ -406,17 +406,8 @@ export class StrategyService {
         if (s3 && (s3.open_interest - data.openInterest.openInterest) / s3.open_interest * 100 >= CONFIG.OI_DROP_EXIT_PCT)
             return this.closePosition(trade, currentPrice, 'OI_DROP_03');
 
-        if (pnlPct > 0) {
-            const s1 = await this.db.getOISnapshotAt(symbol, 1);
-            const s2 = await this.db.getOISnapshotAt(symbol, 2);
-            const s3 = await this.db.getOISnapshotAt(symbol, 3);
-            if (s1 && s2 && s3) {
-                const r1 = data.openInterest.openInterest - s1.open_interest;
-                const r2 = s1.open_interest - s2.open_interest;
-                const r3 = s2.open_interest - s3.open_interest;
-                if (r1 < r2 && r2 < r3) return this.closePosition(trade, currentPrice, 'OI_DECEL');
-            }
-        }
+        // OI_DECEL exit REMOVED — prod analysis showed it fired on 50% of trades (14/28)
+        // for avg -₹1.63. OI deceleration is normal noise, not distribution.
 
         // NOISE-BASED EXITS (Subject to Grace Period)
         const holdTimeMinutes = (Date.now() - trade.entry_time) / 60000;
@@ -425,9 +416,10 @@ export class StrategyService {
             if (vol15 > (sumVolume(data.klines1m, 60) / 4) * CONFIG.VOLUME_OI_DIVERGENCE && Math.abs(oiAnalysis?.change5m || 0) < CONFIG.VOL_WT_OI_THRESHOLD * 100)
                 return this.closePosition(trade, currentPrice, 'VOL_WT_OI');
 
+            // ABSORPTION_FLIP: Tightened — only exit when in LOSS, volume drop > 50%, and price moved > 3%
             const vol3 = sumVolume(data.klines1m, 3);
             const s3Vol = sumVolume(data.klines1m.slice(-6, -3), 3);
-            if (pnlPct > 0 && vol3 < s3Vol * 0.7 && Math.abs(priceChange(data.klines1m, 3)) > 0.02)
+            if (pnlPct < 0 && vol3 < s3Vol * 0.5 && Math.abs(priceChange(data.klines1m, 3)) > 0.03)
                 return this.closePosition(trade, currentPrice, 'ABSORPTION_FLIP');
         }
 

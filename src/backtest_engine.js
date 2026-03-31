@@ -44,32 +44,36 @@ export async function optimizeStrategy(db, options = {}) {
     const ticksBySymbol = { 'BTCUSDT': btcTicks, 'ETHUSDT': ethTicks };
 
     const grid = {
-        accEntry: [70, 75, 80, 85],
+        accEntry: [80, 85, 90],
         accDur: [10, 15, 20],
-        tpSl: [1.5, 2.0, 2.5],
-        retailLimit: [0.65, 0.70, 0.75],
-        signalBias: [2, 3]
+        tpSl: [1.5, 2.0],
+        oiMin: [0.1, 0.2, 0.3],
+        signalBias: [2, 3],
+        filterExhaustion: [true, false]
     };
 
     const results = [];
     for (const acc of grid.accEntry) {
         for (const dur of grid.accDur) {
             for (const tpSl of grid.tpSl) {
-                for (const rl of grid.retailLimit) {
+                for (const oi of grid.oiMin) {
                     for (const sb of grid.signalBias) {
-                        const p = {
-                            accEntryThreshold: acc, accMinDuration: dur, tpSlRatio: tpSl,
-                            retailLimit: rl, signalBias: sb, requireTransition: true,
-                            slAtrMult: 1.5, blockBothQuiet: true, timeCutMin: 60,
-                            leverage: 10, minHoldMinutes: 5, beTriggerPct: 0.001
-                        };
-                        const trades = discoverTrades(allTicks, p);
-                        if (trades.length < 5) continue;
-                        const sim = simulateAll(trades, ticksBySymbol, p);
-                        const sum = summarize(sim);
+                        for (const fe of grid.filterExhaustion) {
+                            const p = {
+                                accEntryThreshold: acc, accMinDuration: dur, tpSlRatio: tpSl,
+                                oiMin: oi, signalBias: sb, filterExhaustion: fe,
+                                requireTransition: true, slAtrMult: 1.5, blockBothQuiet: true,
+                                timeCutMin: 90, takerThresh: 1.05, slopeThresh: 0.02,
+                                ttDeltaThresh: 0.005, retailLimit: 0.65
+                            };
+                            const trades = discoverTrades(allTicks, p);
+                            if (trades.length < 5) continue;
+                            const sim = simulateAll(trades, ticksBySymbol, p);
+                            const sum = summarize(sim);
 
-                        let score = sum.winRate * 10 + (sum.totalPnl / 100) + Math.log2(sum.traded);
-                        results.push({ params: p, summary: sum, score });
+                            let score = sum.winRate * 30 + (sum.totalPnl / 100) + (sum.traded * 5);
+                            results.push({ params: p, summary: sum, score });
+                        }
                     }
                 }
             }
@@ -101,20 +105,30 @@ function discoverTrades(allTicks, params) {
         const dir = (dirOrig === 'LONG' || (dirOrig === 'UNCLEAR' && score > 0)) ? 'LONG' : (dirOrig === 'SHORT' || (dirOrig === 'UNCLEAR' && score < 0)) ? 'SHORT' : null;
         if (!dir) continue;
 
-        // Pro Filters
-        const takerTh = params.takerThresh || 1.03;
-        const slopeTh = params.slopeThresh || 0.01;
+        // Pro Filters (V2.2 Advanced)
+        const takerTh = params.takerThresh || 1.05;
+        const slopeTh = params.slopeThresh || 0.02;
         const ttDeltaTh = params.ttDeltaThresh || 0.005;
 
         const takerOk = (dir === 'LONG' ? t.taker_ratio >= takerTh : t.taker_ratio <= (1 / takerTh));
         const slopeOk = (dir === 'LONG' ? t.price_slope >= slopeTh : t.price_slope <= -slopeTh);
+
+        // OI Change Filter
+        const oiOk = (dir === 'LONG' ? (t.oi_change_1m || 0) >= (params.oiMin || 0.1) : (t.oi_change_1m || 0) <= -(params.oiMin || 0.1));
+
+        // Exhaustion Filter
+        const exhaustion = (dir === 'LONG' && t.price_slope > 0.02 && (t.oi_change_1m || 0) < 0) || (dir === 'SHORT' && t.price_slope < -0.02 && (t.oi_change_1m || 0) > 0);
+        if (params.filterExhaustion && exhaustion) continue;
+
         const ttDeltaOk = (dir === 'LONG' ? (t.top_trader_delta || 0) >= ttDeltaTh : (t.top_trader_delta || 0) <= -ttDeltaTh);
 
         let biasVotes = 0;
         if (takerOk) biasVotes++;
         if (slopeOk) biasVotes++;
-        if (ttDeltaOk) biasVotes++;
+        if (oiOk) biasVotes++;
+
         if (biasVotes < (params.signalBias || 2)) continue;
+        if (params.ttDeltaThresh && !ttDeltaOk) continue;
 
         const retail = t.retail_long_pct || 0.5;
         const retailBias = dir === 'LONG' ? retail : (1 - retail);
@@ -151,20 +165,39 @@ function simulateTrade(trade, ticks, params) {
 
     const slDist = Math.abs(trade.entry_price - trade.sl_price);
     const tp_price = dir === 1 ? trade.entry_price + slDist * (params.tpSlRatio || 2.0) : trade.entry_price - slDist * (params.tpSlRatio || 2.0);
+    const minHold = params.minHoldMinutes || 15;
+    const timeCut = params.timeCutMin || 60;
 
     let maxPnl = 0;
     for (const tick of tradeTicks) {
         const holdMin = (tick.timestamp - trade.entry_time) / 60000;
         const pnlPct = (tick.price - trade.entry_price) / trade.entry_price * dir;
 
+        // SL/TP exits (always active)
         if (dir === 1 && tick.price <= trade.sl_price) return calcExit(trade, tick.price, 'STOP_LOSS', holdMin);
         if (dir === -1 && tick.price >= trade.sl_price) return calcExit(trade, tick.price, 'STOP_LOSS', holdMin);
         if (dir === 1 && tick.price >= tp_price) return calcExit(trade, tick.price, 'TAKE_PROFIT', holdMin);
         if (dir === -1 && tick.price <= tp_price) return calcExit(trade, tick.price, 'TAKE_PROFIT', holdMin);
 
-        if (holdMin >= (params.timeCutMin || 60) && pnlPct < 0.0005) return calcExit(trade, tick.price, 'TIME_SCRATCH', holdMin);
-        if (holdMin > 5 && (tick.oi_change_5m || 0) <= -0.3) return calcExit(trade, tick.price, 'OI_DROP_EXIT', holdMin);
+        // Time-based scratch exit
+        if (holdMin >= timeCut && pnlPct < 0.0005) return calcExit(trade, tick.price, 'TIME_SCRATCH', holdMin);
 
+        // OI drop exit (after 5 min)
+        const oiDropTh = params.oiDropThresh || -0.3;
+        if (holdMin > 5 && (tick.oi_change_5m || 0) <= oiDropTh) return calcExit(trade, tick.price, 'OI_DROP_EXIT', holdMin);
+
+        // OI Reversal Exit (Advanced V2.2) - profit taking on OI reversal
+        if (holdMin > 5 && (tick.oi_change_5m || 0) <= -0.5 && pnlPct > 0.002) return calcExit(trade, tick.price, 'OI_REVERSAL_EXIT', holdMin);
+
+        // VOL_WT_OI exit (after min hold) — volume surging but OI not moving
+        if (!params.oiMin && holdMin >= minHold && (tick.volume_ratio || 1) > 1.5 && Math.abs(tick.oi_change_5m || 0) < 0.5)
+            return calcExit(trade, tick.price, 'VOL_WT_OI', holdMin);
+
+        // ABSORPTION_FLIP — only when in loss, requires significant volume drop
+        if (!params.oiMin && holdMin >= minHold && pnlPct < 0 && (tick.volume_ratio || 1) < 0.5 && Math.abs(tick.price_slope || 0) > 0.03)
+            return calcExit(trade, tick.price, 'ABSORPTION_FLIP', holdMin);
+
+        // Trailing stop
         if (pnlPct > maxPnl) maxPnl = pnlPct;
         if (maxPnl >= 0.005 && pnlPct <= maxPnl - 0.003) return calcExit(trade, tick.price, 'TRAILING_STOP', holdMin);
     }
@@ -196,9 +229,14 @@ function summarize(results) {
         if (r.pnl_inr > 0) bySymbol[r.symbol].wins++;
     }
     const traded = results.length - blocked;
+    const btcResults = results.filter(r => r.symbol === 'BTCUSDT');
+    const ethResults = results.filter(r => r.symbol === 'ETHUSDT');
+
     return {
         traded, wins, totalPnL: totalPnl,
         winRate: traded > 0 ? Math.round(wins / traded * 100) : 0,
+        btcWinRate: btcResults.length ? Math.round(btcResults.filter(r => r.pnl_inr > 0).length / btcResults.length * 100) : 0,
+        ethWinRate: ethResults.length ? Math.round(ethResults.filter(r => r.pnl_inr > 0).length / ethResults.length * 100) : 0,
         avgPnl: traded > 0 ? totalPnl / traded : 0,
         blocked, bySymbol
     };
