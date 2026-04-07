@@ -6,7 +6,7 @@ Trade DOGE as a derivative of BTC structure. BTC provides direction and timing s
 
 The strategy utilizes the following data points fetched directly from Binance:
 
-For BTC: Current price, percentage change over 1 minute, 5 minutes, and 1 hour, distance from 24-hour high as percentage, distance from 24-hour low as percentage, spot CVD direction (rising, falling, or flat), spot CVD slope (steep, gradual, or flat), price structure detected from 5-minute klines (sweep_reclaim, rejection, breakout, breakdown, or ranging), and key level proximity (at_resistance, at_support, or mid_range).
+For BTC: Current price, percentage change over 1 minute, 5 minutes, and 1 hour, daily percentage change, distance from 24-hour high as percentage, distance from 24-hour low as percentage, spot CVD direction (rising, falling, or flat), spot CVD slope (steep, gradual, or flat), price structure detected from 5-minute klines (sweep_reclaim_bullish, sweep_reclaim_bearish, rejection, support_holding, breakout, breakdown, or ranging), and key level proximity (at_resistance, at_support, or mid_range).
 
 For DOGE: Current price, percentage change over 1 minute, 5 minutes, and 1 hour, daily percentage change, distance from 24-hour high, distance from 24-hour low, spot CVD direction, relative strength versus BTC (stronger, aligned, weaker, or decoupled), 24-hour price range as percentage (for volatility scaling), and volume ratio (recent 10-candle average vs 1-hour average).
 
@@ -26,23 +26,27 @@ Relative strength between DOGE and BTC uses a 0.5 percent threshold: differences
 
 Each setup uses **tiered gating**: a small number of essential conditions (hard gates) that must ALL be true, plus additional quality factors handled by the scoring system. This prevents the AND-gate problem where too many simultaneous conditions make signals impossibly rare.
 
+Setup evaluation priority: Setup A first, then Setup B (SELL), then Setup B (BUY), then Setup C.
+
 ### Setup A — Liquidity Sweep and Reclaim (Highest Probability)
 
 **Hard gates (must ALL be true):**
 
-For a long entry: BTC structure shows sweep_reclaim_bullish, BTC spot CVD is rising, and DOGE is within 1.5 percent of its local low.
+For a long entry: BTC structure shows sweep_reclaim_bullish OR (support_holding with BTC within 0.25 percent of 24h low), BTC spot CVD is rising, and DOGE is within 1.5 percent of its local low.
 
-For a short entry: BTC structure shows sweep_reclaim_bearish, BTC spot CVD is falling, and DOGE is within 1.5 percent of its local high.
+For a short entry: BTC structure shows sweep_reclaim_bearish OR (rejection with BTC within 0.25 percent of 24h high), BTC spot CVD is falling, and DOGE is within 1.5 percent of its local high.
 
 **Scored boosters:** DOGE CVD alignment, sector bias, and liquidation events contribute to the signal score but do not block entry.
+
+**60-second Reclaim Hold:** When Setup A is first detected, a 60-second hold timer starts. The setup must persist for 60 seconds before a trade is executed. This prevents trading on fleeting structural patterns.
 
 ### Setup B — Relative Weakness or Strength Divergence
 
 **Hard gates (must ALL be true):**
 
-For a relative weakness short: BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.5 percent, DOGE relative strength shows weaker, sector bias must NOT be bullish (only bearish or mixed allowed), and BTC structure must NOT be support_holding (shorting into a support bounce is a trap).
+For a relative weakness short (4 gates): BTC 1-hour change must be above zero percent, DOGE 1-hour change must be below negative 0.1 percent, DOGE relative strength shows weaker, and BTC structure must NOT be support_holding (shorting into a support bounce is a trap).
 
-For a relative strength long: BTC 1-hour change must be below zero percent, DOGE 1-hour change must be above positive 0.5 percent, DOGE relative strength shows stronger, and BTC structure must NOT be rejection (longing into a rejection is a trap).
+For a relative strength long (4 gates): BTC 1-hour change must be below zero percent, DOGE 1-hour change must be above positive 0.1 percent, DOGE relative strength shows stronger, and BTC structure must NOT be rejection (longing into a rejection is a trap).
 
 **Scored boosters:** BTC structure (rejection OR at_resistance for shorts; support_holding OR at_support for longs), DOGE CVD alignment, and distance from extremes contribute to score.
 
@@ -50,89 +54,123 @@ For a relative strength long: BTC 1-hour change must be below zero percent, DOGE
 
 **Hard gates (must ALL be true):**
 
-For a long entry: BTC 1-hour change must exceed positive 0.5 percent, BTC spot CVD must be rising, DOGE relative strength must be aligned or stronger, and DOGE spot CVD must be rising.
+For a long entry (5 gates): BTC 1-hour change must exceed positive 1.0 percent, BTC spot CVD must be rising, BTC CVD slope must NOT be flat, DOGE relative strength must be stronger, and DOGE spot CVD must be rising.
 
-For a short entry: BTC 1-hour change must be below negative 0.5 percent, BTC spot CVD must be falling, DOGE relative strength must be aligned or weaker, and DOGE spot CVD must be falling.
+For a short entry (5 gates): BTC 1-hour change must be below negative 1.0 percent, BTC spot CVD must be falling, BTC CVD slope must NOT be flat, DOGE relative strength must be weaker, and DOGE spot CVD must be falling.
 
 **Scored boosters:** BTC CVD slope steepness, sector bias, and position in daily range contribute to score.
 
 ## Kill Switches
 
-Never enter a trade if any of the following conditions are true:
+Never enter a trade if any of the following conditions are true. Kill switches are checked BEFORE setup evaluation for both directions. If both directions are blocked, no setup evaluation occurs.
 
-No long on correlation divergence: If BTC 1-hour change exceeds positive 1.5 percent and DOGE 1-hour change is below negative 0.3 percent, do not go long. This indicates DOGE weakness, not a lag opportunity.
+1. **No long on correlation divergence:** If BTC 1-hour change is below negative 1.5 percent AND DOGE 1-hour change is above positive 0.3 percent, do not go long. BTC is crashing; DOGE bounce is likely fake.
 
-No short on correlation divergence: If BTC 1-hour change is below negative 1.5 percent and DOGE 1-hour change exceeds positive 0.3 percent, do not go short. This indicates DOGE strength, not a lag opportunity.
+2. **No long at 24-hour top:** If DOGE is within 0.5 percent of its 24-hour high, do not go long. This is buying exhaustion.
 
-No long at 24-hour top: If DOGE is within 0.5 percent of its 24-hour high, do not go long. This is buying exhaustion.
+3. **No short at 24-hour bottom:** If DOGE is within 0.5 percent of its 24-hour low, do not go short. This is shorting the hole.
 
-No short at 24-hour bottom: If DOGE is within 0.5 percent of its 24-hour low, do not go short. This is shorting the hole.
+4. **No long with falling CVD:** If EITHER BTC spot CVD OR DOGE spot CVD is falling, do not go long. There is no buyer support. Note: this is an OR condition — even one falling CVD blocks longs.
 
-No long with falling CVD: If both DOGE spot CVD and BTC spot CVD are falling, do not go long. There is no buyer support.
+5. **No long when overextended:** If DOGE daily change exceeds BTC daily change by more than 5 percent, do not go long. Mean reversion risk is elevated.
 
-No short with rising CVD: If both DOGE spot CVD and BTC spot CVD are rising, do not go short. There is no seller pressure.
+6. **No long when sector is bearish:** If sector bias is bearish, do not go long. Longs require at least mixed or bullish sector.
 
-No long unless sector is bullish: If sector bias is not bullish (i.e., mixed or bearish), do not enter long positions. Longs require sector confirmation — mixed is insufficient.
-
-No long when overextended: If DOGE daily change exceeds BTC daily change by more than 5 percent, do not go long. Mean reversion risk is elevated.
-
-No trade when decoupled: If DOGE relative strength is 'decoupled' (divergence exceeds 2 percent), do not trade in any direction. The BTC-DOGE correlation assumption is broken.
-
-No long when BTC daily is negative: If BTC daily change is below negative 1.5 percent, do not go long. The broader macro trend is bearish and long setups are unreliable regardless of micro-structure.
-
-No long when DOGE 1H CVD is falling: If DOGE aggregated spot CVD on the 1-hour timeframe is falling, do not go long. A 1-minute CVD uptick against a falling 1-hour CVD is noise, not a structural reversal.
-
-No short when momentum is exhausting: If BTC 1-hour change is below negative 2 percent AND BTC 5-minute change is above positive 0.1 percent, do not go short. Selling momentum may be exhausting and a relief bounce is forming.
+7. **No short when DOGE is exhausted:** If DOGE daily change is below negative 4 percent, do not go short. Selling momentum may be exhausted and a relief bounce is likely.
 
 ## Risk Management
 
-Use 60 percent of available balance for margin.
+### Position Sizing
 
-For stop loss placement, base values are 0.7 percent for sweep and reclaim setups, 0.8 percent for relative weakness or strength setups, and 1.0 percent for trend continuation setups. The base SL is then scaled by a volatility multiplier derived from DOGE's 24-hour range: multiplier = clamp(dogeRange / 3.0, 0.8, 1.5). On a quiet day (range 1.5 percent), SL tightens to 80 percent of base. On a volatile day (range 8 percent), SL widens to 150 percent of base. Final SL is still clamped between 0.6 percent and 1.5 percent.
+Use 70 percent of available balance for margin. Leverage is fixed at 5x. Position size is calculated as: (margin × leverage) / entry price.
 
-After the first take-profit level is hit, stop loss moves to break-even (entry price) for the remaining position.
+In mock mode, the initial balance is 2500 INR with a fixed USD/INR rate of 85.
 
-For take profit placement, maintain a minimum reward-to-risk ratio of 1.5. For sweep and reclaim setups, take 80 percent off at 1.5R and let 20 percent run to 2.5R. For relative weakness and relative strength setups, take 100 percent off at 1.5R as a quick scalp. For trend continuation setups, take 50 percent at 1.5R, 30 percent at 2R, and trail the remaining 20 percent with a 0.4 percent trailing distance.
+### Stop Loss Placement
+
+Base SL values: 0.9 percent for sweep and reclaim setups, 1.0 percent for relative weakness and relative strength setups, and 1.2 percent for trend continuation setups.
+
+The base SL is scaled by a volatility multiplier derived from DOGE's 24-hour range: multiplier = clamp(dogeRange / 3.0, 0.8, 1.5). On a quiet day (range 1.5 percent), SL tightens to 80 percent of base. On a volatile day (range 8 percent), SL widens to 150 percent of base.
+
+During NYSE open window (UTC 13:30 to 14:00), the SL is further widened by a factor of 1.15x to account for increased volatility.
+
+Final SL is clamped between 0.8 percent and 1.5 percent regardless of calculations above.
+
+### Take Profit Placement
+
+All take profit levels are calculated as multiples of the SL distance (R:R-based), ensuring TP is always larger than SL.
+
+For sweep and reclaim setups: Take 80 percent off at 1.5R and 20 percent at 2.5R.
+
+For relative weakness and relative strength setups: Take 100 percent off at 1.5R as a quick scalp.
+
+For trend continuation setups: Take 50 percent at 1.5R, 30 percent at 2.0R, and trail the remaining 20 percent with a 0.4 percent trailing distance.
+
+### Break-Even Stop Loss
+
+After any take-profit level is hit, stop loss moves to break-even (entry price) for the remaining position.
+
+### Fees
+
+Entry and exit fees are calculated at 0.1 percent of position value, deducted from the mock balance on each trade open and close.
 
 ## Signal Scoring
 
-Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 80 or higher for longs, and 70 or higher for shorts.
+Calculate a score from 0 to 115 for each potential trade. Only execute trades with scores of 70 or higher.
 
-Award up to 30 points for structure confirmation: 30 points for sweep and reclaim, 20 points for rejection or support holding, 15 points for breakout or breakdown, 0 for ranging.
+1. **Structure confirmation (0-30 points):** 30 points for sweep_reclaim or extreme rejection/support_holding (within 0.25 percent of 24h high/low). 20 points for non-extreme rejection or support_holding. 15 points for breakout or breakdown. 0 for ranging.
 
-Award up to 20 points for BTC CVD alignment: 15 points if BTC spot CVD confirms direction, plus 5 bonus points if BTC CVD slope is steep (indicating aggressive directional flow).
+2. **BTC CVD alignment (0-20 points):** 15 points if BTC spot CVD confirms direction (rising for longs, falling for shorts). Plus 5 bonus points if BTC CVD slope is steep.
 
-Award up to 12 points for DOGE CVD alignment: 12 points if DOGE spot CVD confirms trade direction.
+3. **DOGE CVD alignment (0-12 points):** 12 points if DOGE spot CVD confirms trade direction.
 
-Award up to 15 points for relative strength alignment: 15 points if DOGE relative strength matches trade direction.
+4. **Relative strength alignment (0-15 points):** 15 points if DOGE relative strength matches direction (stronger/aligned for longs, weaker/aligned for shorts).
 
-Award up to 15 points for favorable position in range: 15 points if within 1 percent of favorable level, 10 points if within 2 percent.
+5. **Position in range (0-15 points):** 15 points if within 1 percent of favorable level (near low for longs, near high for shorts). 10 points if within 2 percent.
 
-Award up to 10 points for sector alignment: 10 points if sector bias matches direction, 5 points if mixed.
+6. **Sector alignment (0-10 points):** 10 points if sector bias matches direction. 5 points if sector is mixed.
 
-Award up to 8 points for key level alignment: 8 points if BTC is at a favorable key level (at_support for longs, at_resistance for shorts).
+7. **Key level alignment (0-8 points):** 8 points if BTC is at a favorable key level (at_support for longs, at_resistance for shorts).
 
-Award up to 5 points for liquidation flush: 5 points if recent liquidations cleared weak hands in your direction.
+8. **Liquidation flush (0-5 points):** 5 points if recent liquidations cleared weak hands in the trade direction (longs_flushed for longs, shorts_squeezed for shorts).
 
-Deduct 10 points for thin volume: if current 10-minute average volume is less than 50 percent of the 1-hour average volume, deduct 10 points. Thin markets produce unreliable patterns.
+9. **Volume penalty (-10 points):** If current 10-minute average volume is less than 50 percent of the 1-hour average volume, deduct 10 points. Thin markets produce unreliable patterns.
 
-## Circuit Breakers
+## Circuit Breakers and Cooldowns
 
-Max drawdown: If in mock mode and the account balance has dropped 30 percent or more from the initial balance, all trading halts. The strategy is assumed to be underperforming and needs review.
+**Max account drawdown:** If in mock mode and the account balance has dropped 30 percent or more from the initial balance (2500 INR), all trading halts. The strategy is assumed to be underperforming and needs review.
 
-Max daily losses: If 3 or more losses occur in a single day, trading stops for that day.
+**Max daily drawdown:** If daily PnL drops below negative 2 percent of the initial balance (50 INR), trading stops for that day.
+
+**Max trades per day:** Maximum 10 trades per day. After 10 trades, trading stops for that day.
+
+**Loss cooldown:** After any losing trade, wait 30 minutes before the next trade. This prevents revenge trading.
+
+**10-minute time stop:** If a trade has been open for more than 10 minutes and the price has moved less than 0.3 percent in the favorable direction, the trade is closed. This prevents capital being locked in stagnant positions.
 
 ## Trade Execution Process
 
 The strategy runs 24/7 without session-based restrictions. The current UTC hour is logged for informational purposes only.
 
-First, analyze real-time market data from Binance to determine current conditions. Second, check all kill switches and abort if any are triggered. Third, identify which setup type matches current conditions using tiered gating (hard gates only). Fourth, calculate the signal score using all scoring components. Fifth, compare the score against the threshold of 70. Sixth, calculate position size based on account balance, target leverage, and configured margin percentage. Seventh, execute the trade with proper stop loss and take profit levels. Eighth, log all trade details including setup type, score, and market indicator data. Ninth, monitor the position and manage according to take profit rules, moving SL to break-even after first TP. Tenth, enforce the 30-minute cooldown if the trade results in a loss.
+1. Fetch real-time market data from Binance and compute all indicators.
+2. If an active trade exists, manage it (check SL, TP levels, trailing stops, time stop).
+3. Check cooldowns (daily trade count, daily drawdown, loss cooldown timer).
+4. Check max account drawdown circuit breaker.
+5. Check all kill switches for both directions. If both blocked, abort.
+6. Evaluate setups in priority order: Setup A → Setup B (SELL) → Setup B (BUY) → Setup C.
+7. For Setup A, enforce 60-second reclaim hold before proceeding.
+8. Verify kill switch doesn't block the matched setup's direction.
+9. Calculate signal score. If below 70, abort.
+10. Calculate position size based on account balance, leverage, and margin percentage.
+11. Execute the trade with proper SL and TP levels.
+12. Log all trade details including setup type, score, and market indicator data.
+13. For mock trades, deduct entry fee from mock balance.
 
 ## Decision Framework Summary
 
-Enter trades when a setup's hard gates are all satisfied, the signal score meets or exceeds 70, no kill switches are triggered, and at least 30 minutes have passed since any losing trade.
+Enter trades when a setup's hard gates are all satisfied, the signal score meets or exceeds 70, no kill switches are triggered, and all cooldown conditions are clear.
 
-Avoid trades when DOGE is lagging while BTC is strong, when DOGE is within 0.5 percent of a 24-hour extreme, when DOGE-BTC correlation is decoupled, when spot CVD diverges from the intended direction, when sector is bearish and attempting a long, when 3 or more losses have occurred today, when drawdown exceeds 30 percent, or when the signal score is below 70.
+Avoid trades when DOGE is within 0.5 percent of a 24-hour extreme, when either BTC or DOGE CVD is falling (for longs), when DOGE-BTC correlation is diverging or decoupled, when sector is bearish and attempting a long, when daily drawdown limit is reached, when account drawdown exceeds 30 percent, when the signal score is below 70, or when shorting into a BTC support bounce.
 
 Prioritize setups in this order: Sweep and Reclaim first as it provides the strongest edge, Relative Weakness Short second, Relative Strength Long third, Trend Continuation fourth. Never trade lag catch-up plays as they have negative expected value.
 
@@ -148,7 +186,59 @@ Treat lag as a warning. When DOGE fails to follow BTC, it signals weakness or di
 
 Enforce cooldowns. After any loss, wait 30 minutes before the next trade. Revenge trading is the primary account killer.
 
-Honor daily limits. Three losses means the day is over. Protect capital for better opportunities tomorrow.
+Honor daily limits. Protect capital for better opportunities tomorrow.
+
+## Configuration Reference
+
+```
+PAIR:                    B-DOGE_USDT
+LEVERAGE:                5x
+MARGIN_PERCENT:          70%
+SCORE_THRESHOLD:         70
+
+SL_BASE:
+  SWEEP_RECLAIM:         0.9%
+  RELATIVE_WEAKNESS:     1.0%
+  RELATIVE_STRENGTH:     1.0%
+  TREND_CONTINUATION:    1.2%
+SL_MIN:                  0.8%
+SL_MAX:                  1.5%
+
+TP_PROFILES:
+  SWEEP_RECLAIM:         80% at 1.5R, 20% at 2.5R
+  RELATIVE_WEAKNESS:     100% at 1.5R
+  RELATIVE_STRENGTH:     100% at 1.5R
+  TREND_CONTINUATION:    50% at 1.5R, 30% at 2.0R, 20% trailing (0.4%)
+
+KILL_SWITCHES:
+  CORR_BTC_THRESHOLD:    1.5%
+  CORR_DOGE_THRESHOLD:   0.3%
+  SESSION_EXTREME:       0.5%
+  OVEREXTEND_DIFF:       5.0%
+  DAILY_EXHAUSTION:      -4.0%
+
+SETUP_THRESHOLDS:
+  SWEEP_DOGE_PROXIMITY:  1.5%
+  TREND_BTC_1H_MIN:      1.0%
+  RW_DOGE_1H_THRESHOLD:  -0.1%
+  RS_DOGE_1H_THRESHOLD:  +0.1%
+
+COOLDOWNS:
+  AFTER_LOSS:            30 minutes
+  MAX_TRADES_PER_DAY:    10
+  MAX_LOSSES_DAILY:      5
+  MAX_DAILY_DRAWDOWN:    2.0% of initial balance
+  MAX_ACCOUNT_DRAWDOWN:  30%
+
+NYSE_VOLATILITY:
+  OPEN_UTC:              13:30
+  CLOSE_UTC:             14:00
+  STOP_WIDEN_FACTOR:     1.15x
+
+MOCK_MODE:               true
+INITIAL_INR_BALANCE:     2500
+USD_INR_RATE:            85
+```
 
 ## Known Limitations
 

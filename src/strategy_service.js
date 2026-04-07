@@ -1,9 +1,10 @@
-import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition } from './coindcx.js';
+import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition, getInstrumentDetails, getINRFuturesBalance } from './coindcx.js';
 import { fetchAllMarketData, computeIndicators } from './binance.js';
 const CONFIG = {
     PAIR: 'B-DOGE_USDT',
+    MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
-    LEVERAGE: 5,
+    DEFAULT_LEVERAGE: 20, // Fallback if dynamic fetch fails
     SL: {
         SWEEP_RECLAIM: 0.9,
         RELATIVE_WEAKNESS: 1.0,
@@ -39,8 +40,9 @@ const CONFIG = {
     NYSE_CLOSE_UTC: 14.0,
     STOP_WIDEN_FACTOR: 1.15,
 
-    MOCK_MODE: true, // Set to true for mock trading
-    INITIAL_INR_BALANCE: 2500,
+    MOCK_MODE: false, // Set to true for mock trading
+    INITIAL_INR_BALANCE: 500,
+    MIN_BALANCE_INR: 50, // Safety floor — don't trade below this
     USD_INR_RATE: 85, // Simple rate for conversion
     TP_PROFILES: {
         // R:R-based TP levels matching strategy doc
@@ -68,8 +70,24 @@ export class StrategyService {
         }
         console.log(`[Strategy] ── Evaluation Start(${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
         try {
-            // 1. Fetch data FIRST
-            const data = await fetchAllMarketData();
+            // 1. Fetch data FIRST (instrument details fetched in parallel — no lag)
+            const [data, instrumentInfo] = await Promise.all([
+                fetchAllMarketData(),
+                CONFIG.MOCK_MODE ? Promise.resolve(null) : getInstrumentDetails(CONFIG.PAIR),
+            ]);
+
+            // Store instrument info for leverage/min_quantity
+            if (instrumentInfo) {
+                this.leverage = Math.min(instrumentInfo.maxLeverage, CONFIG.DEFAULT_LEVERAGE);
+                this.minQuantity = instrumentInfo.minQuantity || 1;
+                this.stepSize = instrumentInfo.stepSize || 1;
+                console.log(`[Strategy] Instrument: maxLeverage=${instrumentInfo.maxLeverage}, using=${this.leverage}x, minQty=${this.minQuantity}, step=${this.stepSize}`);
+            } else {
+                this.leverage = CONFIG.DEFAULT_LEVERAGE;
+                this.minQuantity = 1;
+                this.stepSize = 1;
+                console.log(`[Strategy] Using default leverage: ${this.leverage}x`);
+            }
 
             this.indicators = computeIndicators(data, CONFIG);
 
@@ -108,9 +126,16 @@ export class StrategyService {
             if (CONFIG.MOCK_MODE) {
                 const currentBalance = await this.db.getMockBalance();
                 const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
-                if (drawdownPct >= CONFIG.MAX_DRAWDOWN_PCT) {
-                    console.log(`[Strategy] CIRCUIT BREAKER: Drawdown ${drawdownPct.toFixed(1)}% exceeds ${CONFIG.MAX_DRAWDOWN_PCT}%`);
+                if (drawdownPct >= CONFIG.MAX_ACCOUNT_DRAWDOWN_PCT) {
+                    console.log(`[Strategy] CIRCUIT BREAKER: Drawdown ${drawdownPct.toFixed(1)}% exceeds ${CONFIG.MAX_ACCOUNT_DRAWDOWN_PCT}%`);
                     return { status: 'CIRCUIT_BREAKER', reason: `Max drawdown ${drawdownPct.toFixed(1)}%` };
+                }
+            } else {
+                // Real mode: check INR balance floor
+                const inrBalance = await getINRFuturesBalance(this.env);
+                if (inrBalance !== null && inrBalance < CONFIG.MIN_BALANCE_INR) {
+                    console.log(`[Strategy] CIRCUIT BREAKER: INR balance ₹${inrBalance.toFixed(2)} below minimum ₹${CONFIG.MIN_BALANCE_INR}`);
+                    return { status: 'CIRCUIT_BREAKER', reason: `INR balance ₹${inrBalance.toFixed(2)} below minimum` };
                 }
             }
 
@@ -437,6 +462,11 @@ export class StrategyService {
         let inrBalance = CONFIG.INITIAL_INR_BALANCE;
         if (CONFIG.MOCK_MODE) {
             inrBalance = await this.db.getMockBalance();
+        } else {
+            const realInr = await getINRFuturesBalance(this.env);
+            if (realInr !== null) {
+                inrBalance = realInr;
+            }
         }
         const marginInr = inrBalance * (CONFIG.MARGIN_PERCENT / 100);
 
@@ -446,7 +476,7 @@ export class StrategyService {
             reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.doge.cvdDirection} | RS:${ind.doge.relativeStrength}`,
             orderType: 'MARKET',
             quantity,
-            leverage: CONFIG.LEVERAGE,
+            leverage: this.leverage,
             entry,
             stopLoss: parseFloat(sl.toFixed(6)),
             takeProfit: firstTpPrice,
@@ -461,36 +491,60 @@ export class StrategyService {
         if (CONFIG.MOCK_MODE && mockInrBalance) {
             balanceUsd = mockInrBalance / CONFIG.USD_INR_RATE;
         } else {
+            // Real mode: fetch INR balance and convert to USD equivalent
             try {
-                const accountData = await getAccountBalance(this.env);
-                if (accountData && Array.isArray(accountData)) {
-                    const usdtWallet = accountData.find(w => (w.currency === 'USDT' || w.currency_short_name === 'USDT'));
-                    if (usdtWallet) {
-                        balanceUsd = parseFloat(usdtWallet.balance || usdtWallet.available_balance || 100);
-                    }
-                } else if (accountData && accountData.balance) {
-                    balanceUsd = parseFloat(accountData.balance);
+                const inrBalance = await getINRFuturesBalance(this.env);
+                if (inrBalance !== null) {
+                    balanceUsd = inrBalance / CONFIG.USD_INR_RATE;
+                } else {
+                    console.error('[Strategy] Could not fetch INR balance, using fallback');
+                    balanceUsd = (mockInrBalance || CONFIG.INITIAL_INR_BALANCE) / CONFIG.USD_INR_RATE;
                 }
             } catch (err) {
                 console.error('[Strategy] Failed to fetch balance, using fallback:', err.message);
+                balanceUsd = CONFIG.INITIAL_INR_BALANCE / CONFIG.USD_INR_RATE;
             }
         }
 
-        console.log(`[Strategy] Account balance: ${balanceUsd.toFixed(2)} USD (Equivalent)`);
+        const leverage = this.leverage || CONFIG.DEFAULT_LEVERAGE;
+        console.log(`[Strategy] Account balance: ${balanceUsd.toFixed(2)} USD (Equivalent), Leverage: ${leverage}x`);
 
         const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
 
         // Position size is margin * leverage
-        const positionValueUsd = marginAvailable * CONFIG.LEVERAGE;
-        const quantity = Math.floor(positionValueUsd / entry);
+        const positionValueUsd = marginAvailable * leverage;
+        let quantity = Math.floor(positionValueUsd / entry);
+
+        // Align to exchange step size
+        const stepSize = this.stepSize || 1;
+        if (stepSize > 0 && stepSize < 1) {
+            // Fractional step (e.g., 0.1): round down to nearest step
+            quantity = Math.floor(quantity / stepSize) * stepSize;
+            quantity = parseFloat(quantity.toFixed(8));
+        } else {
+            quantity = Math.floor(quantity / stepSize) * stepSize;
+        }
+
+        // Enforce minimum quantity from exchange
+        const minQty = this.minQuantity || 1;
+        if (quantity < minQty) {
+            console.log(`[Strategy] Quantity ${quantity} below exchange minimum ${minQty}, using minimum`);
+            quantity = minQty;
+        }
+
+        // Sanity check for astronomical values
+        if (quantity > 1e12) {
+            console.error(`[Strategy] CRITICAL: Astronomical quantity detected (${quantity}). Clamping to 0 to prevent DB corruption.`);
+            quantity = 0;
+        }
 
         const slDistancePct = (Math.abs(entry - sl) / entry) * 100;
-        const riskOnMarginPct = slDistancePct * CONFIG.LEVERAGE;
+        const riskOnMarginPct = slDistancePct * leverage;
 
-        console.log(`[Strategy] Margin-based sizing: margin=$${marginAvailable.toFixed(2)}, leverage=${CONFIG.LEVERAGE}x, posValue=$${positionValueUsd.toFixed(2)}, qty=${quantity}`);
+        console.log(`[Strategy] Margin-based sizing: margin=$${marginAvailable.toFixed(2)}, leverage=${leverage}x, posValue=$${positionValueUsd.toFixed(2)}, qty=${quantity}`);
         console.log(`[Strategy] Risk Profile: SL Distance=${slDistancePct.toFixed(2)}%, Risk on Margin=${riskOnMarginPct.toFixed(2)}%`);
 
-        return quantity > 0 ? quantity : 1;
+        return quantity > 0 ? quantity : minQty;
     }
     async executeTrade(signal) {
         try {
@@ -516,7 +570,7 @@ export class StrategyService {
                 result = await placeOrder(
                     this.env, CONFIG.PAIR, signal.decision, signal.quantity,
                     signal.leverage, signal.stopLoss, signal.takeProfit,
-                    signal.orderType, signal.entry
+                    signal.orderType, signal.entry, CONFIG.MARGIN_CURRENCY
                 );
                 console.log('[Strategy] Order result:', JSON.stringify(result, null, 2));
             }
@@ -537,7 +591,11 @@ export class StrategyService {
     }
     async manageTrade(activeTrade) {
         console.log(`[Strategy] Managing active trade: ${activeTrade.decision} ${activeTrade.asset}`);
-        const currentPrice = this.indicators.doge.price;
+        const asset = (activeTrade.asset || '').toUpperCase();
+        const currentPrice = asset.includes('BTC') ? this.indicators.btc.price :
+            asset.includes('ETH') ? this.indicators.eth.price :
+                asset.includes('SOL') ? this.indicators.sol.price :
+                    this.indicators.doge.price;
         const entryPrice = parseFloat(activeTrade.price);
         const isLong = activeTrade.decision === 'BUY';
         const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
@@ -558,7 +616,7 @@ export class StrategyService {
             if (ageMs > 10 * 60 * 1000 && priceChangePct < 0.3) {
                 console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < 0.3%`);
                 await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
-                return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * CONFIG.LEVERAGE };
+                return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * parseFloat(activeTrade.leverage) };
             }
 
             const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
@@ -605,7 +663,7 @@ export class StrategyService {
 
             // 3. Position still open
             const unrealizedPct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-            console.log(`[Strategy] Mock position open: price=${currentPrice}, unrealized=${(unrealizedPct * CONFIG.LEVERAGE).toFixed(2)}%, remaining=${(remainingFraction * 100).toFixed(0)}%`);
+            console.log(`[Strategy] Mock position open: price=${currentPrice}, unrealized=${(unrealizedPct * parseFloat(activeTrade.leverage)).toFixed(2)}%, remaining=${(remainingFraction * 100).toFixed(0)}%`);
             return { status: 'IN_TRADE', currentPrice, unrealizedPct };
         } catch (err) {
             console.error('[Strategy] Mock trade management error:', err.message);
@@ -620,7 +678,8 @@ export class StrategyService {
 
             if (!dogePos || parseFloat(dogePos.quantity || 0) === 0) {
                 console.log('[Strategy] Position closed on exchange');
-                const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1) * CONFIG.LEVERAGE;
+                const leverage = parseFloat(activeTrade.leverage);
+                const pnl = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1) * leverage;
                 await this.db.updateTradeStatus(
                     activeTrade.order_id, 'CLOSED', currentPrice, pnl,
                     'EXCHANGE_CLOSED (SL/TP/MANUAL)'
@@ -632,13 +691,14 @@ export class StrategyService {
             const now = Date.now();
             const ageMs = now - activeTrade.timestamp;
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
+            const leverage = parseFloat(activeTrade.leverage);
             if (ageMs > 10 * 60 * 1000 && priceChangePct < 0.3) {
                 console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < 0.3%`);
                 // Close on exchange
                 const closeSide = isLong ? 'SELL' : 'BUY';
-                await placeOrder(this.env, CONFIG.PAIR, closeSide, parseFloat(dogePos.quantity), CONFIG.LEVERAGE, null, null, 'MARKET');
-                await this.db.updateTradeStatus(activeTrade.order_id, 'CLOSED', currentPrice, priceChangePct * CONFIG.LEVERAGE, 'TIME_STOP');
-                return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * CONFIG.LEVERAGE };
+                await placeOrder(this.env, CONFIG.PAIR, closeSide, parseFloat(dogePos.quantity), leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
+                await this.db.updateTradeStatus(activeTrade.order_id, 'CLOSED', currentPrice, priceChangePct * leverage, 'TIME_STOP');
+                return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * leverage };
             }
 
             const currentQty = parseFloat(dogePos.quantity);
@@ -675,9 +735,10 @@ export class StrategyService {
                 const trailingTriggered = isLong ? currentPrice <= trailTrigger : currentPrice >= trailTrigger;
                 if (trailingTriggered && newPeak !== currentPrice) {
                     const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
+                    const leverage = parseFloat(activeTrade.leverage);
                     if (closeQty > 0) {
                         const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                        const pnl = priceChangePct * CONFIG.LEVERAGE;
+                        const pnl = priceChangePct * leverage;
                         console.log(`[Strategy] Trailing stop hit at ${currentPrice}, closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
 
                         if (isMock) {
@@ -685,7 +746,7 @@ export class StrategyService {
                         } else {
                             const closeSide = isLong ? 'SELL' : 'BUY';
                             try {
-                                await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, CONFIG.LEVERAGE);
+                                await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, leverage, CONFIG.MARGIN_CURRENCY);
                             } catch (err) {
                                 console.error('[Strategy] Trailing close failed:', err.message);
                             }
@@ -703,8 +764,9 @@ export class StrategyService {
             const tpReached = isLong ? currentPrice >= level.price : currentPrice <= level.price;
             if (tpReached) {
                 const closeQty = Math.floor(totalQty * (level.pctOfPosition / 100));
+                const leverage = parseFloat(activeTrade.leverage);
                 const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-                const pnl = priceChangePct * CONFIG.LEVERAGE;
+                const pnl = priceChangePct * leverage;
 
                 if (closeQty > 0) {
                     console.log(`[Strategy] TP${i + 1} hit at ${currentPrice} (target: ${level.price}), closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
@@ -714,7 +776,7 @@ export class StrategyService {
                     } else {
                         const closeSide = isLong ? 'SELL' : 'BUY';
                         try {
-                            await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, CONFIG.LEVERAGE);
+                            await closePartialPosition(this.env, CONFIG.PAIR, closeSide, closeQty, leverage, CONFIG.MARGIN_CURRENCY);
                         } catch (err) {
                             console.error('[Strategy] Partial TP close failed:', err.message);
                         }
@@ -753,8 +815,9 @@ export class StrategyService {
             );
         } else {
             const entryPrice = parseFloat(activeTrade.price);
+            const leverage = parseFloat(activeTrade.leverage);
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-            const pnl = priceChangePct * CONFIG.LEVERAGE;
+            const pnl = priceChangePct * leverage;
             await this.db.updateTradeStatus(activeTrade.order_id, 'CLOSED', currentPrice, pnl, reason);
         }
     }
@@ -772,9 +835,10 @@ export class StrategyService {
         const entryPrice = parseFloat(activeTrade.price);
         const quantity = parseFloat(activeTrade.quantity);
         const entryValueInrTotal = parseFloat(activeTrade.entry_value_inr || 0);
+        const leverage = parseFloat(activeTrade.leverage);
 
         const priceChangePct = ((exitPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-        const pnlPct = priceChangePct * CONFIG.LEVERAGE;
+        const pnlPct = priceChangePct * leverage;
 
         const portionPnLInr = (entryValueInrTotal * portionFraction) * (pnlPct / 100);
 
@@ -818,23 +882,6 @@ export class StrategyService {
         };
     }
 
-    async fixMockBalance() {
-        console.log('[Strategy] Running one-time Balance Restoration...');
-        try {
-            const { results: trades } = await this.db.db.prepare("SELECT pnl_inr, entry_value_inr FROM trade_logs WHERE status = 'CLOSED'").all();
-            let totalPnl = 0;
-            let totalEntryFees = 0;
-            for (const trade of trades) {
-                totalPnl += (trade.pnl_inr || 0);
-                totalEntryFees += (trade.entry_value_inr || 0) * 0.005;
-            }
-            const correctBalance = CONFIG.INITIAL_INR_BALANCE + totalPnl - totalEntryFees;
-            await this.db.updateMockBalance(correctBalance);
-            console.log(`[Strategy] Balance Restored: Total PnL=${totalPnl.toFixed(2)}, Fees=${totalEntryFees.toFixed(2)}. New Balance: ${correctBalance.toFixed(2)}`);
-        } catch (err) {
-            console.error('[Strategy] Balance Restoration failed:', err.message);
-        }
-    }
     async checkCooldowns() {
         // 1. Daily Trade Count
         const todayTradeCount = await this.db.getTodayTradeCount();

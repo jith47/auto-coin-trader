@@ -45,7 +45,7 @@ export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, 
     return data;
 }
 
-export async function closePartialPosition(env, pair, side, quantity, leverage) {
+export async function closePartialPosition(env, pair, side, quantity, leverage, marginCurrency = "INR") {
     const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/orders/create";
     const timestamp = Date.now();
@@ -59,7 +59,7 @@ export async function closePartialPosition(env, pair, side, quantity, leverage) 
             "leverage": leverage,
             "notification": "no_notification",
             "position_margin_type": "isolated",
-            "margin_currency_short_name": "USDT",
+            "margin_currency_short_name": marginCurrency,
             "reduce_only": true,
         }
     };
@@ -81,6 +81,9 @@ export async function closePartialPosition(env, pair, side, quantity, leverage) 
 }
 
 function generateSignature(payload, secret) {
+    if (!secret) {
+        throw new Error('CoinDCX Secret Key is missing in environment (env.COINDCX_SECRET_KEY)');
+    }
     return crypto.createHmac('sha256', secret).update(payload).digest('hex');
 }
 
@@ -330,6 +333,71 @@ export async function getMarketPrice(pair) {
         return null;
     } catch (e) {
         console.error("Error fetching market price:", e);
+        return null;
+    }
+}
+
+/**
+ * Fetch instrument details for a futures pair (public endpoint, no auth).
+ * Returns { maxLeverage, minQuantity, stepSize } or null on error.
+ */
+export async function getInstrumentDetails(pair) {
+    try {
+        const url = `https://api.coindcx.com/exchange/v1/derivatives/futures/instrument_details?pair=${encodeURIComponent(pair)}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+            // Fallback: try the instruments list
+            const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/instruments`;
+            const listRes = await fetch(listUrl);
+            if (listRes.ok) {
+                const instruments = await listRes.json();
+                const inst = Array.isArray(instruments)
+                    ? instruments.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair)
+                    : null;
+                if (inst) {
+                    return {
+                        maxLeverage: parseInt(inst.max_leverage || inst.max_leverage_long || 20),
+                        minQuantity: parseFloat(inst.min_quantity || inst.min_order_size || 1),
+                        stepSize: parseFloat(inst.step || inst.quantity_step || 1),
+                    };
+                }
+            }
+            console.error(`[CoinDCX] instrument_details failed for ${pair}, using defaults`);
+            return null;
+        }
+        const data = await response.json();
+        return {
+            maxLeverage: parseInt(data.max_leverage || data.max_leverage_long || 20),
+            minQuantity: parseFloat(data.min_quantity || data.min_order_size || 1),
+            stepSize: parseFloat(data.step || data.quantity_step || 1),
+        };
+    } catch (e) {
+        console.error('[CoinDCX] Error fetching instrument details:', e.message);
+        return null;
+    }
+}
+
+/**
+ * Fetch INR balance from the futures wallet.
+ * Returns the available INR balance as a number, or null on error.
+ */
+export async function getINRFuturesBalance(env) {
+    try {
+        const wallets = await getFuturesWallets(env);
+        if (Array.isArray(wallets)) {
+            const inrWallet = wallets.find(w =>
+                w.currency_short_name === 'INR' || w.currency === 'INR'
+            );
+            if (inrWallet) {
+                const balance = parseFloat(inrWallet.balance || inrWallet.available_balance || 0);
+                const locked = parseFloat(inrWallet.locked_balance || 0);
+                return balance - locked;
+            }
+        }
+        console.error('[CoinDCX] No INR wallet found in futures wallets:', JSON.stringify(wallets));
+        return null;
+    } catch (e) {
+        console.error('[CoinDCX] Error fetching INR futures balance:', e.message);
         return null;
     }
 }
