@@ -170,7 +170,16 @@ export async function getOpenPositions(env) {
     });
 
     const data = await response.json();
-    return data;
+    if (!Array.isArray(data)) {
+        console.error('[CoinDCX] getOpenPositions returned non-array:', JSON.stringify(data));
+        return null; // Return null to indicate API error, NOT an empty list
+    }
+    // Normalize CoinDCX fields to standard format
+    return data.map(p => ({
+        ...p,
+        quantity: p.active_pos !== undefined ? p.active_pos : p.quantity,
+        symbol: p.pair || p.symbol
+    }));
 }
 
 export async function getAccountBalance(env) {
@@ -256,7 +265,7 @@ export async function getOrders(env, status = null) {
     const body = {
         "timestamp": timestamp,
         "page": "1",
-        "size": "50"
+        "size": "50" // Increased from 10 to be more robust for reconciliation
     };
 
     if (status) {
@@ -288,7 +297,7 @@ export async function getTradeHistory(env) {
     const body = {
         "timestamp": timestamp,
         // "page": "1",
-        "size": "10"
+        "size": "50" // Increased from 10 to find orphaned entry trades
     };
 
     const payload = JSON.stringify(body);
@@ -343,34 +352,52 @@ export async function getMarketPrice(pair) {
  */
 export async function getInstrumentDetails(pair) {
     try {
-        const url = `https://api.coindcx.com/exchange/v1/derivatives/futures/instrument_details?pair=${encodeURIComponent(pair)}`;
-        const response = await fetch(url);
-        if (!response.ok) {
-            // Fallback: try the instruments list
-            const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/instruments`;
+        // Try the specific instrument data endpoint
+        const urls = [
+            `https://api.coindcx.com/exchange/v1/derivatives/futures/data/instrument?pair=${encodeURIComponent(pair)}`,
+            `https://api.coindcx.com/exchange/v1/derivatives/futures/instrument_details?pair=${encodeURIComponent(pair)}`,
+            `https://public.coindcx.com/market_data/market_details` // General fallback
+        ];
+
+        let data = null;
+        for (const url of urls) {
+            try {
+                const response = await fetch(url);
+                if (response.ok) {
+                    const resJson = await response.json();
+                    if (Array.isArray(resJson)) {
+                        data = resJson.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair);
+                    } else if (resJson && typeof resJson === 'object') {
+                        data = resJson.pair === pair ? resJson : (resJson.data || resJson);
+                    }
+                    if (data) break;
+                }
+            } catch (innerErr) {
+                console.error(`[CoinDCX] Failed fetch for ${url}:`, innerErr.message);
+            }
+        }
+
+        if (!data) {
+            // Last resort: active_instruments
+            const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments?margin_currency_short_name[]=INR`;
             const listRes = await fetch(listUrl);
             if (listRes.ok) {
-                const instruments = await listRes.json();
-                const inst = Array.isArray(instruments)
-                    ? instruments.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair)
-                    : null;
-                if (inst) {
-                    return {
-                        maxLeverage: parseInt(inst.max_leverage || inst.max_leverage_long || 20),
-                        minQuantity: parseFloat(inst.min_quantity || inst.min_order_size || 1),
-                        stepSize: parseFloat(inst.step || inst.quantity_step || 1),
-                    };
-                }
+                const instrumentsList = await listRes.json();
+                data = Array.isArray(instrumentsList) ? instrumentsList.find(i => i.pair === pair) : null;
             }
-            console.error(`[CoinDCX] instrument_details failed for ${pair}, using defaults`);
-            return null;
         }
-        const data = await response.json();
-        return {
-            maxLeverage: parseInt(data.max_leverage || data.max_leverage_long || 20),
-            minQuantity: parseFloat(data.min_quantity || data.min_order_size || 1),
-            stepSize: parseFloat(data.step || data.quantity_step || 1),
-        };
+
+        if (data) {
+            return {
+                maxLeverage: parseInt(data.max_leverage || data.max_leverage_long || 20),
+                minQuantity: parseFloat(data.min_quantity || data.min_order_size || 1),
+                stepSize: parseFloat(data.step || data.quantity_step || 1),
+                tickSize: parseFloat(data.tick_size || data.min_price_increment || 0.00001),
+            };
+        }
+
+        console.error(`[CoinDCX] Could not find instrument details for ${pair} across all endpoints`);
+        return null;
     } catch (e) {
         console.error('[CoinDCX] Error fetching instrument details:', e.message);
         return null;
