@@ -4,7 +4,7 @@ export class D1Database {
     }
 
     // Log a trade
-    async logTrade(data) {
+    async logTrade(data, orderId = null) {
         const stmt = this.db.prepare(`
             INSERT INTO trade_logs (
                 timestamp, decision, reason, asset, price, quantity,
@@ -25,19 +25,22 @@ export class D1Database {
             data.tpLevels ? JSON.stringify(data.tpLevels) : null,
             JSON.stringify(data),
             data.status || 'OPEN',
-            data.orderId || null,
+            orderId || data.orderId || null,
             data.entryValueInr || 0
         ).run();
     }
 
     // Update trade status
-    async updateTradeStatus(orderId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
+    async updateTradeStatus(orderIdOrId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
+        const isNumeric = typeof orderIdOrId === 'number' || (!isNaN(orderIdOrId) && !String(orderIdOrId).includes('-'));
+        const closedAt = status === 'CLOSED' ? Date.now() : null;
         const stmt = this.db.prepare(`
             UPDATE trade_logs
-            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?
-            WHERE order_id = ?
+            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?,
+                closed_at = COALESCE(closed_at, ?)
+            WHERE ${isNumeric ? 'id' : 'order_id'} = ?
         `);
-        return await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, orderId).run();
+        return await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, closedAt, orderIdOrId).run();
     }
 
     // Update TP levels status
@@ -55,6 +58,13 @@ export class D1Database {
         return await this.db.prepare(
             "SELECT * FROM trade_logs WHERE status = 'OPEN' OR status = 'FILLED' ORDER BY timestamp DESC LIMIT 1"
         ).first();
+    }
+
+    // Get trade by order_id
+    async getTradeByOrderId(orderId) {
+        return await this.db.prepare(
+            "SELECT * FROM trade_logs WHERE order_id = ? LIMIT 1"
+        ).bind(orderId).first();
     }
 
     // Get recent trades

@@ -485,7 +485,9 @@
                     <table>
                         <thead>
                             <tr>
+                                <th>ID</th>
                                 <th>Time</th>
+                                <th>Closed</th>
                                 <th>Side</th>
                                 <th>Entry</th>
                                 <th>SL</th>
@@ -620,6 +622,7 @@
             if (!trades.length) { body.innerHTML = '<tr><td colspan="10" class="text-dim" style="text-align:center;padding:24px;">No trades yet</td></tr>'; return; }
             body.innerHTML = trades.map(t => {
                 const time = new Date(t.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+                const closeTime = t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—';
                 const sideClass = t.decision === 'BUY' ? 'text-green' : 'text-red';
                 const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + parseFloat(t.pnl).toFixed(2) + '%' : '—';
                 const pnlClass = t.pnl > 0 ? 'text-green' : t.pnl < 0 ? 'text-red' : 'text-dim';
@@ -635,7 +638,7 @@
                        </div>`
                     : `<div class="reason-cell"><div class="reason-content">${fullReason}</div></div>`;
 
-                return `<tr><td>${time}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
+                return `<tr><td><span class="text-dim">#${t.id}</span></td><td>${time}</td><td>${closeTime}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
             }).join('');
         }
 
