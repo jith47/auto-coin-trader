@@ -821,7 +821,7 @@ export class StrategyService {
                 // Close on exchange
                 const closeSide = isLong ? 'SELL' : 'BUY';
                 await placeOrder(this.env, CONFIG.PAIR, closeSide, parseFloat(dogePos.quantity), leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
-                await this.db.updateTradeStatus(activeTrade.order_id, 'CLOSED', currentPrice, priceChangePct * leverage, 'TIME_STOP');
+                await this.db.updateTradeStatus(activeTrade.id, 'CLOSED', currentPrice, priceChangePct * leverage, 'TIME_STOP');
                 return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * leverage };
             }
 
@@ -878,7 +878,7 @@ export class StrategyService {
                         level.executed = true;
                     }
                 }
-                await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
+                await this.db.updateTPLevels(activeTrade.id, tpLevels);
                 if (i === tpLevels.length - 1 && level.executed) {
                     await this.closeTradeInDb(activeTrade, currentPrice, 'TRAILING_STOP');
                 }
@@ -908,7 +908,7 @@ export class StrategyService {
                     level.executed = true;
                     // Sync memory to prevent stale checks in same run
                     activeTrade.tp_levels = JSON.stringify(tpLevels);
-                    await this.db.updateTPLevels(activeTrade.order_id, tpLevels);
+                    await this.db.updateTPLevels(activeTrade.id, tpLevels);
                 }
 
                 if (i === tpLevels.length - 1) {
@@ -933,7 +933,7 @@ export class StrategyService {
         const settlement = await this._settlePortion(activeTrade, currentPrice, remainingFraction, isLong, providedExitRate);
 
         await this.db.updateTradeStatus(
-            activeTrade.order_id || activeTrade.id, 'CLOSED', currentPrice, settlement.totalPnlPct,
+            activeTrade.id, 'CLOSED', currentPrice, settlement.totalPnlPct,
             reason, settlement.totalExitValueInr, settlement.totalPnlInr
         );
     }
@@ -1005,7 +1005,7 @@ export class StrategyService {
         activeTrade.tp_levels = JSON.stringify(tpLevels);
 
         // Update TP levels in DB immediately to persist the portion PnL
-        await this.db.updateTPLevels(activeTrade.order_id || activeTrade.id, tpLevels);
+        await this.db.updateTPLevels(activeTrade.id, tpLevels);
 
         // Calculate cumulative totals
         const totalPnlInr = tpLevels.reduce((sum, l) => sum + (l.pnlInr || 0), 0) + (activeTrade.last_portion_pnl_inr || 0);
@@ -1064,10 +1064,13 @@ export class StrategyService {
             return { status: 'SCANNING' };
         }
 
-        // If positions is null, the API failed. SKIP sync to avoid false closures.
+        // If positions is null, the API failed. 
         if (positions === null) {
-            console.error(`[Strategy] RECONCILE: Exchange API failed. Skipping sync to avoid false closures.`);
-            if (activeTrade) return { status: 'SYNC_STILL_OPEN' };
+            console.error(`[Strategy] RECONCILE: Positions API failed. Attempting history-based sync fallback...`);
+            if (activeTrade) {
+                // If we have an active trade, try to see if it was closed via history
+                return await this.settleFromExchangeHistory(activeTrade, currentPriceFallback);
+            }
             return { status: 'SCANNING' };
         }
 
@@ -1103,17 +1106,33 @@ export class StrategyService {
             const history = await getTradeHistory(this.env);
             if (!Array.isArray(history)) return { status: 'SCANNING' };
 
-            // Find the most recent trade for this pair that is NOT our entry
-            // Our entry order_id is activeTrade.order_id
+            // Robust Matching: Find trades for this pair that happened AFTER our entry
+            // and have the OPPOSITE side (or any trade that isn't our entry)
             const pair = (activeTrade.asset || CONFIG.PAIR).toUpperCase();
-            const exitTrades = history.filter(t =>
-                (t.pair === pair || t.symbol === pair) &&
-                t.order_id !== activeTrade.order_id
-            );
+            const entryTime = activeTrade.timestamp || 0;
+            const entrySide = activeTrade.decision;
+            
+            const exitTrades = history.filter(t => {
+                const matchPair = (t.pair === pair || t.symbol === pair);
+                const isAfterEntry = new Date(t.created_at).getTime() > (entryTime + 1000); // 1s buffer
+                const isOppositeSide = (t.side !== entrySide && t.order_side !== entrySide);
+                const isDifferentOrder = (t.order_id !== activeTrade.order_id);
+                
+                return matchPair && (isAfterEntry || isDifferentOrder) && isOppositeSide;
+            });
+            
+            // If still no opposite trades, try any trade that isn't our entry as a last resort
+            let finalExitTrades = exitTrades;
+            if (finalExitTrades.length === 0) {
+                finalExitTrades = history.filter(t => 
+                    (t.pair === pair || t.symbol === pair) && 
+                    t.order_id !== activeTrade.order_id
+                );
+            }
 
-            if (exitTrades.length === 0) {
-                console.warn(`[Strategy] RECONCILE: No exit trades found in history for ${pair}. Falling back to estimated price.`);
-                // Fallback to previous logic if history is mysteriously empty
+            if (finalExitTrades.length === 0) {
+                console.warn(`[Strategy] RECONCILE: No likely exit trades found in history for ${pair} after entry. Falling back to estimated price.`);
+                // Fallback to previous logic if history is mysteriously empty or no exit found
                 let currentPrice = await getMarketPrice(pair);
                 if (!currentPrice || isNaN(currentPrice)) currentPrice = currentPriceFallback;
                 await this.closeTradeInDb(activeTrade, currentPrice, 'EXCHANGE_CLOSED (AUTO_SYNC)');
@@ -1121,7 +1140,7 @@ export class StrategyService {
             }
 
             // The most recent trade is our exit (SL/TP or Manual)
-            const lastExecution = exitTrades[0];
+            const lastExecution = finalExitTrades[0];
             const exitPrice = parseFloat(lastExecution.price || lastExecution.avg_price || 0);
             const conversionRate = parseFloat(lastExecution.settlement_currency_conversion_price || 1);
 

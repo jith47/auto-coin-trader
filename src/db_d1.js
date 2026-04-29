@@ -31,26 +31,36 @@ export class D1Database {
     }
 
     // Update trade status
-    async updateTradeStatus(orderIdOrId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
-        const isNumeric = typeof orderIdOrId === 'number' || (!isNaN(orderIdOrId) && !String(orderIdOrId).includes('-'));
-        const closedAt = status === 'CLOSED' ? Date.now() : null;
-        const stmt = this.db.prepare(`
-            UPDATE trade_logs
-            SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?,
-                closed_at = COALESCE(closed_at, ?)
-            WHERE ${isNumeric ? 'id' : 'order_id'} = ?
-        `);
-        return await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, closedAt, orderIdOrId).run();
+    async updateTradeStatus(tradeId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
+        try {
+            const closedAt = status === 'CLOSED' ? Date.now() : null;
+            // Use the numeric ID primarily if it's passed, or try to match by order_id as fallback
+            const isUuid = typeof tradeId === 'string' && tradeId.includes('-');
+            
+            const stmt = this.db.prepare(`
+                UPDATE trade_logs
+                SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?,
+                    closed_at = COALESCE(closed_at, ?)
+                WHERE ${isUuid ? 'order_id' : 'id'} = ?
+            `);
+            const result = await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, closedAt, tradeId).run();
+            console.log(`[DB] updateTradeStatus for ${tradeId} to ${status}: ${result.success ? 'Success' : 'Failed'}`);
+            return result;
+        } catch (err) {
+            console.error(`[DB] updateTradeStatus error for ${tradeId}:`, err.message);
+            throw err;
+        }
     }
 
     // Update TP levels status
-    async updateTPLevels(orderId, tpLevels) {
+    async updateTPLevels(tradeId, tpLevels) {
+        const isUuid = typeof tradeId === 'string' && tradeId.includes('-');
         const stmt = this.db.prepare(`
             UPDATE trade_logs
             SET tp_levels = ?
-            WHERE order_id = ?
+            WHERE ${isUuid ? 'order_id' : 'id'} = ?
         `);
-        return await stmt.bind(JSON.stringify(tpLevels), orderId).run();
+        return await stmt.bind(JSON.stringify(tpLevels), tradeId).run();
     }
 
     // Get active trade
@@ -69,9 +79,15 @@ export class D1Database {
 
     // Get recent trades
     async getRecentTrades(limit = 10) {
-        const { results } = await this.db.prepare(
-            'SELECT * FROM trade_logs ORDER BY timestamp DESC LIMIT ?'
-        ).bind(limit).all();
+        const { results } = await this.db.prepare(`
+            SELECT 
+                id, timestamp, decision, reason, asset, price, quantity, 
+                leverage, stop_loss, take_profit, status, exit_price, 
+                pnl, close_reason, entry_value_inr, exit_value_inr, 
+                pnl_inr, closed_at, symbol 
+            FROM trade_logs 
+            ORDER BY timestamp DESC LIMIT ?
+        `).bind(limit).all();
         return results;
     }
 
