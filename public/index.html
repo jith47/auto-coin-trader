@@ -490,6 +490,7 @@
                                 <th>Closed</th>
                                 <th>Side</th>
                                 <th>Entry</th>
+                                <th>Exit</th>
                                 <th>SL</th>
                                 <th>TP</th>
                                 <th>Qty</th>
@@ -638,7 +639,8 @@
                        </div>`
                     : `<div class="reason-cell"><div class="reason-content">${fullReason}</div></div>`;
 
-                return `<tr><td><span class="text-dim">#${t.id}</span></td><td>${time}</td><td>${closeTime}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
+                const exitPrice = t.exit_price != null ? parseFloat(t.exit_price).toFixed(5) : '—';
+                return `<tr><td><span class="text-dim">#${t.id}</span></td><td>${time}</td><td>${closeTime}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${exitPrice}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
             }).join('');
         }
 

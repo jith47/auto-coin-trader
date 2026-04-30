@@ -821,7 +821,7 @@ export class StrategyService {
                 // Close on exchange
                 const closeSide = isLong ? 'SELL' : 'BUY';
                 await placeOrder(this.env, CONFIG.PAIR, closeSide, parseFloat(dogePos.quantity), leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
-                await this.db.updateTradeStatus(activeTrade.id, 'CLOSED', currentPrice, priceChangePct * leverage, 'TIME_STOP');
+                await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
                 return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * leverage };
             }
 
