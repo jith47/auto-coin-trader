@@ -121,7 +121,7 @@ export class StrategyService {
                 console.log(`[Strategy] Instrument: maxLeverage=${instrumentInfo.maxLeverage}, using=${this.leverage}x, minQty=${this.minQuantity}, step=${this.stepSize}, tick=${this.tickSize}`);
             } else {
                 this.leverage = CONFIG.DEFAULT_LEVERAGE;
-                this.minQuantity = 1;
+                this.minQuantity = 2; // Default to 2 for DOGE safety
                 this.stepSize = 1;
                 this.tickSize = 0.00001;
                 console.log(`[Strategy] Using default leverage: ${this.leverage}x`);
@@ -310,6 +310,8 @@ export class StrategyService {
             btcStructure: isSweep || isSupport,
             btcCvdRising: ind.btc.cvdDirection === 'rising',
             dogeNearLow: ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY,
+            dogeCvdNotFalling: ind.doge.cvdDirection !== 'falling',
+            dogeNotWeaker: ind.doge.relativeStrength !== 'weaker',
         };
         console.log('[Strategy] Setup A (BUY) checks:', JSON.stringify(longChecks));
         if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
@@ -322,6 +324,8 @@ export class StrategyService {
             btcStructure: isSqueeze || isRejection,
             btcCvdFalling: ind.btc.cvdDirection === 'falling',
             dogeNearHigh: ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY,
+            dogeCvdNotRising: ind.doge.cvdDirection !== 'rising',
+            dogeNotStronger: ind.doge.relativeStrength !== 'stronger',
         };
         console.log('[Strategy] Setup A (SELL) checks:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
@@ -364,6 +368,7 @@ export class StrategyService {
             btcNotFlat: ind.btc.cvdSlope !== 'flat',
             dogeStronger: ind.doge.relativeStrength === 'stronger',
             dogeCvdRising: ind.doge.cvdDirection === 'rising',
+            dogeNotAtHigh: ind.doge.distFromHigh > 1.5, // Don't long the top
         };
         console.log('[Strategy] Setup C (BUY) checks:', JSON.stringify(longChecks));
         if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
@@ -375,6 +380,7 @@ export class StrategyService {
             btcNotFlat: ind.btc.cvdSlope !== 'flat',
             dogeWeaker: ind.doge.relativeStrength === 'weaker',
             dogeCvdFalling: ind.doge.cvdDirection === 'falling',
+            dogeNotAtLow: ind.doge.distFromLow > 1.5, // Don't short the bottom
         };
         console.log('[Strategy] Setup C (SELL) checks:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
@@ -434,6 +440,9 @@ export class StrategyService {
         // 3. DOGE CVD aligned with direction (12) — single check, no double count
         if ((isLong && ind.doge.cvdDirection === 'rising') || (!isLong && ind.doge.cvdDirection === 'falling')) {
             score += 12;
+        } else if ((isLong && ind.doge.cvdDirection === 'falling') || (!isLong && ind.doge.cvdDirection === 'rising')) {
+            score -= 15; // Penalty for DOGE CVD opposing trade direction
+            console.log(`[Strategy] CVD Contradiction penalty: -15 (DOGE CVD: ${ind.doge.cvdDirection})`);
         }
 
         // 4. Relative strength favorable (15)
@@ -472,6 +481,13 @@ export class StrategyService {
         if (volRatio < 0.5) {
             score -= 10;
             console.log(`[Strategy] Volume penalty: -10 (ratio: ${volRatio.toFixed(2)})`);
+        }
+        
+        // 10. Anti-chase Momentum Penalty (-10 when move already happened)
+        const recentMove5m = Math.abs(ind.doge.change5m || 0);
+        if (recentMove5m > 0.5) {
+            score -= 10;
+            console.log(`[Strategy] Anti-chase penalty: -10 (5m move: ${recentMove5m.toFixed(2)}%)`);
         }
 
         return score;
@@ -597,10 +613,22 @@ export class StrategyService {
         }
 
         // Enforce minimum quantity from exchange
-        const minQty = this.minQuantity || 1;
+        const minQty = this.minQuantity || 2;
         if (quantity < minQty) {
             console.log(`[Strategy] Quantity ${quantity} below exchange minimum ${minQty}, using minimum`);
             quantity = minQty;
+        }
+        
+        // Final safety check for DOGE: CoinDCX requires > 1.0
+        if (CONFIG.PAIR.includes('DOGE') && quantity < 2) {
+            console.log('[Strategy] Safety: Clamping DOGE quantity to 2');
+            quantity = 2;
+        }
+        
+        // Final safety check for DOGE
+        if (CONFIG.PAIR.includes('DOGE') && quantity <= 1) {
+            console.log('[Strategy] Safety: Clamping DOGE quantity to 2');
+            quantity = 2;
         }
 
         // Sanity check for astronomical values
@@ -811,17 +839,36 @@ export class StrategyService {
                 return { status: 'TRADE_CLOSED', reason: 'EXCHANGE_CLOSED' };
             }
 
-            // Fix 4: 10m Time Stop
+            // Fix 4: Adaptive Time Stop
             const now = Date.now();
             const ageMs = now - activeTrade.timestamp;
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
             const leverage = parseFloat(activeTrade.leverage);
-            if (ageMs > 10 * 60 * 1000 && priceChangePct < 0.3) {
-                console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < 0.3%`);
-                // Close on exchange
-                const closeSide = isLong ? 'SELL' : 'BUY';
-                await placeOrder(this.env, CONFIG.PAIR, closeSide, parseFloat(dogePos.quantity), leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
-                await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
+
+            // Adaptive thresholds by setup type and score
+            const timeStopMinutes = {
+                SWEEP_RECLAIM: 15,
+                TREND_CONTINUATION: 12,
+                RELATIVE_WEAKNESS: 10,
+                RELATIVE_STRENGTH: 10,
+                RANGE_REJECTION: 8,
+            };
+            const baseTime = timeStopMinutes[activeTrade.setup_type] || 10;
+            const convictionMultiplier = (activeTrade.score || 70) >= 85 ? 1.5 : (activeTrade.score || 70) >= 75 ? 1.2 : 1.0;
+            const maxAgeMs = baseTime * convictionMultiplier * 60 * 1000;
+
+            if (ageMs > maxAgeMs && priceChangePct < 0.3) {
+                console.log(`[Strategy] Time-stop triggered: Setup=${activeTrade.setup_type}, Score=${activeTrade.score}, MaxAge=${(maxAgeMs / 60000).toFixed(1)}m, CurrentAge=${(ageMs / 60000).toFixed(1)}m`);
+                
+                const closeQty = Math.abs(parseFloat(dogePos.quantity));
+                if (closeQty > 1.0) {
+                    const closeSide = isLong ? 'SELL' : 'BUY';
+                    await placeOrder(this.env, CONFIG.PAIR, closeSide, closeQty, leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
+                    await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
+                } else {
+                    console.log(`[Strategy] Time-stop: Skipping exchange order because qty ${closeQty} <= 1.0. Marking CLOSED in DB.`);
+                    await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP_SMALL_QTY_SYNC');
+                }
                 return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * leverage };
             }
 
@@ -892,7 +939,7 @@ export class StrategyService {
                 const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
                 const pnl = priceChangePct * leverage;
 
-                if (closeQty > 0) {
+                if (closeQty > 1) { // Only place order if quantity > 1.0
                     console.log(`[Strategy] TP${i + 1} hit at ${currentPrice} (target: ${level.price}), closing ${closeQty} (${level.pctOfPosition}%), PnL: ${pnl.toFixed(2)}%`);
 
                     await this._settlePortion(activeTrade, currentPrice, level.pctOfPosition / 100, isLong);
@@ -908,6 +955,12 @@ export class StrategyService {
                     level.executed = true;
                     // Sync memory to prevent stale checks in same run
                     activeTrade.tp_levels = JSON.stringify(tpLevels);
+                    await this.db.updateTPLevels(activeTrade.id, tpLevels);
+                } else if (closeQty > 0) {
+                    console.log(`[Strategy] TP${i + 1} skipped because closeQty ${closeQty} <= 1.0. Will close at next TP or SL.`);
+                    // We don't mark as executed so it can try again if position grows? 
+                    // Or just mark as executed to move on. Let's move on.
+                    level.executed = true;
                     await this.db.updateTPLevels(activeTrade.id, tpLevels);
                 }
 
@@ -1091,7 +1144,14 @@ export class StrategyService {
         // Case 2: No active trade in DB, but position exists on exchange (The "Orphan" Rescue)
         if (!activeTrade && dogePos) {
             console.log(`[Strategy] RECONCILE: Found orphaned position on exchange (${dogePos.quantity} ${dogePos.pair})! Rescuing...`);
-            return await this.rescueOrphanTrade(dogePos);
+            const rescueResult = await this.rescueOrphanTrade(dogePos);
+            if (rescueResult.status === 'SCANNING') {
+                // If rescue failed (history slow/missing), DON'T proceed to scouting. 
+                // Return a blocking status instead.
+                console.warn('[Strategy] RECONCILE: Rescue pending. Blocking scouting to avoid double positions.');
+                return { status: 'WAITING_FOR_SYNC', reason: 'Orphaned position detected but not yet rescued' };
+            }
+            return rescueResult;
         }
 
         return { status: 'SCANNING' };

@@ -44,8 +44,17 @@ export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, 
     });
     console.log("coindcx response: ", response);
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) {
+        const text = await response.text();
+        console.error(`[CoinDCX] placeOrder HTTP ${response.status}: ${text.slice(0, 200)}`);
+        return { error: `HTTP ${response.status}`, message: text.slice(0, 100) };
+    }
+    try {
+        return await response.json();
+    } catch (err) {
+        console.error(`[CoinDCX] placeOrder JSON parse error: ${err.message}`);
+        return { error: 'JSON_PARSE_ERROR', message: err.message };
+    }
 }
 
 export async function closePartialPosition(env, pair, side, quantity, leverage, marginCurrency = "INR") {
@@ -78,9 +87,14 @@ export async function closePartialPosition(env, pair, side, quantity, leverage, 
         },
         body: payload
     });
-    const data = await response.json();
-    console.log('[CoinDCX] Partial close result:', JSON.stringify(data));
-    return data;
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    try {
+        const data = await response.json();
+        console.log('[CoinDCX] Partial close result:', JSON.stringify(data));
+        return data;
+    } catch (e) {
+        return { error: 'JSON_PARSE_ERROR' };
+    }
 }
 
 function generateSignature(payload, secret) {
@@ -114,8 +128,12 @@ export async function cancelOrder(env, id) {
         body: payload
     });
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    try {
+        return await response.json();
+    } catch (e) {
+        return { error: 'JSON_PARSE_ERROR' };
+    }
 }
 
 export async function cancelAllOrders(env) {
@@ -142,8 +160,12 @@ export async function cancelAllOrders(env) {
         body: payload
     });
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    try {
+        return await response.json();
+    } catch (e) {
+        return { error: 'JSON_PARSE_ERROR' };
+    }
 }
 
 export async function getOpenPositions(env) {
@@ -220,29 +242,42 @@ export async function getAccountBalance(env) {
         body: payload
     });
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) return null;
+    try {
+        return await response.json();
+    } catch (e) {
+        return null;
+    }
 }
 
 export async function getFuturesWallets(env) {
-    const baseUrl = "https://api.coindcx.com";
-    const endpoint = "/exchange/v1/derivatives/futures/wallets";
+    const endpoints = [
+        "https://api.coindcx.com/exchange/v1/derivatives/futures/wallets",
+        "https://public.coindcx.com/exchange/v1/derivatives/futures/wallets"
+    ];
 
-    const timestamp = Date.now();
-    // For GET requests, the payload for signature is an empty string
-    const payload = "";
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
+    for (const url of endpoints) {
+        try {
+            const timestamp = Date.now();
+            const signature = generateSignature("", env.COINDCX_SECRET_KEY);
 
-    const response = await fetch(`${baseUrl}${endpoint}?timestamp=${timestamp}`, {
-        method: "GET",
-        headers: {
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
+            const response = await fetch(`${url}?timestamp=${timestamp}`, {
+                method: "GET",
+                headers: {
+                    "X-AUTH-APIKEY": env.COINDCX_API_KEY,
+                    "X-AUTH-SIGNATURE": signature
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (Array.isArray(data)) return data;
+            }
+        } catch (e) {
+            console.warn(`[CoinDCX] Wallet fetch failed for ${url}:`, e.message);
         }
-    });
-
-    const data = await response.json();
-    return data;
+    }
+    return null;
 }
 
 export async function getWalletBalances(env) {
@@ -268,8 +303,12 @@ export async function getWalletBalances(env) {
         body: payload
     });
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) return [];
+    try {
+        return await response.json();
+    } catch (e) {
+        return [];
+    }
 }
 export async function getOrders(env, status = null) {
     const baseUrl = "https://api.coindcx.com";
@@ -300,8 +339,12 @@ export async function getOrders(env, status = null) {
         body: payload
     });
 
-    const data = await response.json();
-    return data;
+    if (!response.ok) return null;
+    try {
+        return await response.json();
+    } catch (e) {
+        return null;
+    }
 }
 export async function getTradeHistory(env) {
     const baseUrl = "https://api.coindcx.com";
@@ -389,13 +432,17 @@ export async function getInstrumentDetails(pair) {
             try {
                 const response = await fetch(url);
                 if (response.ok) {
-                    const resJson = await response.json();
-                    if (Array.isArray(resJson)) {
-                        data = resJson.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair);
-                    } else if (resJson && typeof resJson === 'object') {
-                        data = resJson.pair === pair ? resJson : (resJson.data || resJson);
+                    try {
+                        const resJson = await response.json();
+                        if (Array.isArray(resJson)) {
+                            data = resJson.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair);
+                        } else if (resJson && typeof resJson === 'object') {
+                            data = resJson.pair === pair ? resJson : (resJson.data || resJson);
+                        }
+                        if (data) break;
+                    } catch (e) {
+                        console.error(`[CoinDCX] JSON parse error for ${url}`);
                     }
-                    if (data) break;
                 }
             } catch (innerErr) {
                 console.error(`[CoinDCX] Failed fetch for ${url}:`, innerErr.message);
@@ -407,8 +454,12 @@ export async function getInstrumentDetails(pair) {
             const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments?margin_currency_short_name[]=INR`;
             const listRes = await fetch(listUrl);
             if (listRes.ok) {
+            try {
                 const instrumentsList = await listRes.json();
                 data = Array.isArray(instrumentsList) ? instrumentsList.find(i => i.pair === pair) : null;
+            } catch (e) {
+                console.error('[CoinDCX] active_instruments JSON parse error');
+            }
             }
         }
 
@@ -422,6 +473,17 @@ export async function getInstrumentDetails(pair) {
         }
 
         console.error(`[CoinDCX] Could not find instrument details for ${pair} across all endpoints`);
+        
+        // Final fallback: Hardcoded defaults for common assets to prevent scouting failure
+        if (pair.includes('DOGE')) {
+            console.warn('[CoinDCX] Using hardcoded defaults for DOGE');
+            return {
+                maxLeverage: 20,
+                minQuantity: 2, // Changed from 1 to 2 to satisfy "greater than 1.0" requirement
+                stepSize: 1,
+                tickSize: 0.00001
+            };
+        }
         return null;
     } catch (e) {
         console.error('[CoinDCX] Error fetching instrument details:', e.message);
@@ -445,8 +507,8 @@ export async function getINRFuturesBalance(env) {
                 const locked = parseFloat(inrWallet.locked_balance || 0);
                 return balance - locked;
             }
+            console.error('[CoinDCX] INR wallet missing from futures list');
         }
-        console.error('[CoinDCX] No INR wallet found in futures wallets:', JSON.stringify(wallets));
         return null;
     } catch (e) {
         console.error('[CoinDCX] Error fetching INR futures balance:', e.message);
