@@ -845,20 +845,27 @@ export class StrategyService {
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
             const leverage = parseFloat(activeTrade.leverage);
 
+            // Parse setup type and score from the reason string since they aren't stored as columns
+            // Format: "RELATIVE_STRENGTH | Score:82 | BTC:breakout | ..."
+            const reasonStr = activeTrade.reason || '';
+            const parsedSetupType = reasonStr.split(' |')[0]?.trim() || 'UNKNOWN';
+            const scoreMatch = reasonStr.match(/Score:(\d+)/);
+            const parsedScore = scoreMatch ? parseInt(scoreMatch[1]) : 70;
+
             // Adaptive thresholds by setup type and score
             const timeStopMinutes = {
                 SWEEP_RECLAIM: 15,
                 TREND_CONTINUATION: 12,
                 RELATIVE_WEAKNESS: 10,
-                RELATIVE_STRENGTH: 10,
+                RELATIVE_STRENGTH: 12,
                 RANGE_REJECTION: 8,
             };
-            const baseTime = timeStopMinutes[activeTrade.setup_type] || 10;
-            const convictionMultiplier = (activeTrade.score || 70) >= 85 ? 1.5 : (activeTrade.score || 70) >= 75 ? 1.2 : 1.0;
+            const baseTime = timeStopMinutes[parsedSetupType] || 10;
+            const convictionMultiplier = parsedScore >= 85 ? 1.5 : parsedScore >= 75 ? 1.2 : 1.0;
             const maxAgeMs = baseTime * convictionMultiplier * 60 * 1000;
 
             if (ageMs > maxAgeMs && priceChangePct < 0.3) {
-                console.log(`[Strategy] Time-stop triggered: Setup=${activeTrade.setup_type}, Score=${activeTrade.score}, MaxAge=${(maxAgeMs / 60000).toFixed(1)}m, CurrentAge=${(ageMs / 60000).toFixed(1)}m`);
+                console.log(`[Strategy] Time-stop triggered: Setup=${parsedSetupType}, Score=${parsedScore}, MaxAge=${(maxAgeMs / 60000).toFixed(1)}m, CurrentAge=${(ageMs / 60000).toFixed(1)}m`);
                 
                 const closeQty = Math.abs(parseFloat(dogePos.quantity));
                 if (closeQty > 1.0) {
