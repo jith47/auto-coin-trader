@@ -1,60 +1,18 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition, getInstrumentDetails, getINRFuturesBalance, getTradeHistory } from './coindcx.js';
 import { fetchAllMarketData, computeIndicators } from './binance.js';
 const CONFIG = {
-    PAIR: 'B-DOGE_USDT',
+    PAIR: 'B-ETH_USDT',
     MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
-    DEFAULT_LEVERAGE: 5,
-    SL: {
-        SWEEP_RECLAIM: 0.9,
-        RELATIVE_WEAKNESS: 1.0,
-        RELATIVE_STRENGTH: 1.0,
-        TREND_CONTINUATION: 1.2,
-        RANGE_REJECTION: 1.0, // Same as RS for Setup D
-    },
-    SL_MIN: 0.8,
-    SL_MAX: 1.5,
-    MIN_RRR: 1.5,
-    SCORE_THRESHOLD: 70,
-    TREND_BTC_1H_MIN: 0.7, // Lowered from 1.0 for more sensitivity
-    KILL_CORR_BTC: 1.5,
-    KILL_CORR_DOGE: 0.3,
-    KILL_SESSION_EXTREME: 0.5,
-    KILL_OVEREXTEND: 5.0,
-    KILL_DAILY_EXHAUSTION: -4.0,
-
-    SWEEP_DOGE_PROXIMITY: 1.5,
-    RW_DOGE_1H_THRESHOLD: -0.1,
-    RS_DOGE_1H_THRESHOLD: 0.1,
-    RANGE_PROXIMITY: 1.5, // 1.5% distance for Setup D
-
-    DIVERGE_DISTANCE_MIN: 1.0,
-    TREND_DOGE_DIST_FROM_LOW_MIN: 0.8,
-    TREND_DOGE_DIST_FROM_HIGH_MIN: 1.5,
-
-    MAX_LOSSES_DAILY: 5,
-    MAX_DAILY_DRAWDOWN_PCT: 2.0,
-    MAX_ACCOUNT_DRAWDOWN_PCT: 30,
-
-    COOLDOWN_AFTER_LOSS_MS: 30 * 60 * 1000,
-    MAX_TRADES_PER_DAY: 10,
-
-    NYSE_OPEN_UTC: 13.5,
-    NYSE_CLOSE_UTC: 14.0,
-    STOP_WIDEN_FACTOR: 1.15,
-
-    MOCK_MODE: false, // Set to true for mock trading
+    DEFAULT_LEVERAGE: 2,
+    SL_PCT: 1.0,
+    TP_PCT: 1.5,
+    MIN_ACC_SCORE: 65,
+    COOLDOWN_AFTER_LOSS_MS: 60 * 60 * 1000,
+    MAX_TRADES_PER_DAY: 3,
+    MOCK_MODE: false,
     INITIAL_INR_BALANCE: 500,
-    MIN_BALANCE_INR: 50, // Safety floor — don't trade below this
-    USD_INR_RATE: 85, // Simple rate for conversion
-    TP_PROFILES: {
-        // R:R-based TP levels matching strategy doc
-        SWEEP_RECLAIM: [{ pctOfPosition: 80, rrMultiple: 1.5 }, { pctOfPosition: 20, rrMultiple: 2.5 }],
-        RELATIVE_WEAKNESS: [{ pctOfPosition: 50, rrMultiple: 0.8 }, { pctOfPosition: 50, rrMultiple: 1.5 }],
-        RELATIVE_STRENGTH: [{ pctOfPosition: 50, rrMultiple: 0.8 }, { pctOfPosition: 50, rrMultiple: 1.5 }],
-        TREND_CONTINUATION: [{ pctOfPosition: 50, rrMultiple: 1.5 }, { pctOfPosition: 30, rrMultiple: 2.0 }, { pctOfPosition: 20, trailing: true, trailingDistance: 0.4 }],
-        RANGE_REJECTION: [{ pctOfPosition: 50, rrMultiple: 0.8 }, { pctOfPosition: 50, rrMultiple: 1.5 }],
-    },
+    USD_INR_RATE: 85,
 };
 export class StrategyService {
     constructor(env) {
@@ -80,10 +38,10 @@ export class StrategyService {
                 CONFIG.MOCK_MODE ? Promise.resolve(null) : getInstrumentDetails(CONFIG.PAIR),
             ]);
 
-            // Extract current DOGE price from kline data for sync/management fallback
-            const dogeKlines = data?.doge?.klines1m;
-            const currentPrice = (Array.isArray(dogeKlines) && dogeKlines.length > 0)
-                ? dogeKlines[dogeKlines.length - 1].close
+            // Extract current ETH price from kline data for sync/management fallback
+            const ethKlines = data?.eth?.klines1m;
+            const currentPrice = (Array.isArray(ethKlines) && ethKlines.length > 0)
+                ? ethKlines[ethKlines.length - 1].close
                 : 0;
 
             // 2. Reconciliation & Sync
@@ -121,7 +79,7 @@ export class StrategyService {
                 console.log(`[Strategy] Instrument: maxLeverage=${instrumentInfo.maxLeverage}, using=${this.leverage}x, minQty=${this.minQuantity}, step=${this.stepSize}, tick=${this.tickSize}`);
             } else {
                 this.leverage = CONFIG.DEFAULT_LEVERAGE;
-                this.minQuantity = 2; // Default to 2 for DOGE safety
+                this.minQuantity = 2; // Default to 2 for ETH safety
                 this.stepSize = 1;
                 this.tickSize = 0.00001;
                 console.log(`[Strategy] Using default leverage: ${this.leverage}x`);
@@ -131,19 +89,19 @@ export class StrategyService {
 
             console.log('[Strategy] Indicators:', JSON.stringify({
                 btcPrice: this.indicators.btc.price?.toFixed(0),
-                dogePrice: this.indicators.doge.price?.toFixed(5),
+                ethPrice: this.indicators.eth.price?.toFixed(5),
                 btcCvd: this.indicators.btc.cvdDirection + '/' + this.indicators.btc.cvdSlope,
-                dogeCvd: this.indicators.doge.cvdDirection + '/' + this.indicators.doge.cvdSlope,
+                ethCvd: this.indicators.eth.cvdDirection + '/' + this.indicators.eth.cvdSlope,
                 btc1h: this.indicators.btc.change1h?.toFixed(2) + '%',
                 btc5m: this.indicators.btc.change5m?.toFixed(2) + '%',
-                doge1h: this.indicators.doge.change1h?.toFixed(2) + '%',
-                doge5m: this.indicators.doge.change5m?.toFixed(2) + '%',
-                relStrength: this.indicators.doge.relativeStrength,
+                eth1h: this.indicators.eth.change1h?.toFixed(2) + '%',
+                eth5m: this.indicators.eth.change5m?.toFixed(2) + '%',
+                relStrength: this.indicators.eth.relativeStrength,
                 btcStructure: this.indicators.btc.structure,
                 btcKeyLevel: this.indicators.btc.keyLevel,
                 sectorBias: this.indicators.sector.bias,
-                dogeRange: this.indicators.doge.dogeRange?.toFixed(1) + '%',
-                volRatio: this.indicators.doge.volumeRatio?.toFixed(2),
+                ethRange: this.indicators.eth.ethRange?.toFixed(1) + '%',
+                volRatio: this.indicators.eth.volumeRatio?.toFixed(2),
                 utcHour: this.indicators.session.hour?.toFixed(1),
             }));
 
@@ -240,28 +198,28 @@ export class StrategyService {
     async checkKillSwitches(ind, setup) {
         const isLong = setup.direction === 'BUY';
 
-        // 1. Correlation Divergence (BTC crashing while DOGE tries to bounce)
-        if (isLong && ind.btc.change1h < -CONFIG.KILL_CORR_BTC && ind.doge.change1h > CONFIG.KILL_CORR_DOGE) {
-            return { triggered: true, reason: 'BTC crashing; DOGE bounce likely fake' };
+        // 1. Correlation Divergence (BTC crashing while ETH tries to bounce)
+        if (isLong && ind.btc.change1h < -CONFIG.KILL_CORR_BTC && ind.eth.change1h > CONFIG.KILL_CORR_ETH) {
+            return { triggered: true, reason: 'BTC crashing; ETH bounce likely fake' };
         }
 
         // 2. Session Extreme "Hole" Filter
-        if (isLong && ind.doge.distFromHigh < CONFIG.KILL_SESSION_EXTREME) {
-            return { triggered: true, reason: 'DOGE at session high' };
+        if (isLong && ind.eth.distFromHigh < CONFIG.KILL_SESSION_EXTREME) {
+            return { triggered: true, reason: 'ETH at session high' };
         }
-        if (!isLong && ind.doge.distFromLow < CONFIG.KILL_SESSION_EXTREME) {
-            return { triggered: true, reason: 'DOGE at session low' };
+        if (!isLong && ind.eth.distFromLow < CONFIG.KILL_SESSION_EXTREME) {
+            return { triggered: true, reason: 'ETH at session low' };
         }
 
         // 3. Falling CVD on Longs (Standard distribution)
-        if (isLong && (ind.btc.cvdDirection === 'falling' || ind.doge.cvdDirection === 'falling')) {
+        if (isLong && (ind.btc.cvdDirection === 'falling' || ind.eth.cvdDirection === 'falling')) {
             return { triggered: true, reason: 'Falling CVD on LONG attempt' };
         }
 
-        // 4. Overextension Warning (DOGE moved too far relative to BTC)
-        const dailyDiff = ind.doge.dailyChange - ind.btc.dailyChange;
+        // 4. Overextension Warning (ETH moved too far relative to BTC)
+        const dailyDiff = ind.eth.dailyChange - ind.btc.dailyChange;
         if (isLong && dailyDiff > CONFIG.KILL_OVEREXTEND) {
-            return { triggered: true, reason: `DOGE overextended vs BTC (+${dailyDiff.toFixed(1)}%)` };
+            return { triggered: true, reason: `ETH overextended vs BTC (+${dailyDiff.toFixed(1)}%)` };
         }
 
         // 5. Macro Sector Bias (Optional but protective)
@@ -270,8 +228,8 @@ export class StrategyService {
         }
 
         // 6. Exhaustion Filter for Shorts (Fix 4)
-        if (!isLong && ind.doge.dailyChange < CONFIG.KILL_DAILY_EXHAUSTION) {
-            return { triggered: true, reason: `DOGE already down ${ind.doge.dailyChange}% (Exhaustion)` };
+        if (!isLong && ind.eth.dailyChange < CONFIG.KILL_DAILY_EXHAUSTION) {
+            return { triggered: true, reason: `ETH already down ${ind.eth.dailyChange}% (Exhaustion)` };
         }
 
         return { triggered: false };
@@ -281,10 +239,10 @@ export class StrategyService {
         console.log('[Strategy] Market State:', JSON.stringify({
             btcStructure: ind.btc.structure,
             btcCvd: ind.btc.cvdDirection + '/' + ind.btc.cvdSlope,
-            dogeCvd: ind.doge.cvdDirection + '/' + ind.doge.cvdSlope,
-            relStrength: ind.doge.relativeStrength,
-            dogeDistHigh: ind.doge.distFromHigh?.toFixed(2) + '%',
-            dogeDistLow: ind.doge.distFromLow?.toFixed(2) + '%',
+            ethCvd: ind.eth.cvdDirection + '/' + ind.eth.cvdSlope,
+            relStrength: ind.eth.relativeStrength,
+            ethDistHigh: ind.eth.distFromHigh?.toFixed(2) + '%',
+            ethDistLow: ind.eth.distFromLow?.toFixed(2) + '%',
             sector: ind.sector.bias,
             liquidations: ind.liquidations.recentEvent,
         }));
@@ -309,9 +267,9 @@ export class StrategyService {
         const longChecks = {
             btcStructure: isSweep || isSupport,
             btcCvdRising: ind.btc.cvdDirection === 'rising',
-            dogeNearLow: ind.doge.distFromLow <= CONFIG.SWEEP_DOGE_PROXIMITY,
-            dogeCvdNotFalling: ind.doge.cvdDirection !== 'falling',
-            dogeNotWeaker: ind.doge.relativeStrength !== 'weaker',
+            ethNearLow: ind.eth.distFromLow <= CONFIG.SWEEP_ETH_PROXIMITY,
+            ethCvdNotFalling: ind.eth.cvdDirection !== 'falling',
+            ethNotWeaker: ind.eth.relativeStrength !== 'weaker',
         };
         console.log('[Strategy] Setup A (BUY) checks:', JSON.stringify(longChecks));
         if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
@@ -323,9 +281,9 @@ export class StrategyService {
         const shortChecks = {
             btcStructure: isSqueeze || isRejection,
             btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            dogeNearHigh: ind.doge.distFromHigh <= CONFIG.SWEEP_DOGE_PROXIMITY,
-            dogeCvdNotRising: ind.doge.cvdDirection !== 'rising',
-            dogeNotStronger: ind.doge.relativeStrength !== 'stronger',
+            ethNearHigh: ind.eth.distFromHigh <= CONFIG.SWEEP_ETH_PROXIMITY,
+            ethCvdNotRising: ind.eth.cvdDirection !== 'rising',
+            ethNotStronger: ind.eth.relativeStrength !== 'stronger',
         };
         console.log('[Strategy] Setup A (SELL) checks:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
@@ -336,9 +294,9 @@ export class StrategyService {
         // Hard gates: divergence confirmed + structure not bullish (4 gates)
         const checks = {
             btcPositive: ind.btc.change1h > 0,
-            dogeNegative: ind.doge.change1h < CONFIG.RW_DOGE_1H_THRESHOLD,
-            dogeWeaker: ind.doge.relativeStrength === 'weaker',
-            dogeNearHigh: ind.doge.distFromHigh < 1.5, // Positional filter: don't short the bottom
+            ethNegative: ind.eth.change1h < CONFIG.RW_ETH_1H_THRESHOLD,
+            ethWeaker: ind.eth.relativeStrength === 'weaker',
+            ethNearHigh: ind.eth.distFromHigh < 1.5, // Positional filter: don't short the bottom
             notBtcSupport: ind.btc.structure !== 'support_holding',
             notBtcBullish: !['breakout', 'sweep_reclaim_bullish', 'support_holding'].includes(ind.btc.structure), // Don't fight the king
         };
@@ -350,9 +308,9 @@ export class StrategyService {
         // Hard gates: divergence confirmed + structure not bearish (4 gates)
         const checks = {
             btcNeutral: ind.btc.change1h < 0.25, // Relaxed from strict negative (< 0)
-            dogePositive: ind.doge.change1h > CONFIG.RS_DOGE_1H_THRESHOLD,
-            dogeStronger: ind.doge.relativeStrength === 'stronger',
-            dogeNearLow: ind.doge.distFromLow < 1.5, // Positional filter: don't long the top
+            ethPositive: ind.eth.change1h > CONFIG.RS_ETH_1H_THRESHOLD,
+            ethStronger: ind.eth.relativeStrength === 'stronger',
+            ethNearLow: ind.eth.distFromLow < 1.5, // Positional filter: don't long the top
             notBtcRejection: ind.btc.structure !== 'rejection',
             notBtcBearish: !['breakdown', 'sweep_reclaim_bearish', 'rejection'].includes(ind.btc.structure), // Don't fight the king
         };
@@ -361,26 +319,26 @@ export class StrategyService {
         return null;
     }
     checkTrendContinuation(ind) {
-        // LONG — Hard gates: BTC strong trend + CVD steep/gradual + DOGE stronger (4 gates)
+        // LONG — Hard gates: BTC strong trend + CVD steep/gradual + ETH stronger (4 gates)
         const longChecks = {
             btc1hStrong: ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN,
             btcCvdRising: ind.btc.cvdDirection === 'rising',
             btcNotFlat: ind.btc.cvdSlope !== 'flat',
-            dogeStronger: ind.doge.relativeStrength === 'stronger',
-            dogeCvdRising: ind.doge.cvdDirection === 'rising',
-            dogeNotAtHigh: ind.doge.distFromHigh > 1.5, // Don't long the top
+            ethStronger: ind.eth.relativeStrength === 'stronger',
+            ethCvdRising: ind.eth.cvdDirection === 'rising',
+            ethNotAtHigh: ind.eth.distFromHigh > 1.5, // Don't long the top
         };
         console.log('[Strategy] Setup C (BUY) checks:', JSON.stringify(longChecks));
         if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
 
-        // SHORT — Hard gates: BTC strong downtrend + CVD + DOGE weaker (4 gates)
+        // SHORT — Hard gates: BTC strong downtrend + CVD + ETH weaker (4 gates)
         const shortChecks = {
             btc1hWeak: ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN,
             btcCvdFalling: ind.btc.cvdDirection === 'falling',
             btcNotFlat: ind.btc.cvdSlope !== 'flat',
-            dogeWeaker: ind.doge.relativeStrength === 'weaker',
-            dogeCvdFalling: ind.doge.cvdDirection === 'falling',
-            dogeNotAtLow: ind.doge.distFromLow > 1.5, // Don't short the bottom
+            ethWeaker: ind.eth.relativeStrength === 'weaker',
+            ethCvdFalling: ind.eth.cvdDirection === 'falling',
+            ethNotAtLow: ind.eth.distFromLow > 1.5, // Don't short the bottom
         };
         console.log('[Strategy] Setup C (SELL) checks:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
@@ -388,21 +346,21 @@ export class StrategyService {
         return null;
     }
     checkRangeRejection(ind) {
-        // Setup D: DOGE trades its OWN key levels independently if BTC is neutral
+        // Setup D: ETH trades its OWN key levels independently if BTC is neutral
 
-        // SELL Case: DOGE at 24h High + Rejection
+        // SELL Case: ETH at 24h High + Rejection
         const shortChecks = {
-            dogeAtResistance: ind.doge.distFromHigh <= CONFIG.RANGE_PROXIMITY,
-            dogeStructure: ind.doge.structure === 'rejection' || ind.doge.structure === 'sweep_reclaim_bearish',
+            ethAtResistance: ind.eth.distFromHigh <= CONFIG.RANGE_PROXIMITY,
+            ethStructure: ind.eth.structure === 'rejection' || ind.eth.structure === 'sweep_reclaim_bearish',
             btcNotUltraBullish: ind.btc.change1h < 0.5, // Allow shorting range if BTC isn't vertical
         };
         console.log('[Strategy] Setup D (SELL) checks:', JSON.stringify(shortChecks));
         if (Object.values(shortChecks).every(v => v)) return { type: 'RANGE_REJECTION', direction: 'SELL' };
 
-        // BUY Case: DOGE at 24h Low + Support Hold
+        // BUY Case: ETH at 24h Low + Support Hold
         const longChecks = {
-            dogeAtSupport: ind.doge.distFromLow <= CONFIG.RANGE_PROXIMITY,
-            dogeStructure: ind.doge.structure === 'support_holding' || ind.doge.structure === 'sweep_reclaim_bullish',
+            ethAtSupport: ind.eth.distFromLow <= CONFIG.RANGE_PROXIMITY,
+            ethStructure: ind.eth.structure === 'support_holding' || ind.eth.structure === 'sweep_reclaim_bullish',
             btcNotUltraBearish: ind.btc.change1h > -0.5, // Allow buying support if BTC isn't freefalling
         };
         console.log('[Strategy] Setup D (BUY) checks:', JSON.stringify(longChecks));
@@ -437,22 +395,22 @@ export class StrategyService {
             }
         }
 
-        // 3. DOGE CVD aligned with direction (12) — single check, no double count
-        if ((isLong && ind.doge.cvdDirection === 'rising') || (!isLong && ind.doge.cvdDirection === 'falling')) {
+        // 3. ETH CVD aligned with direction (12) — single check, no double count
+        if ((isLong && ind.eth.cvdDirection === 'rising') || (!isLong && ind.eth.cvdDirection === 'falling')) {
             score += 12;
-        } else if ((isLong && ind.doge.cvdDirection === 'falling') || (!isLong && ind.doge.cvdDirection === 'rising')) {
-            score -= 15; // Penalty for DOGE CVD opposing trade direction
-            console.log(`[Strategy] CVD Contradiction penalty: -15 (DOGE CVD: ${ind.doge.cvdDirection})`);
+        } else if ((isLong && ind.eth.cvdDirection === 'falling') || (!isLong && ind.eth.cvdDirection === 'rising')) {
+            score -= 15; // Penalty for ETH CVD opposing trade direction
+            console.log(`[Strategy] CVD Contradiction penalty: -15 (ETH CVD: ${ind.eth.cvdDirection})`);
         }
 
         // 4. Relative strength favorable (15)
-        if ((isLong && (ind.doge.relativeStrength === 'stronger' || ind.doge.relativeStrength === 'aligned')) ||
-            (!isLong && (ind.doge.relativeStrength === 'weaker' || ind.doge.relativeStrength === 'aligned'))) {
+        if ((isLong && (ind.eth.relativeStrength === 'stronger' || ind.eth.relativeStrength === 'aligned')) ||
+            (!isLong && (ind.eth.relativeStrength === 'weaker' || ind.eth.relativeStrength === 'aligned'))) {
             score += 15;
         }
 
         // 5. Position in range — near favorable extreme (15/10)
-        const favorableDistance = isLong ? ind.doge.distFromLow : ind.doge.distFromHigh;
+        const favorableDistance = isLong ? ind.eth.distFromLow : ind.eth.distFromHigh;
         if (favorableDistance <= 1) {
             score += 15;
         } else if (favorableDistance <= 2) {
@@ -477,14 +435,14 @@ export class StrategyService {
             score += 5;
         }
         // 9. Volume penalty (-10 when thin market)
-        const volRatio = ind.doge.volumeRatio || 1.0;
+        const volRatio = ind.eth.volumeRatio || 1.0;
         if (volRatio < 0.5) {
             score -= 10;
             console.log(`[Strategy] Volume penalty: -10 (ratio: ${volRatio.toFixed(2)})`);
         }
         
         // 10. Anti-chase Momentum Penalty (-10 when move already happened)
-        const recentMove5m = Math.abs(ind.doge.change5m || 0);
+        const recentMove5m = Math.abs(ind.eth.change5m || 0);
         if (recentMove5m > 0.5) {
             score -= 10;
             console.log(`[Strategy] Anti-chase penalty: -10 (5m move: ${recentMove5m.toFixed(2)}%)`);
@@ -493,11 +451,11 @@ export class StrategyService {
         return score;
     }
     async buildSignal(ind, setup, score) {
-        const entry = ind.doge.price;
+        const entry = ind.eth.price;
         const slPercent = CONFIG.SL[setup.type] || 0.8;
 
         // Fix 4: Volatility-adaptive SL + NYSE Stop Widening
-        const volatilityMultiplier = Math.max(0.8, Math.min(1.5, (ind.doge.dogeRange || 2.0) / 3.0));
+        const volatilityMultiplier = Math.max(0.8, Math.min(1.5, (ind.eth.ethRange || 2.0) / 3.0));
         let adjustedSL = slPercent * volatilityMultiplier;
 
         const utcHour = ind.session.hour;
@@ -553,7 +511,7 @@ export class StrategyService {
         const quantity = await this.calculateQuantity(entry, sl, inrBalance);
         return {
             decision: setup.direction,
-            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.doge.cvdDirection} | RS:${ind.doge.relativeStrength}`,
+            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
             orderType: 'MARKET',
             quantity,
             leverage: this.leverage,
@@ -619,15 +577,15 @@ export class StrategyService {
             quantity = minQty;
         }
         
-        // Final safety check for DOGE: CoinDCX requires > 1.0
-        if (CONFIG.PAIR.includes('DOGE') && quantity < 2) {
-            console.log('[Strategy] Safety: Clamping DOGE quantity to 2');
+        // Final safety check for ETH: CoinDCX requires > 1.0
+        if (CONFIG.PAIR.includes('ETH') && quantity < 2) {
+            console.log('[Strategy] Safety: Clamping ETH quantity to 2');
             quantity = 2;
         }
         
-        // Final safety check for DOGE
-        if (CONFIG.PAIR.includes('DOGE') && quantity <= 1) {
-            console.log('[Strategy] Safety: Clamping DOGE quantity to 2');
+        // Final safety check for ETH
+        if (CONFIG.PAIR.includes('ETH') && quantity <= 1) {
+            console.log('[Strategy] Safety: Clamping ETH quantity to 2');
             quantity = 2;
         }
 
@@ -740,7 +698,7 @@ export class StrategyService {
             currentPrice = asset.includes('BTC') ? this.indicators?.btc?.price :
                 asset.includes('ETH') ? this.indicators?.eth?.price :
                     asset.includes('SOL') ? this.indicators?.sol?.price :
-                        this.indicators?.doge?.price;
+                        this.indicators?.eth?.price;
         }
 
         const entryPrice = parseFloat(activeTrade.price);
@@ -825,12 +783,12 @@ export class StrategyService {
                 console.log(`[Strategy] Sync: Fetched ${Array.isArray(positions) ? positions.length : 0} positions from exchange.`);
             }
 
-            const dogePos = Array.isArray(positions)
-                ? positions.find(p => (p.pair === CONFIG.PAIR || p.symbol === CONFIG.PAIR || (p.symbol && p.symbol.includes("DOGE"))) && Math.abs(parseFloat(p.quantity || 0)) > 0.001)
+            const ethPos = Array.isArray(positions)
+                ? positions.find(p => (p.pair === CONFIG.PAIR || p.symbol === CONFIG.PAIR || (p.symbol && p.symbol.includes("ETH"))) && Math.abs(parseFloat(p.quantity || 0)) > 0.001)
                 : null;
 
-            if (dogePos) {
-                console.log(`[Strategy] Sync: Found active position for ${CONFIG.PAIR} with qty ${dogePos.quantity}`);
+            if (ethPos) {
+                console.log(`[Strategy] Sync: Found active position for ${CONFIG.PAIR} with qty ${ethPos.quantity}`);
             } else {
                 console.log(`[Strategy] Sync: No active position found for ${CONFIG.PAIR} on exchange.`);
                 console.log('[Strategy] Position closed on exchange');
@@ -839,47 +797,7 @@ export class StrategyService {
                 return { status: 'TRADE_CLOSED', reason: 'EXCHANGE_CLOSED' };
             }
 
-            // Fix 4: Adaptive Time Stop
-            const now = Date.now();
-            const ageMs = now - activeTrade.timestamp;
-            const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
-            const leverage = parseFloat(activeTrade.leverage);
-
-            // Parse setup type and score from the reason string since they aren't stored as columns
-            // Format: "RELATIVE_STRENGTH | Score:82 | BTC:breakout | ..."
-            const reasonStr = activeTrade.reason || '';
-            const parsedSetupType = reasonStr.split(' |')[0]?.trim() || 'UNKNOWN';
-            const scoreMatch = reasonStr.match(/Score:(\d+)/);
-            const parsedScore = scoreMatch ? parseInt(scoreMatch[1]) : 70;
-
-            // Adaptive thresholds by setup type and score
-            const timeStopMinutes = {
-                SWEEP_RECLAIM: 15,
-                TREND_CONTINUATION: 12,
-                RELATIVE_WEAKNESS: 10,
-                RELATIVE_STRENGTH: 12,
-                RANGE_REJECTION: 8,
-            };
-            const baseTime = timeStopMinutes[parsedSetupType] || 10;
-            const convictionMultiplier = parsedScore >= 85 ? 1.5 : parsedScore >= 75 ? 1.2 : 1.0;
-            const maxAgeMs = baseTime * convictionMultiplier * 60 * 1000;
-
-            if (ageMs > maxAgeMs && priceChangePct < 0.3) {
-                console.log(`[Strategy] Time-stop triggered: Setup=${parsedSetupType}, Score=${parsedScore}, MaxAge=${(maxAgeMs / 60000).toFixed(1)}m, CurrentAge=${(ageMs / 60000).toFixed(1)}m`);
-                
-                const closeQty = Math.abs(parseFloat(dogePos.quantity));
-                if (closeQty > 1.0) {
-                    const closeSide = isLong ? 'SELL' : 'BUY';
-                    await placeOrder(this.env, CONFIG.PAIR, closeSide, closeQty, leverage, null, null, 'MARKET', null, CONFIG.MARGIN_CURRENCY);
-                    await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
-                } else {
-                    console.log(`[Strategy] Time-stop: Skipping exchange order because qty ${closeQty} <= 1.0. Marking CLOSED in DB.`);
-                    await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP_SMALL_QTY_SYNC');
-                }
-                return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * leverage };
-            }
-
-            const currentQty = parseFloat(dogePos.quantity);
+            const currentQty = parseFloat(ethPos.quantity);
             const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
             if (tpLevels.length > 0) {
                 const tpResult = await this.checkAndExecutePartialTP(
@@ -889,7 +807,7 @@ export class StrategyService {
             }
 
             console.log(`[Strategy] Position still open: qty=${currentQty} price=${currentPrice}`);
-            return { status: 'IN_TRADE', position: dogePos };
+            return { status: 'IN_TRADE', position: ethPos };
         } catch (err) {
             console.error('[Strategy] Live trade management error:', err.message);
             return { status: 'MANAGE_ERROR', error: err.message };
@@ -1134,13 +1052,13 @@ export class StrategyService {
             return { status: 'SCANNING' };
         }
 
-        const dogePos = Array.isArray(positions)
-            ? positions.find(p => (p.pair === CONFIG.PAIR || p.symbol === CONFIG.PAIR || (p.symbol && p.symbol.includes("DOGE"))) && Math.abs(parseFloat(p.quantity || 0)) > 0.001)
+        const ethPos = Array.isArray(positions)
+            ? positions.find(p => (p.pair === CONFIG.PAIR || p.symbol === CONFIG.PAIR || (p.symbol && p.symbol.includes("ETH"))) && Math.abs(parseFloat(p.quantity || 0)) > 0.001)
             : null;
 
         // Case 1: Active trade in DB
         if (activeTrade && (activeTrade.status === 'OPEN' || activeTrade.status === 'FILLED')) {
-            if (!dogePos) {
+            if (!ethPos) {
                 // SIMPLE SYNC: Position exists in DB but GONE on exchange -> Settle from history
                 console.log(`[Strategy] RECONCILE: DB trade ${activeTrade.id} (${activeTrade.order_id}) is OPEN but exchange position GONE. Settling from history...`);
                 return await this.settleFromExchangeHistory(activeTrade, currentPriceFallback);
@@ -1149,9 +1067,9 @@ export class StrategyService {
         }
 
         // Case 2: No active trade in DB, but position exists on exchange (The "Orphan" Rescue)
-        if (!activeTrade && dogePos) {
-            console.log(`[Strategy] RECONCILE: Found orphaned position on exchange (${dogePos.quantity} ${dogePos.pair})! Rescuing...`);
-            const rescueResult = await this.rescueOrphanTrade(dogePos);
+        if (!activeTrade && ethPos) {
+            console.log(`[Strategy] RECONCILE: Found orphaned position on exchange (${ethPos.quantity} ${ethPos.pair})! Rescuing...`);
+            const rescueResult = await this.rescueOrphanTrade(ethPos);
             if (rescueResult.status === 'SCANNING') {
                 // If rescue failed (history slow/missing), DON'T proceed to scouting. 
                 // Return a blocking status instead.
@@ -1223,7 +1141,7 @@ export class StrategyService {
         }
     }
 
-    async rescueOrphanTrade(dogePos) {
+    async rescueOrphanTrade(ethPos) {
         try {
             // Fetch trade history to find the entry details
             const history = await getTradeHistory(this.env);
@@ -1231,14 +1149,14 @@ export class StrategyService {
 
             const matches = Array.isArray(history)
                 ? history.filter(t => {
-                    const matchPair = (t.pair === dogePos.pair || t.symbol === dogePos.pair || t.pair === CONFIG.PAIR || t.symbol === CONFIG.PAIR);
-                    const matchSide = (t.side === dogePos.side || t.order_side === dogePos.side);
+                    const matchPair = (t.pair === ethPos.pair || t.symbol === ethPos.pair || t.pair === CONFIG.PAIR || t.symbol === CONFIG.PAIR);
+                    const matchSide = (t.side === ethPos.side || t.order_side === ethPos.side);
                     return matchPair && matchSide;
                 })
                 : [];
 
             if (matches.length === 0) {
-                console.error(`[Strategy] RECONCILE: Could not find entry details in history for orphaned trade. Positions: ${JSON.stringify(dogePos)}, HistoryCount: ${Array.isArray(history) ? history.length : 0}`);
+                console.error(`[Strategy] RECONCILE: Could not find entry details in history for orphaned trade. Positions: ${JSON.stringify(ethPos)}, HistoryCount: ${Array.isArray(history) ? history.length : 0}`);
                 if (Array.isArray(history) && history.length > 0) {
                     console.log(`[Strategy] RECONCILE: Sample history item: ${JSON.stringify(history[0])}`);
                 }
@@ -1254,11 +1172,11 @@ export class StrategyService {
                 reason: '[RECOVERED] Orphan trade fixed by reconciliation engine',
                 asset: latestTrade.pair,
                 entry: parseFloat(latestTrade.price),
-                quantity: parseFloat(dogePos.quantity), // Use current actual qty
+                quantity: parseFloat(ethPos.quantity), // Use current actual qty
                 leverage: parseFloat(latestTrade.leverage || 5),
                 status: 'OPEN',
                 orderId: latestTrade.order_id,
-                entryValueInr: entryValueInr || (parseFloat(latestTrade.price) * parseFloat(dogePos.quantity) / (latestTrade.leverage || 5)) * 85,
+                entryValueInr: entryValueInr || (parseFloat(latestTrade.price) * parseFloat(ethPos.quantity) / (latestTrade.leverage || 5)) * 85,
                 timestamp: new Date(latestTrade.created_at).getTime() || Date.now()
             };
 

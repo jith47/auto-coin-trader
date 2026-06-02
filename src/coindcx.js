@@ -1,13 +1,55 @@
 import crypto from 'node:crypto';
 
+function generateSignature(payload, secret) {
+    if (!secret) {
+        throw new Error('CoinDCX Secret Key is missing in environment (env.COINDCX_SECRET_KEY)');
+    }
+    return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+}
+
+async function fetchWithFallback(env, endpointPath, body = {}) {
+    const baseUrls = ["https://api.coindcx.com", "https://public.coindcx.com"];
+    
+    // Auto-inject or update timestamp to ensure signature validity
+    body.timestamp = body.timestamp || Date.now();
+    
+    const payload = JSON.stringify(body);
+    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
+
+    let lastStatus = 0;
+    let lastText = "";
+
+    for (const baseUrl of baseUrls) {
+        const url = baseUrl + endpointPath;
+        try {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-AUTH-APIKEY": env.COINDCX_API_KEY,
+                    "X-AUTH-SIGNATURE": signature
+                },
+                body: payload
+            });
+
+            if (response.ok) {
+                return { ok: true, data: await response.json(), url };
+            } else {
+                lastStatus = response.status;
+                lastText = await response.text();
+                console.error(`[CoinDCX] ${endpointPath} HTTP ${lastStatus} on ${baseUrl}: ${lastText.slice(0, 100)}`);
+            }
+        } catch (err) {
+            console.error(`[CoinDCX] ${endpointPath} fetch error on ${baseUrl}: ${err.message}`);
+        }
+    }
+    return { ok: false, status: lastStatus, text: lastText };
+}
+
 export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, takeProfit, orderType, price, marginCurrency = "USDT") {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/orders/create";
 
-    const timestamp = Date.now();
-
     const body = {
-        "timestamp": timestamp,
         "order": {
             "side": side.toLowerCase(), // "buy" or "sell"
             "pair": pair, // e.g., "B-DOGE_USDT"
@@ -15,11 +57,10 @@ export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, 
             "total_quantity": quantity, // e.g., 0.001
             "leverage": leverage,
             "notification": "no_notification",
-            "position_margin_type": "isolated", // FIX: Must use isolated margin for INR
-            "margin_currency_short_name": marginCurrency, // FIX: String, not array
+            "position_margin_type": "isolated", // Isolated margin for safety
+            "margin_currency_short_name": marginCurrency,
             "stop_loss_price": stopLoss,
             "take_profit_price": takeProfit,
-            // Sub-variants for compatibility with different futures API versions
             "stop_loss": stopLoss,
             "take_profit": takeProfit
         }
@@ -29,40 +70,19 @@ export async function placeOrder(env, pair, side, quantity, leverage, stopLoss, 
         body.order.price = price;
     }
 
-    const payload = JSON.stringify(body);
-    console.log("payload: ", payload)
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
+    console.log("payload: ", JSON.stringify(body));
+    const res = await fetchWithFallback(env, endpoint, body);
+    console.log("coindcx response: ", JSON.stringify(res));
 
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-    console.log("coindcx response: ", response);
-
-    if (!response.ok) {
-        const text = await response.text();
-        console.error(`[CoinDCX] placeOrder HTTP ${response.status}: ${text.slice(0, 200)}`);
-        return { error: `HTTP ${response.status}`, message: text.slice(0, 100) };
+    if (!res.ok) {
+        return { error: `HTTP ${res.status}`, message: res.text.slice(0, 100) };
     }
-    try {
-        return await response.json();
-    } catch (err) {
-        console.error(`[CoinDCX] placeOrder JSON parse error: ${err.message}`);
-        return { error: 'JSON_PARSE_ERROR', message: err.message };
-    }
+    return res.data;
 }
 
 export async function closePartialPosition(env, pair, side, quantity, leverage, marginCurrency = "INR") {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/orders/create";
-    const timestamp = Date.now();
     const body = {
-        "timestamp": timestamp,
         "order": {
             "side": side.toLowerCase(),
             "pair": pair,
@@ -75,142 +95,53 @@ export async function closePartialPosition(env, pair, side, quantity, leverage, 
             "reduce_only": true,
         }
     };
-    const payload = JSON.stringify(body);
     console.log(`[CoinDCX] Partial close: ${side} ${quantity} ${pair}`);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-    if (!response.ok) return { error: `HTTP ${response.status}` };
-    try {
-        const data = await response.json();
-        console.log('[CoinDCX] Partial close result:', JSON.stringify(data));
-        return data;
-    } catch (e) {
-        return { error: 'JSON_PARSE_ERROR' };
-    }
-}
-
-function generateSignature(payload, secret) {
-    if (!secret) {
-        throw new Error('CoinDCX Secret Key is missing in environment (env.COINDCX_SECRET_KEY)');
-    }
-    return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    console.log('[CoinDCX] Partial close result:', JSON.stringify(res.data));
+    return res.data;
 }
 
 export async function cancelOrder(env, id) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/orders/cancel";
-
-    const timestamp = Math.floor(Date.now());
-
     const body = {
-        "timestamp": timestamp,
         "id": id
     };
-
-    const payload = JSON.stringify(body);
-    const signature = await generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-
-    if (!response.ok) return { error: `HTTP ${response.status}` };
-    try {
-        return await response.json();
-    } catch (e) {
-        return { error: 'JSON_PARSE_ERROR' };
-    }
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return res.data;
 }
 
 export async function cancelAllOrders(env) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/positions/cancel_all_open_orders";
-
-    const timestamp = Math.floor(Date.now());
-
     const body = {
-        "timestamp": timestamp,
         "margin_currency_short_name": ["USDT"]
     };
-
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-
-    if (!response.ok) return { error: `HTTP ${response.status}` };
-    try {
-        return await response.json();
-    } catch (e) {
-        return { error: 'JSON_PARSE_ERROR' };
-    }
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return res.data;
 }
 
 export async function getOpenPositions(env) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/positions";
-
-    const timestamp = Math.floor(Date.now());
-
     const body = {
-        "timestamp": timestamp,
         "page": "1",
         "size": "50", // Fetch enough positions
         "margin_currency_short_name": ["USDT", "INR"]
     };
 
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    let data;
-    try {
-        const response = await fetch(baseUrl + endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-                "X-AUTH-SIGNATURE": signature
-            },
-            body: payload
-        });
-
-        if (!response.ok) {
-            console.error(`[CoinDCX] getOpenPositions HTTP ${response.status}`);
-            return null;
-        }
-
-        data = await response.json();
-    } catch (err) {
-        console.error(`[CoinDCX] getOpenPositions fetch/parse error: ${err.message}`);
-        return null; // Return null to indicate API error, NOT an empty list
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) {
+        console.error(`[CoinDCX] getOpenPositions failed on all endpoints.`);
+        return null;
     }
+    const data = res.data;
 
     if (!Array.isArray(data)) {
         console.error('[CoinDCX] getOpenPositions returned non-array:', JSON.stringify(data));
         return null;
     }
+    
     // Normalize CoinDCX fields to standard format
     return data.map(p => ({
         ...p,
@@ -220,34 +151,10 @@ export async function getOpenPositions(env) {
 }
 
 export async function getAccountBalance(env) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/positions/cross_margin_details";
-
-    const timestamp = Math.floor(Date.now());
-
-    const body = {
-        "timestamp": timestamp
-    };
-
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-
-    if (!response.ok) return null;
-    try {
-        return await response.json();
-    } catch (e) {
-        return null;
-    }
+    const res = await fetchWithFallback(env, endpoint, {});
+    if (!res.ok) return null;
+    return res.data;
 }
 
 export async function getFuturesWallets(env) {
@@ -281,116 +188,45 @@ export async function getFuturesWallets(env) {
 }
 
 export async function getWalletBalances(env) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/users/balances";
-
-    const timestamp = Math.floor(Date.now());
-
-    const body = {
-        "timestamp": timestamp
-    };
-
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-
-    if (!response.ok) return [];
-    try {
-        return await response.json();
-    } catch (e) {
-        return [];
-    }
+    const res = await fetchWithFallback(env, endpoint, {});
+    if (!res.ok) return [];
+    return res.data;
 }
+
 export async function getOrders(env, status = null) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/orders";
-
-    const timestamp = Math.floor(Date.now());
-
     const body = {
-        "timestamp": timestamp,
         "page": "1",
-        "size": "50" // Increased from 10 to be more robust for reconciliation
+        "size": "50" // Robust for reconciliation
     };
 
     if (status) {
         body.status = status;
     }
 
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    const response = await fetch(baseUrl + endpoint, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-            "X-AUTH-SIGNATURE": signature
-        },
-        body: payload
-    });
-
-    if (!response.ok) return null;
-    try {
-        return await response.json();
-    } catch (e) {
-        return null;
-    }
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) return null;
+    return res.data;
 }
+
 export async function getTradeHistory(env) {
-    const baseUrl = "https://api.coindcx.com";
     const endpoint = "/exchange/v1/derivatives/futures/trades";
-
-    const timestamp = Math.floor(Date.now());
-
     const body = {
-        "timestamp": timestamp,
-        // "page": "1",
-        "size": "50" // Increased from 10 to find orphaned entry trades
+        "size": "50"
     };
-
-    const payload = JSON.stringify(body);
-    const signature = generateSignature(payload, env.COINDCX_SECRET_KEY);
-
-    try {
-        const response = await fetch(baseUrl + endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-AUTH-APIKEY": env.COINDCX_API_KEY,
-                "X-AUTH-SIGNATURE": signature
-            },
-            body: payload
-        });
-
-        if (!response.ok) {
-            console.error(`[CoinDCX] getTradeHistory HTTP ${response.status}`);
-            return null;
-        }
-
-        const data = await response.json();
-        return data;
-    } catch (err) {
-        console.error(`[CoinDCX] getTradeHistory fetch/parse error: ${err.message}`);
+    const res = await fetchWithFallback(env, endpoint, body);
+    if (!res.ok) {
+        console.error(`[CoinDCX] getTradeHistory failed on all endpoints`);
         return null;
     }
+    return res.data;
 }
 
 export async function getMarketPrice(pair) {
-    // pair example: "B-DOGE_USDT"
     const baseUrl = "https://public.coindcx.com";
     const endpoint = "/market_data/candlesticks";
 
-    // Get last 1 minute candle
     const to = Math.floor(Date.now() / 1000);
     const from = to - 120; // 2 minutes ago to be safe
 
@@ -401,9 +237,6 @@ export async function getMarketPrice(pair) {
         const data = await response.json();
 
         if (Array.isArray(data) && data.length > 0) {
-            // Data is usually sorted by time desc, but let's be safe
-            // Format: { open, high, low, close, volume, time }
-            // We want the latest 'close'
             const latest = data[0];
             return parseFloat(latest.close);
         }
@@ -414,13 +247,8 @@ export async function getMarketPrice(pair) {
     }
 }
 
-/**
- * Fetch instrument details for a futures pair (public endpoint, no auth).
- * Returns { maxLeverage, minQuantity, stepSize } or null on error.
- */
 export async function getInstrumentDetails(pair) {
     try {
-        // Try the specific instrument data endpoint
         const urls = [
             `https://api.coindcx.com/exchange/v1/derivatives/futures/data/instrument?pair=${encodeURIComponent(pair)}`,
             `https://api.coindcx.com/exchange/v1/derivatives/futures/instrument_details?pair=${encodeURIComponent(pair)}`,
@@ -450,16 +278,15 @@ export async function getInstrumentDetails(pair) {
         }
 
         if (!data) {
-            // Last resort: active_instruments
             const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments?margin_currency_short_name[]=INR`;
             const listRes = await fetch(listUrl);
             if (listRes.ok) {
-            try {
-                const instrumentsList = await listRes.json();
-                data = Array.isArray(instrumentsList) ? instrumentsList.find(i => i.pair === pair) : null;
-            } catch (e) {
-                console.error('[CoinDCX] active_instruments JSON parse error');
-            }
+                try {
+                    const instrumentsList = await listRes.json();
+                    data = Array.isArray(instrumentsList) ? instrumentsList.find(i => i.pair === pair) : null;
+                } catch (e) {
+                    console.error('[CoinDCX] active_instruments JSON parse error');
+                }
             }
         }
 
@@ -474,12 +301,11 @@ export async function getInstrumentDetails(pair) {
 
         console.error(`[CoinDCX] Could not find instrument details for ${pair} across all endpoints`);
         
-        // Final fallback: Hardcoded defaults for common assets to prevent scouting failure
         if (pair.includes('DOGE')) {
             console.warn('[CoinDCX] Using hardcoded defaults for DOGE');
             return {
                 maxLeverage: 20,
-                minQuantity: 2, // Changed from 1 to 2 to satisfy "greater than 1.0" requirement
+                minQuantity: 2, 
                 stepSize: 1,
                 tickSize: 0.00001
             };
@@ -491,10 +317,6 @@ export async function getInstrumentDetails(pair) {
     }
 }
 
-/**
- * Fetch INR balance from the futures wallet.
- * Returns the available INR balance as a number, or null on error.
- */
 export async function getINRFuturesBalance(env) {
     try {
         const wallets = await getFuturesWallets(env);

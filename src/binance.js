@@ -1,17 +1,47 @@
 /**
- * Market data source: Binance Vision (data-api.binance.vision)
+ * Market data source: Binance Vision (data-api.binance.vision) with robust fallback mirrors.
  * This is Binance's public data API that is NOT geo-blocked from CF Workers.
  * Uses spot USDT pairs — prices are within 0.01% of futures.
  * Same kline format including takerBuyVolume for accurate CVD.
  */
-const BINANCE_BASE = 'https://data-api.binance.vision';
-const SYMBOLS = { BTC: 'BTCUSDT', DOGE: 'DOGEUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
+const SYMBOLS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
 const CVD_STEEP_THRESHOLD = 0.5;
 const CVD_GRADUAL_THRESHOLD = 0.15;
 const SWEEP_LOOKBACK_1M = 60;
 const SWEEP_LOOKBACK_5M = 20;
 const SWEEP_MIN_DEPTH = 0.15;
 const CVD_WINDOW = 30;
+
+/**
+ * Robust fetch helper to query multiple Binance API mirrors in case of transient 500s/rate limits.
+ */
+async function fetchBinanceWithFallback(path) {
+    const bases = [
+        'https://data-api.binance.vision',
+        'https://api1.binance.com',
+        'https://api2.binance.com',
+        'https://api3.binance.com',
+        'https://api.binance.com'
+    ];
+    let lastStatus = 0;
+    let lastText = "";
+    for (const base of bases) {
+        const url = base + path;
+        try {
+            const res = await fetch(url);
+            if (res.ok) {
+                return { ok: true, data: await res.json() };
+            } else {
+                lastStatus = res.status;
+                lastText = await res.text();
+                console.warn(`[Binance] ${path} failed on ${base}: HTTP ${lastStatus} - ${lastText.slice(0, 100)}`);
+            }
+        } catch (err) {
+            console.warn(`[Binance] ${path} fetch error on ${base}: ${err.message}`);
+        }
+    }
+    return { ok: false, status: lastStatus, text: lastText };
+}
 
 /**
  * Estimate liquidation events from BTC price action.
@@ -45,73 +75,62 @@ export function estimateLiquidationEvents(btcKlines) {
 }
 
 export async function fetchAllMarketData() {
-    const { BTC, DOGE, ETH, SOL } = SYMBOLS;
+    const { BTC, ETH, SOL } = SYMBOLS;
     const [
         btcKlines1m, btcKlines5m, btc24h,
-        dogeKlines1m, doge24h,
-        eth24h, sol24h
+        ethKlines1m, eth24h,
+        sol24h
     ] = await Promise.all([
         fetchKlines(BTC, '1m', 70),
         fetchKlines(BTC, '5m', 30),
         fetch24hTicker(BTC),
-        fetchKlines(DOGE, '1m', 70), fetch24hTicker(DOGE),
+        fetchKlines(ETH, '1m', 70), fetch24hTicker(ETH),
         fetch24hTicker(ETH), fetch24hTicker(SOL),
     ]);
     const liquidations = estimateLiquidationEvents(btcKlines1m);
     return {
         btc: { klines1m: btcKlines1m, klines5m: btcKlines5m, ticker24h: btc24h },
-        doge: { klines1m: dogeKlines1m, ticker24h: doge24h, liquidations },
-        eth: { ticker24h: eth24h },
+        eth: { klines1m: ethKlines1m, ticker24h: eth24h, liquidations },
         sol: { ticker24h: sol24h },
     };
 }
 
 export async function fetchKlines(symbol, interval, limit) {
-    try {
-        const url = `${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.error(`[Data] fetchKlines ${symbol} ${interval} HTTP ${res.status}: ${await res.text()}`);
-            return [];
-        }
-        const data = await res.json();
-        if (!Array.isArray(data)) {
-            console.error(`[Data] fetchKlines ${symbol} unexpected:`, JSON.stringify(data).slice(0, 200));
-            return [];
-        }
-        return data.map(k => ({
-            openTime: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
-            low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
-            closeTime: k[6], quoteVolume: parseFloat(k[7]), trades: k[8],
-            takerBuyVolume: parseFloat(k[9]), takerBuyQuoteVolume: parseFloat(k[10]),
-        }));
-    } catch (err) {
-        console.error(`[Data] fetchKlines ${symbol} ${interval} error:`, err.message);
+    const path = `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const res = await fetchBinanceWithFallback(path);
+    if (!res.ok) {
+        console.error(`[Data] fetchKlines ${symbol} ${interval} failed on all endpoints. Last error: HTTP ${res.status}`);
         return [];
     }
+    const data = res.data;
+    if (!Array.isArray(data)) {
+        console.error(`[Data] fetchKlines ${symbol} unexpected:`, JSON.stringify(data).slice(0, 200));
+        return [];
+    }
+    return data.map(k => ({
+        openTime: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
+        low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
+        closeTime: k[6], quoteVolume: parseFloat(k[7]), trades: k[8],
+        takerBuyVolume: parseFloat(k[9]), takerBuyQuoteVolume: parseFloat(k[10]),
+    }));
 }
 
 export async function fetch24hTicker(symbol) {
-    try {
-        const url = `${BINANCE_BASE}/api/v3/ticker/24hr?symbol=${symbol}`;
-        const res = await fetch(url);
-        if (!res.ok) {
-            console.error(`[Data] fetch24hTicker ${symbol} HTTP ${res.status}: ${await res.text()}`);
-            return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
-        }
-        const data = await res.json();
-        return {
-            priceChange: parseFloat(data.priceChange || 0),
-            priceChangePercent: parseFloat(data.priceChangePercent || 0),
-            lastPrice: parseFloat(data.lastPrice || 0),
-            highPrice: parseFloat(data.highPrice || 0),
-            lowPrice: parseFloat(data.lowPrice || 0),
-            volume: parseFloat(data.volume || 0),
-        };
-    } catch (err) {
-        console.error(`[Data] fetch24hTicker ${symbol} error:`, err.message);
+    const path = `/api/v3/ticker/24hr?symbol=${symbol}`;
+    const res = await fetchBinanceWithFallback(path);
+    if (!res.ok) {
+        console.error(`[Data] fetch24hTicker ${symbol} failed on all endpoints. Last error: HTTP ${res.status}`);
         return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
     }
+    const data = res.data;
+    return {
+        priceChange: parseFloat(data.priceChange || 0),
+        priceChangePercent: parseFloat(data.priceChangePercent || 0),
+        lastPrice: parseFloat(data.lastPrice || 0),
+        highPrice: parseFloat(data.highPrice || 0),
+        lowPrice: parseFloat(data.lowPrice || 0),
+        volume: parseFloat(data.volume || 0),
+    };
 }
 
 // --- Indicator computation (unchanged) ---
@@ -119,37 +138,37 @@ export async function fetch24hTicker(symbol) {
 export function computeIndicators(data, config) {
     const btcK = data.btc.klines1m;
     const btcK5m = data.btc.klines5m || [];
-    const dogeK = data.doge.klines1m;
+    const ethK = data.eth.klines1m;
     const btcPrice = btcK.length > 0 ? btcK[btcK.length - 1].close : 0;
-    const dogePrice = dogeK.length > 0 ? dogeK[dogeK.length - 1].close : 0;
+    const ethPrice = ethK.length > 0 ? ethK[ethK.length - 1].close : 0;
     const btcChange1h = percentChange(btcK, 60);
-    const dogeChange1h = percentChange(dogeK, 60);
+    const ethChange1h = percentChange(ethK, 60);
     const btcChange5m = percentChange(btcK, 5);
-    const dogeChange5m = percentChange(dogeK, 5);
+    const ethChange5m = percentChange(ethK, 5);
     const btc24h = data.btc.ticker24h;
-    const doge24h = data.doge.ticker24h;
+    const eth24h = data.eth.ticker24h;
     const btcDistHigh = btc24h.highPrice > 0 ? ((btc24h.highPrice - btcPrice) / btcPrice) * 100 : 0;
     const btcDistLow = btc24h.lowPrice > 0 ? ((btcPrice - btc24h.lowPrice) / btcPrice) * 100 : 0;
-    const dogeDistHigh = doge24h.highPrice > 0
-        ? ((doge24h.highPrice - dogePrice) / dogePrice) * 100 : 0;
-    const dogeDistLow = doge24h.lowPrice > 0 ? ((dogePrice - doge24h.lowPrice) / dogePrice) * 100 : 0;
+    const ethDistHigh = eth24h.highPrice > 0
+        ? ((eth24h.highPrice - ethPrice) / ethPrice) * 100 : 0;
+    const ethDistLow = eth24h.lowPrice > 0 ? ((ethPrice - eth24h.lowPrice) / ethPrice) * 100 : 0;
     const btcCvd = computeCVD(btcK);
-    const dogeCvd = computeCVD(dogeK);
+    const ethCvd = computeCVD(ethK);
     // Use 5m klines for structure (more meaningful patterns), 1m for CVD/momentum
     const btcStructure = detectPriceStructure(btcK5m, SWEEP_LOOKBACK_5M);
     const btcKeyLevel = detectKeyLevel(btcPrice, btc24h.highPrice, btc24h.lowPrice);
-    const relativeStrength = computeRelativeStrength(dogeChange1h, btcChange1h);
+    const relativeStrength = computeRelativeStrength(ethChange1h, btcChange1h);
     const ethChange = data.eth.ticker24h.priceChangePercent;
     const solChange = data.sol.ticker24h.priceChangePercent;
     const sectorBias = computeSectorBias(ethChange, solChange);
     const session = getSessionType();
-    const liquidations = data.doge.liquidations || { recentEvent: 'none' };
+    const liquidations = data.eth.liquidations || { recentEvent: 'none' };
     // Volatility: 24h range as % of low
-    const dogeRange = doge24h.highPrice > 0 && doge24h.lowPrice > 0
-        ? ((doge24h.highPrice - doge24h.lowPrice) / doge24h.lowPrice) * 100
+    const ethRange = eth24h.highPrice > 0 && eth24h.lowPrice > 0
+        ? ((eth24h.highPrice - eth24h.lowPrice) / eth24h.lowPrice) * 100
         : 2.0;
     // Volume ratio: recent 10-candle avg vs full 1h avg
-    const volumeRatio = computeVolumeRatio(dogeK);
+    const volumeRatio = computeVolumeRatio(ethK);
     return {
         btc: {
             price: btcPrice,
@@ -160,15 +179,15 @@ export function computeIndicators(data, config) {
             structure: btcStructure, klines: btcK,
             keyLevel: btcKeyLevel,
         },
-        doge: {
-            price: dogePrice,
-            change1h: dogeChange1h, change5m: dogeChange5m,
-            dailyChange: doge24h.priceChangePercent,
-            distFromHigh: dogeDistHigh, distFromLow: dogeDistLow,
-            cvdDirection: dogeCvd.direction, cvdSlope: dogeCvd.slope, cvdValue: dogeCvd.value,
+        eth: {
+            price: ethPrice,
+            change1h: ethChange1h, change5m: ethChange5m,
+            dailyChange: eth24h.priceChangePercent,
+            distFromHigh: ethDistHigh, distFromLow: ethDistLow,
+            cvdDirection: ethCvd.direction, cvdSlope: ethCvd.slope, cvdValue: ethCvd.value,
             relativeStrength: relativeStrength,
-            klines: dogeK, high24h: doge24h.highPrice, low24h: doge24h.lowPrice,
-            dogeRange: dogeRange,
+            klines: ethK, high24h: eth24h.highPrice, low24h: eth24h.lowPrice,
+            ethRange: ethRange,
             volumeRatio: volumeRatio,
         },
         sector: { ethChange, solChange, bias: sectorBias },
@@ -274,8 +293,8 @@ export function detectKeyLevel(price, high, low) {
     return 'mid_range';
 }
 
-export function computeRelativeStrength(dogeChange, btcChange) {
-    const diff = dogeChange - btcChange;
+export function computeRelativeStrength(ethChange, btcChange) {
+    const diff = ethChange - btcChange;
     if (Math.abs(diff) < 0.15) return 'aligned';
     if (Math.abs(diff) > 2) return 'decoupled';
     if (diff > 0.3) return 'stronger';
