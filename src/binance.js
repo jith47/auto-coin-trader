@@ -84,8 +84,9 @@ export async function fetchAllMarketData() {
         fetchKlines(BTC, '1m', 70),
         fetchKlines(BTC, '5m', 30),
         fetch24hTicker(BTC),
-        fetchKlines(ETH, '1m', 70), fetch24hTicker(ETH),
-        fetch24hTicker(ETH), fetch24hTicker(SOL),
+        fetchKlines(ETH, '1m', 70),
+        fetch24hTicker(ETH),
+        fetch24hTicker(SOL),
     ]);
     const liquidations = estimateLiquidationEvents(btcKlines1m);
     return {
@@ -95,12 +96,91 @@ export async function fetchAllMarketData() {
     };
 }
 
+async function fetchKlinesFromCoinDCX(symbol, interval, limit) {
+    console.log(`[Binance-Fallback] Fetching klines for ${symbol} from CoinDCX...`);
+    try {
+        const coindcxPair = symbol === 'BTCUSDT' ? 'B-BTC_USDT' : symbol === 'ETHUSDT' ? 'B-ETH_USDT' : 'B-SOL_USDT';
+        const resolution = interval === '5m' ? '5' : '1';
+        const intervalSeconds = interval === '5m' ? 300 : 60;
+        const to = Math.floor(Date.now() / 1000);
+        const from = to - (limit + 10) * intervalSeconds;
+        const url = `https://public.coindcx.com/market_data/candlesticks?pair=${coindcxPair}&from=${from}&to=${to}&resolution=${resolution}&pcode=f`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            console.error(`[Binance-Fallback] CoinDCX klines fetch failed for ${symbol}: HTTP ${res.status}`);
+            return [];
+        }
+        const json = await res.json();
+        if (json.s !== 'ok' || !Array.isArray(json.data)) {
+            console.error(`[Binance-Fallback] CoinDCX klines returned unexpected format:`, JSON.stringify(json).slice(0, 200));
+            return [];
+        }
+        const sorted = [...json.data].sort((a, b) => a.time - b.time);
+        
+        return sorted.slice(-limit).map(k => {
+            const open = parseFloat(k.open);
+            const high = parseFloat(k.high);
+            const low = parseFloat(k.low);
+            const close = parseFloat(k.close);
+            const volume = parseFloat(k.volume);
+            const relativeClose = high === low ? 0.5 : (close - low) / (high - low);
+            const takerBuyVolume = volume * relativeClose;
+            return {
+                openTime: k.time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                closeTime: k.time + intervalSeconds * 1000 - 1,
+                quoteVolume: volume * close,
+                trades: 0,
+                takerBuyVolume,
+                takerBuyQuoteVolume: takerBuyVolume * close,
+            };
+        });
+    } catch (err) {
+        console.error(`[Binance-Fallback] CoinDCX klines error for ${symbol}:`, err.message);
+        return [];
+    }
+}
+
+async function fetch24hTickerFromCoinDCX(symbol) {
+    console.log(`[Binance-Fallback] Fetching 24h ticker for ${symbol} from CoinDCX...`);
+    try {
+        const url = "https://api.coindcx.com/exchange/ticker";
+        const res = await fetch(url);
+        if (!res.ok) {
+            console.error(`[Binance-Fallback] CoinDCX ticker fetch failed: HTTP ${res.status}`);
+            return null;
+        }
+        const data = await res.json();
+        if (!Array.isArray(data)) return null;
+        const found = data.find(m => m.market === symbol);
+        if (!found) {
+            console.error(`[Binance-Fallback] Market ${symbol} not found in CoinDCX ticker`);
+            return null;
+        }
+        return {
+            priceChange: 0,
+            priceChangePercent: parseFloat(found.change_24_hour || 0),
+            lastPrice: parseFloat(found.last_price || 0),
+            highPrice: parseFloat(found.high || 0),
+            lowPrice: parseFloat(found.low || 0),
+            volume: parseFloat(found.volume || 0),
+        };
+    } catch (err) {
+        console.error(`[Binance-Fallback] CoinDCX ticker error for ${symbol}:`, err.message);
+        return null;
+    }
+}
+
 export async function fetchKlines(symbol, interval, limit) {
     const path = `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetchBinanceWithFallback(path);
     if (!res.ok) {
-        console.error(`[Data] fetchKlines ${symbol} ${interval} failed on all endpoints. Last error: HTTP ${res.status}`);
-        return [];
+        console.warn(`[Data] fetchKlines ${symbol} ${interval} failed on all endpoints. Trying CoinDCX fallback...`);
+        return await fetchKlinesFromCoinDCX(symbol, interval, limit);
     }
     const data = res.data;
     if (!Array.isArray(data)) {
@@ -119,7 +199,9 @@ export async function fetch24hTicker(symbol) {
     const path = `/api/v3/ticker/24hr?symbol=${symbol}`;
     const res = await fetchBinanceWithFallback(path);
     if (!res.ok) {
-        console.error(`[Data] fetch24hTicker ${symbol} failed on all endpoints. Last error: HTTP ${res.status}`);
+        console.warn(`[Data] fetch24hTicker ${symbol} failed on all endpoints. Trying CoinDCX fallback...`);
+        const fallback = await fetch24hTickerFromCoinDCX(symbol);
+        if (fallback) return fallback;
         return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
     }
     const data = res.data;

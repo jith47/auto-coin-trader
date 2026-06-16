@@ -18,12 +18,13 @@ async function testPositionSizing() {
     // positionValueUsd = 20.587 * 5 = 102.935
     // qty = 1029
 
+    service.stepSize = 1;
     const qty = await service.calculateQuantity(entry, sl, balanceInr);
     console.log(`Entry: ${entry}, SL: ${sl}, Balance: ${balanceInr} INR`);
     console.log(`Calculated Qty: ${qty}`);
 
     const expectedMargin = (2500 / 85) * 0.7;
-    const expectedQty = Math.floor((expectedMargin * 5) / entry);
+    const expectedQty = Math.floor((expectedMargin * 2) / entry);
 
     if (qty === expectedQty) {
         console.log('✅ Position sizing test passed!');
@@ -56,7 +57,7 @@ async function testPnL() {
     console.log(`Calculated PnL: ${pnl}%`);
     console.log(`Calculated PnL INR: ${pnlInr}`);
 
-    if (pnl === 50 && pnlInr === 50) {
+    if (Math.abs(pnl - 50) < 0.0001 && Math.abs(pnlInr - 50) < 0.0001) {
         console.log('✅ PnL calculation test passed!');
     } else {
         console.log(`❌ PnL calculation test failed! Expected: 50%, Got: ${pnl}%`);

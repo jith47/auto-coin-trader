@@ -8,7 +8,7 @@ function generateSignature(payload, secret) {
 }
 
 async function fetchWithFallback(env, endpointPath, body = {}) {
-    const baseUrls = ["https://api.coindcx.com", "https://public.coindcx.com"];
+    const baseUrls = ["https://api.coindcx.com"];
     
     // Auto-inject or update timestamp to ensure signature validity
     body.timestamp = body.timestamp || Date.now();
@@ -159,8 +159,7 @@ export async function getAccountBalance(env) {
 
 export async function getFuturesWallets(env) {
     const endpoints = [
-        "https://api.coindcx.com/exchange/v1/derivatives/futures/wallets",
-        "https://public.coindcx.com/exchange/v1/derivatives/futures/wallets"
+        "https://api.coindcx.com/exchange/v1/derivatives/futures/wallets"
     ];
 
     for (const url of endpoints) {
@@ -252,7 +251,7 @@ export async function getInstrumentDetails(pair) {
         const urls = [
             `https://api.coindcx.com/exchange/v1/derivatives/futures/data/instrument?pair=${encodeURIComponent(pair)}`,
             `https://api.coindcx.com/exchange/v1/derivatives/futures/instrument_details?pair=${encodeURIComponent(pair)}`,
-            `https://public.coindcx.com/market_data/market_details` // General fallback
+            `https://api.coindcx.com/exchange/v1/markets_details`
         ];
 
         let data = null;
@@ -265,7 +264,13 @@ export async function getInstrumentDetails(pair) {
                         if (Array.isArray(resJson)) {
                             data = resJson.find(i => i.pair === pair || i.symbol === pair || i.coindcx_name === pair);
                         } else if (resJson && typeof resJson === 'object') {
-                            data = resJson.pair === pair ? resJson : (resJson.data || resJson);
+                            if (resJson.instrument && (resJson.instrument.pair === pair || resJson.instrument.symbol === pair)) {
+                                data = resJson.instrument;
+                            } else if (resJson.data && (resJson.data.pair === pair || resJson.data.symbol === pair)) {
+                                data = resJson.data;
+                            } else if (resJson.pair === pair || resJson.symbol === pair) {
+                                data = resJson;
+                            }
                         }
                         if (data) break;
                     } catch (e) {
@@ -277,25 +282,25 @@ export async function getInstrumentDetails(pair) {
             }
         }
 
-        if (!data) {
-            const listUrl = `https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments?margin_currency_short_name[]=INR`;
-            const listRes = await fetch(listUrl);
-            if (listRes.ok) {
-                try {
-                    const instrumentsList = await listRes.json();
-                    data = Array.isArray(instrumentsList) ? instrumentsList.find(i => i.pair === pair) : null;
-                } catch (e) {
-                    console.error('[CoinDCX] active_instruments JSON parse error');
-                }
-            }
-        }
-
         if (data) {
+            const maxLev = parseInt(data.max_leverage || data.max_leverage_long || data.max_leverage_short || 20);
+            
+            let tickSize = parseFloat(data.tick_size || data.price_increment || data.min_price_increment || 0.00001);
+            if (tickSize === 0.00001 && data.base_currency_precision !== undefined) {
+                tickSize = parseFloat((1 / Math.pow(10, data.base_currency_precision)).toFixed(data.base_currency_precision));
+            }
+            
+            let stepSize = parseFloat(data.step || data.quantity_increment || data.quantity_step || 1);
+            if (stepSize === 1 && data.target_currency_precision !== undefined) {
+                stepSize = parseFloat((1 / Math.pow(10, data.target_currency_precision)).toFixed(data.target_currency_precision));
+            }
+
             return {
-                maxLeverage: parseInt(data.max_leverage || data.max_leverage_long || 20),
-                minQuantity: parseFloat(data.min_quantity || data.min_order_size || 1),
-                stepSize: parseFloat(data.step || data.quantity_step || 1),
-                tickSize: parseFloat(data.tick_size || data.min_price_increment || 0.00001),
+                maxLeverage: maxLev > 0 ? maxLev : 20,
+                minQuantity: parseFloat(data.min_quantity || data.min_order_size || data.min_trade_size || 0.001),
+                stepSize: stepSize,
+                tickSize: tickSize,
+                minNotional: parseFloat(data.min_notional || 0)
             };
         }
 
@@ -307,7 +312,18 @@ export async function getInstrumentDetails(pair) {
                 maxLeverage: 20,
                 minQuantity: 2, 
                 stepSize: 1,
-                tickSize: 0.00001
+                tickSize: 0.00001,
+                minNotional: 0
+            };
+        }
+        if (pair.includes('ETH')) {
+            console.warn('[CoinDCX] Using hardcoded defaults for ETH');
+            return {
+                maxLeverage: 20,
+                minQuantity: 0.001,
+                stepSize: 0.001,
+                tickSize: 0.01,
+                minNotional: 24.0
             };
         }
         return null;

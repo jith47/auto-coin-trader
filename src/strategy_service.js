@@ -72,17 +72,21 @@ export class StrategyService {
 
             // 4. Proceed to Scouting (if no active trade)
             if (instrumentInfo) {
-                this.leverage = Math.min(instrumentInfo.maxLeverage, CONFIG.DEFAULT_LEVERAGE);
-                this.minQuantity = instrumentInfo.minQuantity || 1;
-                this.stepSize = instrumentInfo.stepSize || 1;
-                this.tickSize = instrumentInfo.tickSize || 0.00001;
-                console.log(`[Strategy] Instrument: maxLeverage=${instrumentInfo.maxLeverage}, using=${this.leverage}x, minQty=${this.minQuantity}, step=${this.stepSize}, tick=${this.tickSize}`);
+                this.maxLeverage = instrumentInfo.maxLeverage || 20;
+                this.leverage = Math.min(this.maxLeverage, CONFIG.DEFAULT_LEVERAGE);
+                this.minQuantity = instrumentInfo.minQuantity || 0.001;
+                this.stepSize = instrumentInfo.stepSize || 0.001;
+                this.tickSize = instrumentInfo.tickSize || 0.01;
+                this.minNotional = instrumentInfo.minNotional || 0;
+                console.log(`[Strategy] Instrument: maxLeverage=${instrumentInfo.maxLeverage}, using=${this.leverage}x, minQty=${this.minQuantity}, step=${this.stepSize}, tick=${this.tickSize}, minNotional=${this.minNotional}`);
             } else {
+                this.maxLeverage = 20;
                 this.leverage = CONFIG.DEFAULT_LEVERAGE;
-                this.minQuantity = 2; // Default to 2 for ETH safety
-                this.stepSize = 1;
-                this.tickSize = 0.00001;
-                console.log(`[Strategy] Using default leverage: ${this.leverage}x`);
+                this.minQuantity = 0.001;
+                this.stepSize = 0.001;
+                this.tickSize = 0.01;
+                this.minNotional = CONFIG.PAIR.includes('USDT') ? 24.0 : 0;
+                console.log(`[Strategy] Using default leverage: ${this.leverage}x, minNotional=${this.minNotional}`);
             }
 
             this.indicators = computeIndicators(data, CONFIG);
@@ -116,15 +120,15 @@ export class StrategyService {
             if (CONFIG.MOCK_MODE) {
                 const currentBalance = await this.db.getMockBalance();
                 const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
-                if (drawdownPct >= CONFIG.MAX_DAILY_DRAWDOWN_PCT) {
+                if (drawdownPct >= 2.0) {
                     console.log(`[Strategy] CIRCUIT BREAKER: Mock balance ₹${currentBalance.toFixed(2)} (Drawdown ${drawdownPct.toFixed(1)}%)`);
                     return { status: 'CIRCUIT_BREAKER', reason: `Mock balance below drawdown limit (${drawdownPct.toFixed(1)}%)` };
                 }
             } else {
                 // Real mode: check INR balance floor
                 const inrBalance = await getINRFuturesBalance(this.env);
-                if (inrBalance !== null && inrBalance < CONFIG.MIN_BALANCE_INR) {
-                    console.log(`[Strategy] CIRCUIT BREAKER: INR balance ₹${inrBalance.toFixed(2)} below minimum ₹${CONFIG.MIN_BALANCE_INR}`);
+                if (inrBalance !== null && inrBalance < 50) {
+                    console.log(`[Strategy] CIRCUIT BREAKER: INR balance ₹${inrBalance.toFixed(2)} below minimum ₹50`);
                     return { status: 'CIRCUIT_BREAKER', reason: `INR balance ₹${inrBalance.toFixed(2)} below minimum` };
                 }
             }
@@ -147,28 +151,7 @@ export class StrategyService {
                 return { status: 'NO_SETUP' };
             }
 
-            // 6b. Fix 4: 60s Reclaim Hold for Setup A
-            if (setup.type === 'SWEEP_RECLAIM') {
-                const now = Date.now();
-                const lastStructure = await this.db.getSetting('last_detected_structure', 'none');
-                const currentStructure = `${setup.type}_${setup.direction}`;
-
-                if (lastStructure !== currentStructure) {
-                    await this.db.updateSetting('last_detected_structure', currentStructure);
-                    await this.db.updateSetting('structure_detected_at', now);
-                    console.log(`[Strategy] Setup A detected. Starting 60s hold timer for ${currentStructure}`);
-                    return { status: 'WAITING_FOR_CONFIRMATION', reason: 'Setup A requires 60s hold', currentStructure };
-                } else {
-                    const detectedAt = parseInt(await this.db.getSetting('structure_detected_at', '0'));
-                    const elapsed = now - detectedAt;
-                    if (elapsed < 60000) {
-                        const remaining = Math.ceil((60000 - elapsed) / 1000);
-                        console.log(`[Strategy] Setup A detected. Hold timer: ${elapsed / 1000}s / 60s (${remaining}s remaining)`);
-                        return { status: 'WAITING_FOR_CONFIRMATION', reason: 'Setup A requires 60s hold', remaining };
-                    }
-                    console.log(`[Strategy] Setup A 60s hold confirmed (${elapsed / 1000}s)`);
-                }
-            }
+            // No hold timer needed for directional alignment
 
             console.log(`[Strategy] Setup found and confirmed: ${setup.type} ${setup.direction} `);
 
@@ -181,7 +164,7 @@ export class StrategyService {
 
             // 8. Score and threshold check
             const score = this.scoreSignal(this.indicators, setup);
-            const threshold = CONFIG.SCORE_THRESHOLD;
+            const threshold = CONFIG.MIN_ACC_SCORE;
             console.log(`[Strategy] Score: ${score}/${threshold}`);
             if (score < threshold) {
                 return { status: 'LOW_SCORE', score, threshold };
@@ -195,43 +178,8 @@ export class StrategyService {
             return { status: 'ERROR', error: err.message };
         }
     }
-    async checkKillSwitches(ind, setup) {
-        const isLong = setup.direction === 'BUY';
-
-        // 1. Correlation Divergence (BTC crashing while ETH tries to bounce)
-        if (isLong && ind.btc.change1h < -CONFIG.KILL_CORR_BTC && ind.eth.change1h > CONFIG.KILL_CORR_ETH) {
-            return { triggered: true, reason: 'BTC crashing; ETH bounce likely fake' };
-        }
-
-        // 2. Session Extreme "Hole" Filter
-        if (isLong && ind.eth.distFromHigh < CONFIG.KILL_SESSION_EXTREME) {
-            return { triggered: true, reason: 'ETH at session high' };
-        }
-        if (!isLong && ind.eth.distFromLow < CONFIG.KILL_SESSION_EXTREME) {
-            return { triggered: true, reason: 'ETH at session low' };
-        }
-
-        // 3. Falling CVD on Longs (Standard distribution)
-        if (isLong && (ind.btc.cvdDirection === 'falling' || ind.eth.cvdDirection === 'falling')) {
-            return { triggered: true, reason: 'Falling CVD on LONG attempt' };
-        }
-
-        // 4. Overextension Warning (ETH moved too far relative to BTC)
-        const dailyDiff = ind.eth.dailyChange - ind.btc.dailyChange;
-        if (isLong && dailyDiff > CONFIG.KILL_OVEREXTEND) {
-            return { triggered: true, reason: `ETH overextended vs BTC (+${dailyDiff.toFixed(1)}%)` };
-        }
-
-        // 5. Macro Sector Bias (Optional but protective)
-        if (isLong && ind.sector.bias === 'bearish') {
-            return { triggered: true, reason: 'Macro sector bias is bearish' };
-        }
-
-        // 6. Exhaustion Filter for Shorts (Fix 4)
-        if (!isLong && ind.eth.dailyChange < CONFIG.KILL_DAILY_EXHAUSTION) {
-            return { triggered: true, reason: `ETH already down ${ind.eth.dailyChange}% (Exhaustion)` };
-        }
-
+    checkKillSwitches(ind, setup) {
+        // Simplified: no kill switches needed — directional alignment handles filtering
         return { triggered: false };
     }
     evaluateSetups(ind) {
@@ -240,263 +188,74 @@ export class StrategyService {
             btcStructure: ind.btc.structure,
             btcCvd: ind.btc.cvdDirection + '/' + ind.btc.cvdSlope,
             ethCvd: ind.eth.cvdDirection + '/' + ind.eth.cvdSlope,
+            btc1h: ind.btc.change1h?.toFixed(2),
+            eth5m: ind.eth.change5m?.toFixed(2),
             relStrength: ind.eth.relativeStrength,
-            ethDistHigh: ind.eth.distFromHigh?.toFixed(2) + '%',
-            ethDistLow: ind.eth.distFromLow?.toFixed(2) + '%',
-            sector: ind.sector.bias,
-            liquidations: ind.liquidations.recentEvent,
         }));
 
-        const sweepSetup = this.checkSweepReclaim(ind);
-        if (sweepSetup) return sweepSetup;
-        const rwSetup = this.checkRelativeWeaknessShort(ind);
-        if (rwSetup) return rwSetup;
-        const rsSetup = this.checkRelativeStrengthLong(ind);
-        if (rsSetup) return rsSetup;
-        const trendSetup = this.checkTrendContinuation(ind);
-        if (trendSetup) return trendSetup;
-        const rangeSetup = this.checkRangeRejection(ind);
-        if (rangeSetup) return rangeSetup;
-        return null;
-    }
-    checkSweepReclaim(ind) {
-        // LONG — Hard gates: structure + CVD + proximity (3 gates)
-        const isSweep = ind.btc.structure === 'sweep_reclaim_bullish';
-        const isSupport = ind.btc.structure === 'support_holding' && ind.btc.distFromLow < 0.25;
+        // LONG: ETH CVD rising + ETH 5m positive + BTC not dumping
+        const isLong = ind.eth.cvdDirection === 'rising'
+            && ind.eth.change5m > 0
+            && ind.btc.change1h > -0.3;
 
-        const longChecks = {
-            btcStructure: isSweep || isSupport,
-            btcCvdRising: ind.btc.cvdDirection === 'rising',
-            ethNearLow: ind.eth.distFromLow <= CONFIG.SWEEP_ETH_PROXIMITY,
-            ethCvdNotFalling: ind.eth.cvdDirection !== 'falling',
-            ethNotWeaker: ind.eth.relativeStrength !== 'weaker',
-        };
-        console.log('[Strategy] Setup A (BUY) checks:', JSON.stringify(longChecks));
-        if (Object.values(longChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'BUY' };
+        // SHORT: ETH CVD falling + ETH 5m negative + BTC not pumping
+        const isShort = ind.eth.cvdDirection === 'falling'
+            && ind.eth.change5m < 0
+            && ind.btc.change1h < 0.3;
 
-        // SHORT — Hard gates: structure + CVD + proximity (3 gates)
-        const isSqueeze = ind.btc.structure === 'sweep_reclaim_bearish';
-        const isRejection = ind.btc.structure === 'rejection' && ind.btc.distFromHigh < 0.25;
-
-        const shortChecks = {
-            btcStructure: isSqueeze || isRejection,
-            btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            ethNearHigh: ind.eth.distFromHigh <= CONFIG.SWEEP_ETH_PROXIMITY,
-            ethCvdNotRising: ind.eth.cvdDirection !== 'rising',
-            ethNotStronger: ind.eth.relativeStrength !== 'stronger',
-        };
-        console.log('[Strategy] Setup A (SELL) checks:', JSON.stringify(shortChecks));
-        if (Object.values(shortChecks).every(v => v)) return { type: 'SWEEP_RECLAIM', direction: 'SELL' };
-
-        return null;
-    }
-    checkRelativeWeaknessShort(ind) {
-        // Hard gates: divergence confirmed + structure not bullish (4 gates)
-        const checks = {
-            btcPositive: ind.btc.change1h > 0,
-            ethNegative: ind.eth.change1h < CONFIG.RW_ETH_1H_THRESHOLD,
-            ethWeaker: ind.eth.relativeStrength === 'weaker',
-            ethNearHigh: ind.eth.distFromHigh < 1.5, // Positional filter: don't short the bottom
-            notBtcSupport: ind.btc.structure !== 'support_holding',
-            notBtcBullish: !['breakout', 'sweep_reclaim_bullish', 'support_holding'].includes(ind.btc.structure), // Don't fight the king
-        };
-        console.log('[Strategy] Setup B (SELL) checks:', JSON.stringify(checks));
-        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_WEAKNESS', direction: 'SELL' };
-        return null;
-    }
-    checkRelativeStrengthLong(ind) {
-        // Hard gates: divergence confirmed + structure not bearish (4 gates)
-        const checks = {
-            btcNeutral: ind.btc.change1h < 0.25, // Relaxed from strict negative (< 0)
-            ethPositive: ind.eth.change1h > CONFIG.RS_ETH_1H_THRESHOLD,
-            ethStronger: ind.eth.relativeStrength === 'stronger',
-            ethNearLow: ind.eth.distFromLow < 1.5, // Positional filter: don't long the top
-            notBtcRejection: ind.btc.structure !== 'rejection',
-            notBtcBearish: !['breakdown', 'sweep_reclaim_bearish', 'rejection'].includes(ind.btc.structure), // Don't fight the king
-        };
-        console.log('[Strategy] Setup B (BUY) checks:', JSON.stringify(checks));
-        if (Object.values(checks).every(v => v)) return { type: 'RELATIVE_STRENGTH', direction: 'BUY' };
-        return null;
-    }
-    checkTrendContinuation(ind) {
-        // LONG — Hard gates: BTC strong trend + CVD steep/gradual + ETH stronger (4 gates)
-        const longChecks = {
-            btc1hStrong: ind.btc.change1h > CONFIG.TREND_BTC_1H_MIN,
-            btcCvdRising: ind.btc.cvdDirection === 'rising',
-            btcNotFlat: ind.btc.cvdSlope !== 'flat',
-            ethStronger: ind.eth.relativeStrength === 'stronger',
-            ethCvdRising: ind.eth.cvdDirection === 'rising',
-            ethNotAtHigh: ind.eth.distFromHigh > 1.5, // Don't long the top
-        };
-        console.log('[Strategy] Setup C (BUY) checks:', JSON.stringify(longChecks));
-        if (Object.values(longChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'BUY' };
-
-        // SHORT — Hard gates: BTC strong downtrend + CVD + ETH weaker (4 gates)
-        const shortChecks = {
-            btc1hWeak: ind.btc.change1h < -CONFIG.TREND_BTC_1H_MIN,
-            btcCvdFalling: ind.btc.cvdDirection === 'falling',
-            btcNotFlat: ind.btc.cvdSlope !== 'flat',
-            ethWeaker: ind.eth.relativeStrength === 'weaker',
-            ethCvdFalling: ind.eth.cvdDirection === 'falling',
-            ethNotAtLow: ind.eth.distFromLow > 1.5, // Don't short the bottom
-        };
-        console.log('[Strategy] Setup C (SELL) checks:', JSON.stringify(shortChecks));
-        if (Object.values(shortChecks).every(v => v)) return { type: 'TREND_CONTINUATION', direction: 'SELL' };
-
-        return null;
-    }
-    checkRangeRejection(ind) {
-        // Setup D: ETH trades its OWN key levels independently if BTC is neutral
-
-        // SELL Case: ETH at 24h High + Rejection
-        const shortChecks = {
-            ethAtResistance: ind.eth.distFromHigh <= CONFIG.RANGE_PROXIMITY,
-            ethStructure: ind.eth.structure === 'rejection' || ind.eth.structure === 'sweep_reclaim_bearish',
-            btcNotUltraBullish: ind.btc.change1h < 0.5, // Allow shorting range if BTC isn't vertical
-        };
-        console.log('[Strategy] Setup D (SELL) checks:', JSON.stringify(shortChecks));
-        if (Object.values(shortChecks).every(v => v)) return { type: 'RANGE_REJECTION', direction: 'SELL' };
-
-        // BUY Case: ETH at 24h Low + Support Hold
-        const longChecks = {
-            ethAtSupport: ind.eth.distFromLow <= CONFIG.RANGE_PROXIMITY,
-            ethStructure: ind.eth.structure === 'support_holding' || ind.eth.structure === 'sweep_reclaim_bullish',
-            btcNotUltraBearish: ind.btc.change1h > -0.5, // Allow buying support if BTC isn't freefalling
-        };
-        console.log('[Strategy] Setup D (BUY) checks:', JSON.stringify(longChecks));
-        if (Object.values(longChecks).every(v => v)) return { type: 'RANGE_REJECTION', direction: 'BUY' };
-
+        if (isLong) {
+            console.log('[Strategy] DIRECTIONAL_ALIGNMENT BUY triggered');
+            return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'BUY' };
+        }
+        if (isShort) {
+            console.log('[Strategy] DIRECTIONAL_ALIGNMENT SELL triggered');
+            return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'SELL' };
+        }
         return null;
     }
     scoreSignal(ind, setup) {
-        // Max theoretical: 30+15+12+15+15+10+8+5 = 110
-        // Threshold: 70 (~64% of max)
-        let score = 0;
+        let score = 50;
         const isLong = setup.direction === 'BUY';
 
-        // 1. BTC Structure (30/20/15/0)
-        const isSweep = ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish';
-        const isExtremeRejection = (ind.btc.structure === 'rejection' && ind.btc.distFromHigh < 0.25) ||
-            (ind.btc.structure === 'support_holding' && ind.btc.distFromLow < 0.25);
-
-        if (isSweep || isExtremeRejection) {
-            score += 30; // Both sweep and extreme rejection are high conviction
-        } else if (ind.btc.structure === 'rejection' || ind.btc.structure === 'support_holding') {
-            score += 20;
-        } else if (ind.btc.structure === 'breakout' || ind.btc.structure === 'breakdown') {
+        // BTC structure bonus
+        if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') {
             score += 15;
-        }
-
-        // 2. BTC CVD aligned with direction (15 + 5 for steep)
-        if ((isLong && ind.btc.cvdDirection === 'rising') || (!isLong && ind.btc.cvdDirection === 'falling')) {
-            score += 15;
-            if (ind.btc.cvdSlope === 'steep') {
-                score += 5;
-            }
-        }
-
-        // 3. ETH CVD aligned with direction (12) — single check, no double count
-        if ((isLong && ind.eth.cvdDirection === 'rising') || (!isLong && ind.eth.cvdDirection === 'falling')) {
-            score += 12;
-        } else if ((isLong && ind.eth.cvdDirection === 'falling') || (!isLong && ind.eth.cvdDirection === 'rising')) {
-            score -= 15; // Penalty for ETH CVD opposing trade direction
-            console.log(`[Strategy] CVD Contradiction penalty: -15 (ETH CVD: ${ind.eth.cvdDirection})`);
-        }
-
-        // 4. Relative strength favorable (15)
-        if ((isLong && (ind.eth.relativeStrength === 'stronger' || ind.eth.relativeStrength === 'aligned')) ||
-            (!isLong && (ind.eth.relativeStrength === 'weaker' || ind.eth.relativeStrength === 'aligned'))) {
-            score += 15;
-        }
-
-        // 5. Position in range — near favorable extreme (15/10)
-        const favorableDistance = isLong ? ind.eth.distFromLow : ind.eth.distFromHigh;
-        if (favorableDistance <= 1) {
-            score += 15;
-        } else if (favorableDistance <= 2) {
+        } else if (ind.btc.structure === 'support_holding' || ind.btc.structure === 'rejection') {
             score += 10;
         }
 
-        // 6. Sector tailwind (10/5) — always scored, never hard-gated
-        if ((isLong && ind.sector.bias === 'bullish') || (!isLong && ind.sector.bias === 'bearish')) {
+        // ETH CVD slope bonus
+        if (ind.eth.cvdSlope === 'steep') {
             score += 10;
-        } else if (ind.sector.bias === 'mixed') {
+        } else if (ind.eth.cvdSlope === 'gradual') {
             score += 5;
         }
 
-        // 7. Key level alignment (8) — bonus for being at the right level
-        if ((isLong && ind.btc.keyLevel === 'at_support') || (!isLong && ind.btc.keyLevel === 'at_resistance')) {
-            score += 8;
+        // Relative strength bonus
+        if ((isLong && ind.eth.relativeStrength === 'stronger') ||
+            (!isLong && ind.eth.relativeStrength === 'weaker')) {
+            score += 10;
         }
 
-        // 8. Liquidation event (5)
-        const liqEvent = ind.liquidations?.recentEvent || 'none';
-        if ((isLong && liqEvent === 'longs_flushed') || (!isLong && liqEvent === 'shorts_squeezed')) {
-            score += 5;
-        }
-        // 9. Volume penalty (-10 when thin market)
-        const volRatio = ind.eth.volumeRatio || 1.0;
-        if (volRatio < 0.5) {
-            score -= 10;
-            console.log(`[Strategy] Volume penalty: -10 (ratio: ${volRatio.toFixed(2)})`);
-        }
-        
-        // 10. Anti-chase Momentum Penalty (-10 when move already happened)
-        const recentMove5m = Math.abs(ind.eth.change5m || 0);
-        if (recentMove5m > 0.5) {
-            score -= 10;
-            console.log(`[Strategy] Anti-chase penalty: -10 (5m move: ${recentMove5m.toFixed(2)}%)`);
-        }
-
+        console.log(`[Strategy] Score breakdown: base=50, structure=${ind.btc.structure}, cvdSlope=${ind.eth.cvdSlope}, RS=${ind.eth.relativeStrength}, total=${score}`);
         return score;
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.eth.price;
-        const slPercent = CONFIG.SL[setup.type] || 0.8;
-
-        // Fix 4: Volatility-adaptive SL + NYSE Stop Widening
-        const volatilityMultiplier = Math.max(0.8, Math.min(1.5, (ind.eth.ethRange || 2.0) / 3.0));
-        let adjustedSL = slPercent * volatilityMultiplier;
-
-        const utcHour = ind.session.hour;
-        if (utcHour >= CONFIG.NYSE_OPEN_UTC && utcHour <= CONFIG.NYSE_CLOSE_UTC) {
-            console.log(`[Strategy] NYSE Open volatility detected (UTC ${utcHour.toFixed(2)}). Widening SL ${CONFIG.STOP_WIDEN_FACTOR}x`);
-            adjustedSL *= CONFIG.STOP_WIDEN_FACTOR;
-        }
-
-        const clampedSL = Math.min(Math.max(adjustedSL, CONFIG.SL_MIN), CONFIG.SL_MAX);
-        console.log(`[Strategy] SL logic: base=${slPercent}%, volBonus=${volatilityMultiplier.toFixed(2)}x, final=${clampedSL.toFixed(2)}%`);
+        const slPercent = CONFIG.SL_PCT;
+        const tpPercent = CONFIG.TP_PCT;
 
         const slPrice = setup.direction === 'BUY'
-            ? entry * (1 - clampedSL / 100)
-            : entry * (1 + clampedSL / 100);
+            ? entry * (1 - slPercent / 100)
+            : entry * (1 + slPercent / 100);
 
-        const sl = this.roundToTick(slPrice, this.tickSize || 0.00001);
-        const slDistance = Math.abs(entry - sl);
+        const tpPrice = setup.direction === 'BUY'
+            ? entry * (1 + tpPercent / 100)
+            : entry * (1 - tpPercent / 100);
 
-        // Fix 4: 50/50 TP Profiles
-        const tpProfile = CONFIG.TP_PROFILES[setup.type];
-        const tpLevels = tpProfile.map(level => {
-            if (level.trailing) {
-                return { ...level, price: null };
-            }
-            let price;
-            if (level.fixedTpPct) {
-                price = setup.direction === 'BUY'
-                    ? entry * (1 + level.fixedTpPct / 100)
-                    : entry * (1 - level.fixedTpPct / 100);
-            } else {
-                price = setup.direction === 'BUY'
-                    ? entry + (slDistance * level.rrMultiple)
-                    : entry - (slDistance * level.rrMultiple);
-            }
-            const roundedPrice = this.roundToTick(price, this.tickSize || 0.00001);
-            return { ...level, price: roundedPrice };
-        });
+        const sl = this.roundToTick(slPrice, this.tickSize || 0.01);
+        const tp = this.roundToTick(tpPrice, this.tickSize || 0.01);
 
-        const firstTpPrice = tpLevels.find(l => l.price !== null)?.price || entry;
-
-        // Calculate INR exposure
         let inrBalance = CONFIG.INITIAL_INR_BALANCE;
         if (CONFIG.MOCK_MODE) {
             inrBalance = await this.db.getMockBalance();
@@ -511,14 +270,15 @@ export class StrategyService {
         const quantity = await this.calculateQuantity(entry, sl, inrBalance);
         return {
             decision: setup.direction,
-            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
+            asset: CONFIG.PAIR,
+            reason: `DIRECTIONAL | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
             orderType: 'MARKET',
             quantity,
             leverage: this.leverage,
             entry,
             stopLoss: sl,
-            takeProfit: firstTpPrice,
-            tpLevels,
+            takeProfit: tp,
+            tpLevels: [{ pctOfPosition: 100, price: tp }],
             setupType: setup.type,
             score,
             entryValueInr: marginInr,
@@ -551,42 +311,65 @@ export class StrategyService {
             }
         }
 
-        const leverage = this.leverage || CONFIG.DEFAULT_LEVERAGE;
-        console.log(`[Strategy] Account balance: ${balanceUsd.toFixed(2)} USD (Equivalent), Leverage: ${leverage}x`);
+        let leverage = this.leverage || CONFIG.DEFAULT_LEVERAGE;
+        const maxLeverage = this.maxLeverage || 20;
 
         const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
 
         // Position size is margin * leverage
-        const positionValueUsd = marginAvailable * leverage;
-        let quantity = Math.floor(positionValueUsd / entry);
+        let positionValueUsd = marginAvailable * leverage;
+        let quantity = positionValueUsd / entry;
+
+        // Enforce minimum notional (minNotional) in USD
+        const minNotionalUsd = this.minNotional || (CONFIG.PAIR.includes('USDT') ? 24.0 : 0);
+        const currentNotionalUsd = quantity * entry;
+
+        if (currentNotionalUsd < minNotionalUsd) {
+            console.log(`[Strategy] Position value ${currentNotionalUsd.toFixed(2)} USD below min notional ${minNotionalUsd} USD. Adjusting...`);
+            
+            // Set quantity to meet min notional
+            quantity = minNotionalUsd / entry;
+            
+            // Calculate new required margin
+            const requiredMarginUsd = (quantity * entry) / leverage;
+            if (requiredMarginUsd > marginAvailable) {
+                // If required margin exceeds available, dynamically increase leverage to compensate
+                const neededLeverage = (quantity * entry) / marginAvailable;
+                if (neededLeverage <= maxLeverage) {
+                    leverage = Math.ceil(neededLeverage);
+                    console.log(`[Strategy] Dynamically increased leverage to ${leverage}x to meet min notional with available margin.`);
+                    this.leverage = leverage; // Update class property
+                    positionValueUsd = marginAvailable * leverage;
+                } else {
+                    // Even at max leverage, we can't afford it
+                    console.warn(`[Strategy] Account balance too low to trade even at max leverage ${maxLeverage}x.`);
+                }
+            }
+        }
 
         // Align to exchange step size
-        const stepSize = this.stepSize || 1;
+        const stepSize = this.stepSize || 0.001;
         if (stepSize > 0 && stepSize < 1) {
-            // Fractional step (e.g., 0.1): round down to nearest step
-            quantity = Math.floor(quantity / stepSize) * stepSize;
+            // Round UP when adjusting for minimum notional to guarantee we exceed it
+            if (currentNotionalUsd < minNotionalUsd) {
+                quantity = Math.ceil(quantity / stepSize) * stepSize;
+            } else {
+                quantity = Math.floor(quantity / stepSize) * stepSize;
+            }
             quantity = parseFloat(quantity.toFixed(8));
         } else {
-            quantity = Math.floor(quantity / stepSize) * stepSize;
+            if (currentNotionalUsd < minNotionalUsd) {
+                quantity = Math.ceil(quantity / stepSize) * stepSize;
+            } else {
+                quantity = Math.floor(quantity / stepSize) * stepSize;
+            }
         }
 
         // Enforce minimum quantity from exchange
-        const minQty = this.minQuantity || 2;
+        const minQty = this.minQuantity || 0.001;
         if (quantity < minQty) {
             console.log(`[Strategy] Quantity ${quantity} below exchange minimum ${minQty}, using minimum`);
             quantity = minQty;
-        }
-        
-        // Final safety check for ETH: CoinDCX requires > 1.0
-        if (CONFIG.PAIR.includes('ETH') && quantity < 2) {
-            console.log('[Strategy] Safety: Clamping ETH quantity to 2');
-            quantity = 2;
-        }
-        
-        // Final safety check for ETH
-        if (CONFIG.PAIR.includes('ETH') && quantity <= 1) {
-            console.log('[Strategy] Safety: Clamping ETH quantity to 2');
-            quantity = 2;
         }
 
         // Sanity check for astronomical values
@@ -1011,9 +794,9 @@ export class StrategyService {
         //     return { canTrade: false, reason: 'Consecutive loss limit (3) reached' };
         // }
 
-        // 3. Daily Drawdown Protection (Fix 4: 2%)
+        // 3. Daily Drawdown Protection (2% of initial balance)
         const todayPnLInr = await this.db.getTodayPnLInr();
-        const ddInr = (CONFIG.INITIAL_INR_BALANCE * CONFIG.MAX_DAILY_DRAWDOWN_PCT) / 100;
+        const ddInr = CONFIG.INITIAL_INR_BALANCE * 0.02; // 2% = ₹10
         if (todayPnLInr <= -ddInr) {
             return { canTrade: false, reason: `Daily DD limit reached: ${todayPnLInr.toFixed(2)} / -${ddInr.toFixed(2)} INR` };
         }
