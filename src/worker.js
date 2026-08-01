@@ -1,5 +1,6 @@
 import { StrategyService } from './strategy_service.js';
 import { D1Database } from './db_d1.js';
+import { fetchAllMarketData, computeIndicators } from './binance.js';
 
 
 // SHA-256 hash helper
@@ -49,11 +50,15 @@ export default {
                 const stats = await db.getStats();
                 const todayCount = await db.getTodayTradeCount();
                 const todayLosses = await db.getTodayLossCount();
+                const isRunning = await db.getSetting('is_running', 'true');
+                const mockMode = await db.getSetting('mock_mode', 'true');
                 return Response.json({
                     status: activeTrade ? 'IN_TRADE' : 'SCANNING',
                     activeTrade, stats,
                     todayTrades: todayCount, todayLosses,
                     timestamp: new Date().toISOString(),
+                    isRunning: isRunning === 'true',
+                    mockMode: mockMode === 'true',
                 });
             }
 
@@ -66,6 +71,59 @@ export default {
                 const service = new StrategyService(env);
                 const result = await service.run(db);
                 return Response.json(result);
+            }
+
+            if (url.pathname === '/api/settings/toggle-service' && request.method === 'POST') {
+                try {
+                    const isRunning = await db.getSetting('is_running', 'true');
+                    const nextState = isRunning === 'true' ? 'false' : 'true';
+                    await db.updateSetting('is_running', nextState);
+                    return Response.json({ success: true, isRunning: nextState === 'true' });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            if (url.pathname === '/api/settings/toggle-mock' && request.method === 'POST') {
+                try {
+                    await db.updateSetting('mock_mode', 'true');
+                    return Response.json({ success: true, mockMode: true, message: 'Mock Mode strictly enforced' });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            if (url.pathname === '/api/delta') {
+                try {
+                    if (env.DELTA_FEED) {
+                        const id = env.DELTA_FEED.idFromName('main');
+                        const stub = env.DELTA_FEED.get(id);
+                        const resp = await stub.fetch('http://do/health');
+                        return new Response(resp.body, { headers: { 'Content-Type': 'application/json' } });
+                    }
+                } catch (e) {
+                    console.error('Delta feed fetch error:', e.message);
+                }
+                return Response.json({
+                    connected: false,
+                    uptimeMin: 0,
+                    messageCount: 0,
+                    btc: { direction: 'flat', slope: 'flat', minutesOfData: 0 },
+                    doge: { direction: 'flat', slope: 'flat', minutesOfData: 0 }
+                });
+            }
+
+            if (url.pathname === '/api/market-data') {
+                try {
+                    const data = await fetchAllMarketData();
+                    const indicators = computeIndicators(data, { PAIR: 'B-ETH_USDT' });
+                    return Response.json({
+                        indicators,
+                        timestamp: new Date().toISOString(),
+                    });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
             }
 
             return Response.json({ error: 'Not found' }, { status: 404 });

@@ -233,10 +233,10 @@ export async function getMarketPrice(pair) {
 
     try {
         const response = await fetch(url);
-        const data = await response.json();
+        const json = await response.json();
 
-        if (Array.isArray(data) && data.length > 0) {
-            const latest = data[0];
+        if (json?.s === 'ok' && Array.isArray(json.data) && json.data.length > 0) {
+            const latest = [...json.data].sort((a, b) => b.time - a.time)[0];
             return parseFloat(latest.close);
         }
         return null;

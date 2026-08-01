@@ -1,8 +1,7 @@
 /**
- * Market data source: Binance Vision (data-api.binance.vision) with robust fallback mirrors.
- * This is Binance's public data API that is NOT geo-blocked from CF Workers.
- * Uses spot USDT pairs — prices are within 0.01% of futures.
- * Same kline format including takerBuyVolume for accurate CVD.
+ * Market data source: CoinDCX futures first, Binance futures only as a fallback.
+ * Real trades execute on CoinDCX futures, and Binance endpoints can be blocked
+ * from Cloudflare Workers, so production should prefer CoinDCX futures values.
  */
 const SYMBOLS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
 const CVD_STEEP_THRESHOLD = 0.5;
@@ -17,11 +16,7 @@ const CVD_WINDOW = 30;
  */
 async function fetchBinanceWithFallback(path) {
     const bases = [
-        'https://data-api.binance.vision',
-        'https://api1.binance.com',
-        'https://api2.binance.com',
-        'https://api3.binance.com',
-        'https://api.binance.com'
+        'https://fapi.binance.com'
     ];
     let lastStatus = 0;
     let lastText = "";
@@ -97,7 +92,7 @@ export async function fetchAllMarketData() {
 }
 
 async function fetchKlinesFromCoinDCX(symbol, interval, limit) {
-    console.log(`[Binance-Fallback] Fetching klines for ${symbol} from CoinDCX...`);
+    console.log(`[CoinDCX] Fetching klines for ${symbol} from CoinDCX...`);
     try {
         const coindcxPair = symbol === 'BTCUSDT' ? 'B-BTC_USDT' : symbol === 'ETHUSDT' ? 'B-ETH_USDT' : 'B-SOL_USDT';
         const resolution = interval === '5m' ? '5' : '1';
@@ -107,12 +102,12 @@ async function fetchKlinesFromCoinDCX(symbol, interval, limit) {
         const url = `https://public.coindcx.com/market_data/candlesticks?pair=${coindcxPair}&from=${from}&to=${to}&resolution=${resolution}&pcode=f`;
         const res = await fetch(url);
         if (!res.ok) {
-            console.error(`[Binance-Fallback] CoinDCX klines fetch failed for ${symbol}: HTTP ${res.status}`);
+            console.error(`[CoinDCX] CoinDCX klines fetch failed for ${symbol}: HTTP ${res.status}`);
             return [];
         }
         const json = await res.json();
         if (json.s !== 'ok' || !Array.isArray(json.data)) {
-            console.error(`[Binance-Fallback] CoinDCX klines returned unexpected format:`, JSON.stringify(json).slice(0, 200));
+            console.error(`[CoinDCX] CoinDCX klines returned unexpected format:`, JSON.stringify(json).slice(0, 200));
             return [];
         }
         const sorted = [...json.data].sort((a, b) => a.time - b.time);
@@ -140,48 +135,74 @@ async function fetchKlinesFromCoinDCX(symbol, interval, limit) {
             };
         });
     } catch (err) {
-        console.error(`[Binance-Fallback] CoinDCX klines error for ${symbol}:`, err.message);
+        console.error(`[CoinDCX] CoinDCX klines error for ${symbol}:`, err.message);
         return [];
     }
 }
 
 async function fetch24hTickerFromCoinDCX(symbol) {
-    console.log(`[Binance-Fallback] Fetching 24h ticker for ${symbol} from CoinDCX...`);
+    console.log(`[CoinDCX] Fetching 24h futures ticker for ${symbol} from CoinDCX...`);
     try {
-        const url = "https://api.coindcx.com/exchange/ticker";
+        const coindcxPair = symbol === 'BTCUSDT' ? 'B-BTC_USDT' : symbol === 'ETHUSDT' ? 'B-ETH_USDT' : 'B-SOL_USDT';
+        const to = Math.floor(Date.now() / 1000);
+        const from = to - (24 * 60 * 60);
+        const url = `https://public.coindcx.com/market_data/candlesticks?pair=${coindcxPair}&from=${from}&to=${to}&resolution=60&pcode=f`;
         const res = await fetch(url);
         if (!res.ok) {
-            console.error(`[Binance-Fallback] CoinDCX ticker fetch failed: HTTP ${res.status}`);
+            console.error(`[CoinDCX] CoinDCX futures ticker fetch failed: HTTP ${res.status}`);
             return null;
         }
-        const data = await res.json();
-        if (!Array.isArray(data)) return null;
-        const found = data.find(m => m.market === symbol);
-        if (!found) {
-            console.error(`[Binance-Fallback] Market ${symbol} not found in CoinDCX ticker`);
+        const json = await res.json();
+        if (json.s !== 'ok' || !Array.isArray(json.data) || json.data.length === 0) {
+            console.error(`[CoinDCX] CoinDCX futures ticker returned unexpected format:`, JSON.stringify(json).slice(0, 200));
             return null;
         }
+
+        const candles = [...json.data]
+            .sort((a, b) => a.time - b.time)
+            .map(k => ({
+                open: parseFloat(k.open),
+                high: parseFloat(k.high),
+                low: parseFloat(k.low),
+                close: parseFloat(k.close),
+                volume: parseFloat(k.volume || 0),
+            }));
+        const first = candles[0];
+        const last = candles[candles.length - 1];
+        const highPrice = Math.max(...candles.map(k => k.high));
+        const lowPrice = Math.min(...candles.map(k => k.low));
+        const volume = candles.reduce((sum, k) => sum + k.volume, 0);
+        const priceChange = last.close - first.open;
+        const priceChangePercent = first.open > 0 ? (priceChange / first.open) * 100 : 0;
+
         return {
-            priceChange: 0,
-            priceChangePercent: parseFloat(found.change_24_hour || 0),
-            lastPrice: parseFloat(found.last_price || 0),
-            highPrice: parseFloat(found.high || 0),
-            lowPrice: parseFloat(found.low || 0),
-            volume: parseFloat(found.volume || 0),
+            priceChange,
+            priceChangePercent,
+            lastPrice: last.close,
+            highPrice,
+            lowPrice,
+            volume,
         };
     } catch (err) {
-        console.error(`[Binance-Fallback] CoinDCX ticker error for ${symbol}:`, err.message);
+        console.error(`[CoinDCX] CoinDCX futures ticker error for ${symbol}:`, err.message);
         return null;
     }
 }
 
 export async function fetchKlines(symbol, interval, limit) {
-    const path = `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const coindcxData = await fetchKlinesFromCoinDCX(symbol, interval, limit);
+    if (Array.isArray(coindcxData) && coindcxData.length > 0) {
+        return coindcxData;
+    }
+
+    console.warn(`[Data] CoinDCX fetchKlines ${symbol} ${interval} returned no data. Trying Binance futures fallback...`);
+    const path = `/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetchBinanceWithFallback(path);
     if (!res.ok) {
-        console.warn(`[Data] fetchKlines ${symbol} ${interval} failed on all endpoints. Trying CoinDCX fallback...`);
-        return await fetchKlinesFromCoinDCX(symbol, interval, limit);
+        console.warn(`[Data] fetchKlines ${symbol} ${interval} failed on all endpoints.`);
+        return [];
     }
+
     const data = res.data;
     if (!Array.isArray(data)) {
         console.error(`[Data] fetchKlines ${symbol} unexpected:`, JSON.stringify(data).slice(0, 200));
@@ -196,14 +217,19 @@ export async function fetchKlines(symbol, interval, limit) {
 }
 
 export async function fetch24hTicker(symbol) {
-    const path = `/api/v3/ticker/24hr?symbol=${symbol}`;
+    const coindcxTicker = await fetch24hTickerFromCoinDCX(symbol);
+    if (coindcxTicker) {
+        return coindcxTicker;
+    }
+
+    console.warn(`[Data] CoinDCX fetch24hTicker ${symbol} returned no data. Trying Binance futures fallback...`);
+    const path = `/fapi/v1/ticker/24hr?symbol=${symbol}`;
     const res = await fetchBinanceWithFallback(path);
     if (!res.ok) {
-        console.warn(`[Data] fetch24hTicker ${symbol} failed on all endpoints. Trying CoinDCX fallback...`);
-        const fallback = await fetch24hTickerFromCoinDCX(symbol);
-        if (fallback) return fallback;
+        console.warn(`[Data] fetch24hTicker ${symbol} failed on all endpoints.`);
         return { priceChange: 0, priceChangePercent: 0, lastPrice: 0, highPrice: 0, lowPrice: 0, volume: 0 };
     }
+
     const data = res.data;
     return {
         priceChange: parseFloat(data.priceChange || 0),
@@ -272,7 +298,7 @@ export function computeIndicators(data, config) {
             ethRange: ethRange,
             volumeRatio: volumeRatio,
         },
-        sector: { ethChange, solChange, bias: sectorBias },
+        sector: { ethChange, solChange, bias: sectorBias, solPrice: data.sol.ticker24h.lastPrice },
         liquidations: liquidations,
         session: session,
     };

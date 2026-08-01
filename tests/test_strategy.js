@@ -64,10 +64,37 @@ async function testPnL() {
     }
 }
 
+async function testSetupEvaluation() {
+    console.log('\n--- Testing Dynamic Setup Evaluation ---');
+    const service = new StrategyService({});
+
+    const breakoutInd = {
+        btc: { structure: 'breakout', change1h: 0.5 },
+        eth: { cvdDirection: 'rising', change5m: 0.2 }
+    };
+    const rangingInd = {
+        btc: { structure: 'ranging', change1h: 0.1 },
+        eth: { cvdDirection: 'rising', change5m: 0.2 }
+    };
+
+    const breakoutSetup = service.evaluateSetups(breakoutInd);
+    const rangingSetup = service.evaluateSetups(rangingInd);
+
+    console.log('Breakout setup:', breakoutSetup ? breakoutSetup.direction : 'NULL');
+    console.log('Ranging setup:', rangingSetup ? rangingSetup.direction : 'NULL');
+
+    if (breakoutSetup && breakoutSetup.direction === 'BUY' && rangingSetup && rangingSetup.direction === 'BUY') {
+        console.log('✅ Dynamic Setup Evaluation test passed!');
+    } else {
+        console.log('❌ Dynamic Setup Evaluation test failed!');
+    }
+}
+
 async function runTests() {
     try {
         await testPositionSizing();
         await testPnL();
+        await testSetupEvaluation();
     } catch (err) {
         console.error('Test error:', err);
     }

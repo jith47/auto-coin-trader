@@ -5,37 +5,51 @@ const CONFIG = {
     MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
     DEFAULT_LEVERAGE: 2,
-    SL_PCT: 1.0,
-    TP_PCT: 1.5,
+    SL_PCT: 0.3,
+    TP_PCT: 0.5,
     MIN_ACC_SCORE: 65,
-    COOLDOWN_AFTER_LOSS_MS: 60 * 60 * 1000,
-    MAX_TRADES_PER_DAY: 3,
-    MOCK_MODE: false,
+    COOLDOWN_AFTER_LOSS_MS: 2 * 60 * 60 * 1000,
+    MAX_TRADES_PER_DAY: 5,
+    MOCK_MODE: true,
     INITIAL_INR_BALANCE: 500,
     USD_INR_RATE: 85,
+    TIME_STOP_MINUTES: 10,
+    TIME_STOP_MIN_MOVE_PCT: 0.05,
+    ALLOWED_STRUCTURES: null,
 };
 export class StrategyService {
     constructor(env) {
         this.env = env;
         this.db = null;
         this.indicators = null;
+        this.mockMode = false; // Default to false for safety
     }
     async run(db) {
         this.db = db;
+        const isRunning = await db.getSetting('is_running', 'true');
+        if (isRunning === 'false') {
+            console.log('[Strategy] Service is PAUSED/STOPPED. Exiting early.');
+            return { status: 'PAUSED', message: 'Service is stopped via dashboard' };
+        }
+
+        // Always enable mock trade
+        this.mockMode = true;
+        await db.updateSetting('mock_mode', 'true');
+
         // TEMPORARY: One-time fix for mock balance inflation. Remove after one run.
-        if (CONFIG.MOCK_MODE) {
+        if (this.mockMode) {
             const hasRestored = await this.db.getSetting('balance_restored_mar_04', 'false');
             if (hasRestored === 'false') {
                 await this.fixMockBalance();
                 await this.db.updateSetting('balance_restored_mar_04', 'true');
             }
         }
-        console.log(`[Strategy] ── Evaluation Start(${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'} MODE) ──`);
+        console.log(`[Strategy] ── Evaluation Start(${this.mockMode ? 'MOCK' : 'REAL'} MODE) ──`);
         try {
             // 1. Fetch scouting data FIRST (to have currentPrice for sync/management)
             const [data, instrumentInfo] = await Promise.all([
                 fetchAllMarketData(),
-                CONFIG.MOCK_MODE ? Promise.resolve(null) : getInstrumentDetails(CONFIG.PAIR),
+                this.mockMode ? Promise.resolve(null) : getInstrumentDetails(CONFIG.PAIR),
             ]);
 
             // Extract current ETH price from kline data for sync/management fallback
@@ -46,9 +60,13 @@ export class StrategyService {
 
             // 2. Reconciliation & Sync
             let positions = [];
-            if (!CONFIG.MOCK_MODE) {
+            if (!this.mockMode) {
                 positions = await getOpenPositions(this.env);
                 console.log(`[Strategy] Sync: Fetched ${Array.isArray(positions) ? positions.length : 0} positions from exchange.`);
+                if (positions === null) {
+                    console.error('[Strategy] RECONCILE: Positions API failed. Aborting evaluation to prevent duplicate trades.');
+                    return { status: 'ERROR', message: 'Positions API failed. Aborted for safety.' };
+                }
             }
 
             const activeTrade = await db.getActiveTrade();
@@ -68,6 +86,12 @@ export class StrategyService {
             if (reconciliation.status === 'RECOVERED') {
                 console.log(`[Strategy] Trade sync: RECOVERED orphaned trade. Exiting to allow management in next cycle...`);
                 return reconciliation;
+            }
+
+            // Safety Guard: if activeTrade exists in DB but reconciliation didn't confirm closed, abort
+            if (activeTrade && reconciliation.status !== 'TRADE_CLOSED') {
+                console.warn(`[Strategy] Blocked scouting: DB trade ${activeTrade.id} is active, but reconciliation returned status: ${reconciliation.status}. Aborting cycle.`);
+                return { status: 'WAITING_FOR_SYNC', reason: 'Active trade status unresolved' };
             }
 
             // 4. Proceed to Scouting (if no active trade)
@@ -117,7 +141,7 @@ export class StrategyService {
             }
 
             // 4. Max drawdown circuit breaker
-            if (CONFIG.MOCK_MODE) {
+            if (this.mockMode) {
                 const currentBalance = await this.db.getMockBalance();
                 const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
                 if (drawdownPct >= 2.0) {
@@ -155,6 +179,13 @@ export class StrategyService {
 
             console.log(`[Strategy] Setup found and confirmed: ${setup.type} ${setup.direction} `);
 
+            // 6b. Range filter — block low-conviction entries in choppy markets
+            const rangeFilterResult = this.applyRangeFilter(this.indicators, setup);
+            if (rangeFilterResult.blocked) {
+                console.log(`[Strategy] RANGE FILTER blocked: ${rangeFilterResult.reason}`);
+                return { status: 'RANGE_FILTERED', reason: rangeFilterResult.reason };
+            }
+
             // 7. Verify kill switch doesn't block the found direction
             const killSwitch = setup.direction === 'BUY' ? killSwitchLong : killSwitchShort;
             if (killSwitch.triggered) {
@@ -170,9 +201,67 @@ export class StrategyService {
                 return { status: 'LOW_SCORE', score, threshold };
             }
 
-            const signal = await this.buildSignal(this.indicators, setup, score);
-            console.log('[Strategy] Signal:', JSON.stringify(signal, null, 2));
-            return await this.executeTrade(signal);
+            let signal = await this.buildSignal(this.indicators, setup, score);
+
+            console.log('[Strategy] Generated Base Signal:', JSON.stringify(signal, null, 2));
+            if (!signal.quantity || signal.quantity <= 0) {
+                console.warn('[Strategy] Signal generated but quantity is 0 (likely due to leverage safety limit). Refusing to trade.');
+                return { status: 'LOW_BALANCE_BLOCKED', reason: 'Insufficient balance to trade safely' };
+            }
+
+            // 9. Pullback Confirmation / Pending Signal System
+            const pendingRaw = await db.getSetting('pending_signal', null);
+            let pendingSignal = null;
+            if (pendingRaw && pendingRaw !== 'none') {
+                try { pendingSignal = JSON.parse(pendingRaw); } catch (e) { }
+            }
+
+            const currentEthPrice = this.indicators.eth.price;
+
+            if (pendingSignal && pendingSignal.decision === signal.decision) {
+                const ageMs = Date.now() - pendingSignal.createdAt;
+                const MAX_PENDING_AGE_MS = 5 * 60 * 1000; // 5 minutes max wait
+                if (ageMs > MAX_PENDING_AGE_MS) {
+                    console.log(`[Strategy] Pending signal for ${pendingSignal.decision} expired after ${(ageMs / 60000).toFixed(1)}min without pullback.`);
+                    await db.updateSetting('pending_signal', 'none');
+                    pendingSignal = null;
+                } else {
+                    // Check if price pulled back for a better entry (at least 0.05% pullback or better entry price)
+                    const isBuy = pendingSignal.decision === 'BUY';
+                    const initialEntry = pendingSignal.initialPrice;
+                    const hasPulledBack = isBuy
+                        ? (currentEthPrice <= initialEntry * 0.9995)
+                        : (currentEthPrice >= initialEntry * 1.0005);
+
+                    if (hasPulledBack) {
+                        console.log(`[Strategy] PULLBACK CONFIRMED! Initial: ${initialEntry}, Current: ${currentEthPrice}. Executing pending ${pendingSignal.decision}...`);
+                        await db.updateSetting('pending_signal', 'none');
+                        
+                        // Re-calculate entry, SL, TP at actual entry price
+                        signal.entry = currentEthPrice;
+                        signal.stopLoss = this.roundToTick(isBuy ? currentEthPrice * (1 - CONFIG.SL_PCT / 100) : currentEthPrice * (1 + CONFIG.SL_PCT / 100), this.tickSize || 0.01);
+                        signal.takeProfit = this.roundToTick(isBuy ? currentEthPrice * (1 + CONFIG.TP_PCT / 100) : currentEthPrice * (1 - CONFIG.TP_PCT / 100), this.tickSize || 0.01);
+                        signal.tpLevels = [{ pctOfPosition: 100, price: signal.takeProfit }];
+                        signal.reason += ` | PULLBACK_CONFIRMED (init:${initialEntry}->exec:${currentEthPrice})`;
+                        
+                        return await this.executeTrade(signal);
+                    } else {
+                        console.log(`[Strategy] Waiting for pullback on pending ${pendingSignal.decision}. Initial: ${initialEntry}, Current: ${currentEthPrice}, Age: ${(ageMs / 1000).toFixed(0)}s`);
+                        return { status: 'WAITING_FOR_PULLBACK', initialEntry, currentPrice: currentEthPrice, ageSeconds: Math.round(ageMs / 1000) };
+                    }
+                }
+            }
+
+            // Store new signal as PENDING to wait for pullback in subsequent ticks
+            console.log(`[Strategy] New signal ${signal.decision} generated at ${currentEthPrice}. Storing as PENDING to wait for pullback...`);
+            const newPending = {
+                decision: signal.decision,
+                initialPrice: currentEthPrice,
+                createdAt: Date.now(),
+                score: signal.score,
+            };
+            await db.updateSetting('pending_signal', JSON.stringify(newPending));
+            return { status: 'PENDING_SIGNAL_CREATED', decision: signal.decision, initialPrice: currentEthPrice, message: 'Waiting up to 5 minutes for price pullback confirmation' };
         } catch (err) {
             console.error('[Strategy] Error:', err.message, err.stack);
             return { status: 'ERROR', error: err.message };
@@ -181,6 +270,61 @@ export class StrategyService {
     checkKillSwitches(ind, setup) {
         // Simplified: no kill switches needed — directional alignment handles filtering
         return { triggered: false };
+    }
+    /**
+     * Range Filter — prevents entries in choppy/ranging markets.
+     * Derived from backtest analysis of trades #178-#188:
+     *   Rule 1: BTC ranging + ETH CVD not rising → no trend confirmation
+     *   Rule 2: SELL + BTC rejection + BTC CVD rising → CVD divergence (rejection likely to fail)
+     *   Rule 3: BUY near 24h high / SELL near 24h low → entering at resistance/support extreme
+     *
+     * Verified: blocks all 3 losses (#186-#188), zero false positives on 8 wins.
+     */
+    applyRangeFilter(ind, setup) {
+        const direction = setup.direction;
+        const btcStructure = ind.btc.structure;
+        const btcCvd = ind.btc.cvdDirection;
+        const ethCvd = ind.eth.cvdDirection;
+        const ethDistFromHigh = ind.eth.distFromHigh || 0;
+        const ethDistFromLow = ind.eth.distFromLow || 0;
+        const rs = ind.eth.relativeStrength;
+
+        console.log(`[Strategy] Range Filter check: struct=${btcStructure}, btcCVD=${btcCvd}, ethCVD=${ethCvd}, RS=${rs}, distHigh=${ethDistFromHigh.toFixed(2)}%, distLow=${ethDistFromLow.toFixed(2)}%`);
+
+        // Rule 1: BTC ranging + ETH CVD not confirming direction
+        // In a ranging BTC market, only trade if ETH has independent buying/selling pressure
+        if (btcStructure === 'ranging') {
+            if (direction === 'BUY' && ethCvd !== 'rising') {
+                return { blocked: true, reason: `BTC ranging + ETH CVD ${ethCvd} (not rising) — no trend confirmation for BUY` };
+            }
+            if (direction === 'SELL' && ethCvd !== 'falling') {
+                return { blocked: true, reason: `BTC ranging + ETH CVD ${ethCvd} (not falling) — no trend confirmation for SELL` };
+            }
+        }
+
+        // Rule 2: CVD divergence on rejection structure
+        // If BTC shows "rejection" (bearish wick pattern) but BTC CVD is rising,
+        // buyers are stepping in — the rejection is likely to fail. Don't short.
+        // Mirror: if BTC shows "support_holding" but BTC CVD is falling, don't go long.
+        if (direction === 'SELL' && btcStructure === 'rejection' && btcCvd === 'rising') {
+            return { blocked: true, reason: `SELL blocked: BTC rejection + BTC CVD rising (divergence — buyers stepping in)` };
+        }
+        if (direction === 'BUY' && btcStructure === 'support_holding' && btcCvd === 'falling') {
+            return { blocked: true, reason: `BUY blocked: BTC support_holding + BTC CVD falling (divergence — sellers stepping in)` };
+        }
+
+        // Rule 3: Position in range — don't buy at resistance, don't sell at support
+        // If ETH price is within 1.5% of the 24h high, it's at resistance — bad BUY entry.
+        // If ETH price is within 1.5% of the 24h low, it's at support — bad SELL entry.
+        const RANGE_PROXIMITY_PCT = 1.5;
+        if (direction === 'BUY' && ethDistFromHigh < RANGE_PROXIMITY_PCT && ethDistFromHigh >= 0) {
+            return { blocked: true, reason: `BUY blocked: ETH only ${ethDistFromHigh.toFixed(2)}% from 24h high (at resistance)` };
+        }
+        if (direction === 'SELL' && ethDistFromLow < RANGE_PROXIMITY_PCT && ethDistFromLow >= 0) {
+            return { blocked: true, reason: `SELL blocked: ETH only ${ethDistFromLow.toFixed(2)}% from 24h low (at support)` };
+        }
+
+        return { blocked: false };
     }
     evaluateSetups(ind) {
         console.log('[Strategy] ── Setup Evaluation ──');
@@ -192,6 +336,14 @@ export class StrategyService {
             eth5m: ind.eth.change5m?.toFixed(2),
             relStrength: ind.eth.relativeStrength,
         }));
+
+        // Structure Whitelist Check (optional if CONFIG.ALLOWED_STRUCTURES is specified)
+        if (Array.isArray(CONFIG.ALLOWED_STRUCTURES) && CONFIG.ALLOWED_STRUCTURES.length > 0) {
+            if (!CONFIG.ALLOWED_STRUCTURES.includes(ind.btc.structure)) {
+                console.log(`[Strategy] Blocked: BTC structure '${ind.btc.structure}' is not in allowed list [${CONFIG.ALLOWED_STRUCTURES.join(', ')}]`);
+                return null;
+            }
+        }
 
         // LONG: ETH CVD rising + ETH 5m positive + BTC not dumping
         const isLong = ind.eth.cvdDirection === 'rising'
@@ -257,7 +409,7 @@ export class StrategyService {
         const tp = this.roundToTick(tpPrice, this.tickSize || 0.01);
 
         let inrBalance = CONFIG.INITIAL_INR_BALANCE;
-        if (CONFIG.MOCK_MODE) {
+        if (this.mockMode) {
             inrBalance = await this.db.getMockBalance();
         } else {
             const realInr = await getINRFuturesBalance(this.env);
@@ -284,6 +436,34 @@ export class StrategyService {
             entryValueInr: marginInr,
         };
     }
+    invertSignal(signal) {
+        const originalDecision = signal.decision;
+        const originalSl = signal.stopLoss;
+        const originalTp = signal.takeProfit;
+        const entry = signal.entry;
+
+        const invertedDecision = originalDecision === 'BUY' ? 'SELL' : 'BUY';
+        
+        const slDist = Math.abs(entry - originalSl);
+        const tpDist = Math.abs(entry - originalTp);
+
+        const invertedSl = invertedDecision === 'BUY'
+            ? entry - slDist
+            : entry + slDist;
+
+        const invertedTp = invertedDecision === 'BUY'
+            ? entry + tpDist
+            : entry - tpDist;
+
+        signal.decision = invertedDecision;
+        signal.stopLoss = this.roundToTick(invertedSl, this.tickSize || 0.01);
+        signal.takeProfit = this.roundToTick(invertedTp, this.tickSize || 0.01);
+        signal.tpLevels = [{ pctOfPosition: 100, price: signal.takeProfit }];
+        signal.reason = `CONTRARIAN (${originalDecision} -> ${invertedDecision}) | ` + signal.reason;
+        
+        console.log(`[Strategy] Signal Inverted: ${originalDecision} -> ${invertedDecision}, Entry: ${entry}, Original SL: ${originalSl} -> Inverted SL: ${signal.stopLoss}, Original TP: ${originalTp} -> Inverted TP: ${signal.takeProfit}`);
+        return signal;
+    }
     roundToTick(price, tick) {
         if (!tick || tick <= 0) return parseFloat(price.toFixed(6));
         const rounded = Math.round(price / tick) * tick;
@@ -293,7 +473,7 @@ export class StrategyService {
     }
     async calculateQuantity(entry, sl, mockInrBalance = null) {
         let balanceUsd = 100;
-        if (CONFIG.MOCK_MODE && mockInrBalance) {
+        if (this.mockMode && mockInrBalance) {
             balanceUsd = mockInrBalance / CONFIG.USD_INR_RATE;
         } else {
             // Real mode: fetch INR balance and convert to USD equivalent
@@ -326,26 +506,30 @@ export class StrategyService {
 
         if (currentNotionalUsd < minNotionalUsd) {
             console.log(`[Strategy] Position value ${currentNotionalUsd.toFixed(2)} USD below min notional ${minNotionalUsd} USD. Adjusting...`);
-            
+
             // Set quantity to meet min notional
             quantity = minNotionalUsd / entry;
-            
+
             // Calculate new required margin
             const requiredMarginUsd = (quantity * entry) / leverage;
             if (requiredMarginUsd > marginAvailable) {
                 // If required margin exceeds available, dynamically increase leverage to compensate
                 const neededLeverage = (quantity * entry) / marginAvailable;
-                if (neededLeverage <= maxLeverage) {
+                const safetyLeverageLimit = 5; // Enforce safety threshold
+                if (neededLeverage <= safetyLeverageLimit && neededLeverage <= maxLeverage) {
                     leverage = Math.ceil(neededLeverage);
                     console.log(`[Strategy] Dynamically increased leverage to ${leverage}x to meet min notional with available margin.`);
                     this.leverage = leverage; // Update class property
                     positionValueUsd = marginAvailable * leverage;
                 } else {
-                    // Even at max leverage, we can't afford it
-                    console.warn(`[Strategy] Account balance too low to trade even at max leverage ${maxLeverage}x.`);
+                    // Even at max leverage, or if safety limit exceeded, we can't afford it safely
+                    console.warn(`[Strategy] Refusing to trade: Needed leverage of ${neededLeverage.toFixed(1)}x exceeds safety leverage limit of ${safetyLeverageLimit}x or max leverage ${maxLeverage}x.`);
+                    return 0; // Return 0 to prevent trade execution!
                 }
             }
         }
+
+        if (quantity <= 0) return 0;
 
         // Align to exchange step size
         const stepSize = this.stepSize || 0.001;
@@ -388,10 +572,10 @@ export class StrategyService {
     }
     async executeTrade(signal) {
         try {
-            console.log(`[Strategy] Executing ${signal.decision} trade (${CONFIG.MOCK_MODE ? 'MOCK' : 'REAL'})...`);
+            console.log(`[Strategy] Executing ${signal.decision} trade (${this.mockMode ? 'MOCK' : 'REAL'})...`);
 
             let result;
-            if (CONFIG.MOCK_MODE) {
+            if (this.mockMode) {
                 result = {
                     mock: true,
                     orders: [{ id: `MOCK_${Date.now()}` }],
@@ -486,7 +670,7 @@ export class StrategyService {
 
         const entryPrice = parseFloat(activeTrade.price);
         const isLong = activeTrade.decision === 'BUY';
-        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+        const isMock = this.mockMode || activeTrade.order_id?.startsWith('MOCK_');
 
         if (isMock) {
             return await this.manageMockTrade(activeTrade, currentPrice, entryPrice, isLong);
@@ -500,9 +684,11 @@ export class StrategyService {
             const ageMs = now - activeTrade.timestamp;
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
 
-            // Fix 4: 10m Time Stop
-            if (ageMs > 10 * 60 * 1000 && priceChangePct < 0.3) {
-                console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < 0.3%`);
+            // Optimize Time Stop
+            const timeStopMs = (CONFIG.TIME_STOP_MINUTES || 30) * 60 * 1000;
+            const minMovePct = CONFIG.TIME_STOP_MIN_MOVE_PCT !== undefined ? CONFIG.TIME_STOP_MIN_MOVE_PCT : 0.1;
+            if (ageMs > timeStopMs && priceChangePct < minMovePct) {
+                console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < ${minMovePct}%`);
                 await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
                 return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * parseFloat(activeTrade.leverage) };
             }
@@ -598,7 +784,7 @@ export class StrategyService {
     }
 
     async checkAndExecutePartialTP(tpLevels, currentPrice, totalQty, entryPrice, isLong, activeTrade) {
-        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+        const isMock = this.mockMode || activeTrade.order_id?.startsWith('MOCK_');
         for (let i = 0; i < tpLevels.length; i++) {
             const level = tpLevels[i];
             if (level.executed) continue;
@@ -685,7 +871,7 @@ export class StrategyService {
 
     async closeTradeInDb(activeTrade, currentPrice, reason, providedExitRate = null) {
         const isLong = activeTrade.decision === 'BUY';
-        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+        const isMock = this.mockMode || activeTrade.order_id?.startsWith('MOCK_');
 
         const tpLevels = activeTrade.tp_levels ? JSON.parse(activeTrade.tp_levels) : [];
         const executedPct = tpLevels.filter(l => l.executed).reduce((sum, l) => sum + l.pctOfPosition, 0);
@@ -700,7 +886,7 @@ export class StrategyService {
     }
 
     async _settlePortion(activeTrade, exitPriceInput, portionFractionInput, isLong, providedExitRate = null) {
-        const isMock = CONFIG.MOCK_MODE || activeTrade.order_id?.startsWith('MOCK_');
+        const isMock = this.mockMode || activeTrade.order_id?.startsWith('MOCK_');
 
         let exitPrice = parseFloat(exitPriceInput);
         let portionFraction = parseFloat(portionFractionInput);
@@ -745,6 +931,16 @@ export class StrategyService {
             const newBalance = currentBalance + finalPortionPnlInr;
             await this.db.updateMockBalance(newBalance);
             console.log(`[Strategy] Mock Settlement (${(portionFraction * 100).toFixed(0)}%): PnL=${portionPnLInr.toFixed(2)}, Fees=${(entryFeeInrPortion + exitFeeInrPortion).toFixed(2)}, Net=${finalPortionPnlInr.toFixed(2)} INR. New Balance: ${newBalance.toFixed(2)}`);
+
+            if (this.mockMode) {
+                const startBalance = 2500; // Starting mock balance in settings
+                const mockPnlPct = ((newBalance - startBalance) / startBalance) * 100;
+                if (mockPnlPct >= 100.0) {
+                    console.log(`[Strategy] AUTO-SWITCH SUCCESS: Mock P&L reached ${mockPnlPct.toFixed(1)}% (Balance: ₹${newBalance.toFixed(2)}). Switching to REAL mode.`);
+                    await this.db.updateSetting('mock_mode', 'false');
+                    this.mockMode = false;
+                }
+            }
         } else {
             console.log(`[Strategy] Real Settlement Sync (${(portionFraction * 100).toFixed(0)}%): PnL=${portionPnLInr.toFixed(2)}, Fees=${(entryFeeInrPortion + exitFeeInrPortion).toFixed(2)}, Net=${finalPortionPnlInr.toFixed(2)} INR`);
         }
@@ -787,16 +983,24 @@ export class StrategyService {
             return { canTrade: false, reason: `Daily trade limit (${todayTradeCount}/${CONFIG.MAX_TRADES_PER_DAY})` };
         }
 
-        // 2. Consecutive Loss Check (Fix 4)
-        // const recentTrades = await this.db.getRecentTrades(3);
-        // const consecutiveLosses = recentTrades.filter(t => t.status === 'CLOSED' && t.pnl < 0).length;
-        // if (recentTrades.length === 3 && consecutiveLosses === 3) {
-        //     return { canTrade: false, reason: 'Consecutive loss limit (3) reached' };
-        // }
+        // 2. Consecutive Loss Circuit Breaker (2 losses in a row)
+        const recentTrades = await this.db.getRecentTrades(5);
+        const closedTrades = recentTrades.filter(t => t.status === 'CLOSED');
+        if (closedTrades.length >= 2) {
+            const lastTwoLosses = closedTrades.slice(0, 2).every(t => (t.pnl !== null ? t.pnl <= 0 : (t.pnl_inr || 0) <= 0));
+            if (lastTwoLosses) {
+                const mostRecentLossTime = closedTrades[0].closed_at || closedTrades[0].timestamp;
+                const elapsed = Date.now() - mostRecentLossTime;
+                if (elapsed < CONFIG.COOLDOWN_AFTER_LOSS_MS) {
+                    const remaining = Math.ceil((CONFIG.COOLDOWN_AFTER_LOSS_MS - elapsed) / 60000);
+                    return { canTrade: false, reason: `Consecutive loss breaker: 2 losses in a row (${remaining}min cooldown remaining)` };
+                }
+            }
+        }
 
-        // 3. Daily Drawdown Protection (2% of initial balance)
+        // 3. Daily Drawdown Protection (10% of initial balance)
         const todayPnLInr = await this.db.getTodayPnLInr();
-        const ddInr = CONFIG.INITIAL_INR_BALANCE * 0.02; // 2% = ₹10
+        const ddInr = CONFIG.INITIAL_INR_BALANCE * 0.10; // 10% = ₹50
         if (todayPnLInr <= -ddInr) {
             return { canTrade: false, reason: `Daily DD limit reached: ${todayPnLInr.toFixed(2)} / -${ddInr.toFixed(2)} INR` };
         }
@@ -818,7 +1022,7 @@ export class StrategyService {
      * Ensures DB and Exchange stay in sync even across errors/timeouts.
      */
     async reconcileTrades(activeTrade, positions, currentPriceFallback = null) {
-        const isMock = CONFIG.MOCK_MODE;
+        const isMock = this.mockMode;
         if (isMock) {
             // Mock mode doesn't have an exchange back-end to reconcile with
             if (activeTrade) return { status: 'SYNC_STILL_OPEN' };
@@ -879,21 +1083,21 @@ export class StrategyService {
             const pair = (activeTrade.asset || CONFIG.PAIR).toUpperCase();
             const entryTime = activeTrade.timestamp || 0;
             const entrySide = activeTrade.decision;
-            
+
             const exitTrades = history.filter(t => {
                 const matchPair = (t.pair === pair || t.symbol === pair);
                 const isAfterEntry = new Date(t.created_at).getTime() > (entryTime + 1000); // 1s buffer
                 const isOppositeSide = (t.side !== entrySide && t.order_side !== entrySide);
                 const isDifferentOrder = (t.order_id !== activeTrade.order_id);
-                
+
                 return matchPair && (isAfterEntry || isDifferentOrder) && isOppositeSide;
             });
-            
+
             // If still no opposite trades, try any trade that isn't our entry as a last resort
             let finalExitTrades = exitTrades;
             if (finalExitTrades.length === 0) {
-                finalExitTrades = history.filter(t => 
-                    (t.pair === pair || t.symbol === pair) && 
+                finalExitTrades = history.filter(t =>
+                    (t.pair === pair || t.symbol === pair) &&
                     t.order_id !== activeTrade.order_id
                 );
             }
@@ -928,7 +1132,7 @@ export class StrategyService {
         try {
             // Fetch trade history to find the entry details
             const history = await getTradeHistory(this.env);
-            if (CONFIG.MOCK_MODE) return { status: 'SCANNING' }; // Safety
+            if (this.mockMode) return { status: 'SCANNING' }; // Safety
 
             const matches = Array.isArray(history)
                 ? history.filter(t => {

@@ -306,7 +306,76 @@
             background: transparent;
             border-color: var(--red);
             color: var(--red);
-            font-size: 0.75rem;
+            font-size: 0.8rem;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .btn-success {
+            background: var(--green) !important;
+            border-color: var(--green) !important;
+            color: #111827 !important;
+            font-weight: 600;
+        }
+
+        .btn-success:hover {
+            opacity: 0.85;
+        }
+
+        .status-badge-stopped {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid var(--red);
+            color: var(--red);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 8px;
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        .live-warning-banner {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid var(--red);
+            color: var(--red);
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            text-align: center;
+            letter-spacing: 0.5px;
+            animation: pulse-warning 2s infinite;
+        }
+
+        @keyframes pulse-warning {
+            0% { opacity: 0.9; }
+            50% { opacity: 1; }
+            100% { opacity: 0.9; }
+        }
+
+        .btn-live-mode {
+            background: #ef4444 !important;
+            border-color: #ef4444 !important;
+            color: #ffffff !important;
+            font-weight: 600;
+        }
+
+        .btn-mock-mode {
+            background: var(--amber) !important;
+            border-color: var(--amber) !important;
+            color: #111827 !important;
+            font-weight: 600;
+        }
+
+        .btn-contrarian-mode {
+            background: #a855f7 !important;
+            border-color: #a855f7 !important;
+            color: #ffffff !important;
+            font-weight: 600;
         }
 
         .delta-row {
@@ -439,15 +508,21 @@
                 <div class="header-right">
                     <span class="refresh-timer" id="timer">Auto-refresh: 10s</span>
                     <span class="live-dot" id="liveDot"></span>
-                    <button class="btn btn-primary" onclick="triggerRun()">▶ Run Now</button>
+                    <button class="btn btn-warning" id="toggleServiceBtn" onclick="toggleService()">⏹ Stop Service</button>
+                    <button class="btn btn-mock-mode" id="toggleMockBtn" style="cursor: not-allowed;" disabled>🎮 Enforced Mock Mode</button>
+                    <button class="btn btn-primary" id="runBtn" onclick="triggerRun()">▶ Run Now</button>
                     <button class="btn" onclick="refresh()">↻ Refresh</button>
                     <button class="btn btn-danger" onclick="logout()">Logout</button>
                 </div>
             </div>
 
+            <div id="liveWarningBanner" class="live-warning-banner" style="display:none;">
+                ⚠️ WARNING: Live Trading Mode is ACTIVE (Real Money at Risk).
+            </div>
+
             <div class="grid" id="statsGrid">
                 <div class="card">
-                    <div class="card-label">Status</div>
+                    <div class="card-label">Status <span id="stoppedBadge" style="display:none;" class="status-badge-stopped">PAUSED</span></div>
                     <div class="card-value" id="status">—</div>
                     <div class="card-sub" id="statusSub"></div>
                 </div>
@@ -474,6 +549,51 @@
                     <span class="badge badge-blue" id="activeDirection">—</span>
                 </div>
                 <div class="indicator-grid" id="activeDetails"></div>
+            </div>
+
+            <div class="panel" id="marketDataPanel">
+                <div class="panel-header">
+                    <span class="panel-title">🔍 Futures Market Data (Live)</span>
+                    <span class="refresh-timer" id="marketDataTime">Last updated: —</span>
+                </div>
+                <div class="indicator-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+                    <div style="border-right: 1px solid var(--border); padding-right: 16px;">
+                        <h3 style="font-size: 0.85rem; margin-bottom: 12px; color: var(--amber);">BTC FUTURES</h3>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                            <div class="ind-item"><div class="ind-label">Price</div><span id="btcPrice" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">24h Chg</div><span id="btc24hChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">1m Chg</div><span id="btc1mChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">5m Chg</div><span id="btc5mChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">CVD Dir</div><span id="btcCvdDir" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">CVD Slope</div><span id="btcCvdSlope" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item" style="grid-column: span 2;"><div class="ind-label">Structure</div><span id="btcStruct" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                        </div>
+                    </div>
+                    <div style="border-right: 1px solid var(--border); padding-right: 16px;">
+                        <h3 style="font-size: 0.85rem; margin-bottom: 12px; color: var(--blue);">ETH FUTURES (Traded)</h3>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                            <div class="ind-item"><div class="ind-label">Price</div><span id="ethPrice" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">24h Chg</div><span id="eth24hChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">1m Chg</div><span id="eth1mChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">5m Chg</div><span id="eth5mChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">CVD Dir</div><span id="ethCvdDir" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">CVD Slope</div><span id="ethCvdSlope" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Dist High</div><span id="ethDistHigh" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Dist Low</div><span id="ethDistLow" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 style="font-size: 0.85rem; margin-bottom: 12px; color: var(--purple);">SECTOR & MATRIX</h3>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                            <div class="ind-item"><div class="ind-label">SOL Price</div><span id="solPrice" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">SOL 24h Chg</div><span id="sol24hChg" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Rel Strength</div><span id="ethRelStrength" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Sector Bias</div><span id="sectorBias" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Liquidation</div><span id="liqEvent" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                            <div class="ind-item"><div class="ind-label">Session (UTC)</div><span id="sessionHour" style="font-family:'JetBrains Mono',monospace;">—</span></div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="panel">
@@ -577,44 +697,178 @@
 
         async function refresh() {
             try {
-                const [statusRes, tradesRes, deltaRes] = await Promise.all([
-                    apiFetch('/api/status').catch(() => null),
-                    apiFetch('/api/trades').catch(() => []),
-                    apiFetch('/api/delta').catch(() => null),
+                const [statusRes, tradesRes, deltaRes, marketDataRes] = await Promise.all([
+                    apiFetch('/api/status').catch(err => { console.error("Status fetch error:", err); return null; }),
+                    apiFetch('/api/trades').catch(err => { console.error("Trades fetch error:", err); return []; }),
+                    apiFetch('/api/delta').catch(err => { console.error("Delta fetch error:", err); return null; }),
+                    apiFetch('/api/market-data').catch(err => { console.error("Market data fetch error:", err); return null; }),
                 ]);
-                if (statusRes) renderStatus(statusRes);
-                if (tradesRes) renderTrades(tradesRes);
-                if (deltaRes) renderDelta(deltaRes);
-            } catch (e) { /* handled in apiFetch */ }
+                console.log("marketDataRes fetched:", marketDataRes);
+                if (statusRes) {
+                    try {
+                        renderStatus(statusRes);
+                    } catch (statusErr) {
+                        console.error("renderStatus error:", statusErr);
+                    }
+                }
+                if (tradesRes) {
+                    try {
+                        renderTrades(tradesRes);
+                    } catch (tradesErr) {
+                        console.error("renderTrades error:", tradesErr);
+                    }
+                }
+                if (deltaRes) {
+                    try {
+                        renderDelta(deltaRes);
+                    } catch (deltaErr) {
+                        console.error("renderDelta error:", deltaErr);
+                    }
+                }
+                if (marketDataRes) {
+                    try {
+                        renderMarketData(marketDataRes);
+                    } catch (renderErr) {
+                        console.error("renderMarketData error:", renderErr);
+                    }
+                }
+            } catch (e) {
+                console.error("refresh error:", e);
+            }
         }
 
+        function renderMarketData(m) {
+            const ind = m.indicators;
+            if (!ind) {
+                console.warn("No indicators object found in market data response");
+                return;
+            }
+
+            document.getElementById('marketDataTime').textContent = `Last updated: ${new Date(m.timestamp).toLocaleTimeString()}`;
+
+            const fmtChg = (val) => {
+                if (val == null) return '—';
+                const parsed = parseFloat(val);
+                const text = (parsed >= 0 ? '+' : '') + parsed.toFixed(2) + '%';
+                const cls = parsed > 0 ? 'text-green' : parsed < 0 ? 'text-red' : 'text-dim';
+                return `<span class="${cls}">${text}</span>`;
+            };
+
+            const fmtPrice = (val, dec = 2) => {
+                if (val == null || val === 0) return '—';
+                return parseFloat(val).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+            };
+
+            const fmtCvd = (dir, slope) => {
+                if (!dir) return '—';
+                const cls = dir === 'rising' ? 'text-green' : dir === 'falling' ? 'text-red' : 'text-dim';
+                return `<span class="${cls}">${dir}</span> (${slope || 'flat'})`;
+            };
+
+            const fmtStruct = (val) => {
+                if (!val) return '—';
+                const isBullish = val.includes('bullish') || val === 'support_holding' || val === 'breakout';
+                const isBearish = val.includes('bearish') || val === 'rejection' || val === 'breakdown';
+                const cls = isBullish ? 'text-green' : isBearish ? 'text-red' : 'text-dim';
+                return `<span class="${cls}">${val}</span>`;
+            };
+
+            // BTC
+            document.getElementById('btcPrice').innerHTML = '$' + fmtPrice(ind.btc.price, 1);
+            document.getElementById('btc24hChg').innerHTML = fmtChg(ind.btc.dailyChange);
+            document.getElementById('btc1mChg').innerHTML = fmtChg(ind.btc.change5m);
+            document.getElementById('btc5mChg').innerHTML = fmtChg(ind.btc.change1h);
+            document.getElementById('btcCvdDir').innerHTML = fmtCvd(ind.btc.cvdDirection, ind.btc.cvdSlope);
+            document.getElementById('btcCvdSlope').textContent = ind.btc.cvdValue ? ind.btc.cvdValue.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
+            document.getElementById('btcStruct').innerHTML = fmtStruct(ind.btc.structure);
+
+            // ETH
+            document.getElementById('ethPrice').innerHTML = '$' + fmtPrice(ind.eth.price, 2);
+            document.getElementById('eth24hChg').innerHTML = fmtChg(ind.eth.dailyChange);
+            document.getElementById('eth1mChg').innerHTML = fmtChg(ind.eth.change5m);
+            document.getElementById('eth5mChg').innerHTML = fmtChg(ind.eth.change1h);
+            document.getElementById('ethCvdDir').innerHTML = fmtCvd(ind.eth.cvdDirection, ind.eth.cvdSlope);
+            document.getElementById('ethCvdSlope').textContent = ind.eth.cvdValue ? ind.eth.cvdValue.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
+            document.getElementById('ethDistHigh').textContent = ind.eth.distFromHigh ? ind.eth.distFromHigh.toFixed(2) + '%' : '—';
+            document.getElementById('ethDistLow').textContent = ind.eth.distFromLow ? ind.eth.distFromLow.toFixed(2) + '%' : '—';
+
+            // SOL & Sector
+            document.getElementById('solPrice').innerHTML = '$' + fmtPrice(ind.sector.solPrice, 2);
+            document.getElementById('sol24hChg').innerHTML = fmtChg(ind.sector.solChange);
+            document.getElementById('ethRelStrength').textContent = ind.eth.relativeStrength || '—';
+            document.getElementById('sectorBias').textContent = ind.sector.bias || '—';
+            document.getElementById('liqEvent').textContent = ind.liquidations?.recentEvent || '—';
+            document.getElementById('sessionHour').textContent = ind.session?.hour ? ind.session.hour.toFixed(2) : '—';
+        }
+
+        let servicePaused = false;
+        let mockModeActive = false;
+
         function renderStatus(s) {
+            if (s.isRunning !== undefined) {
+                updateServiceUI(s.isRunning);
+            }
+            if (s.mockMode !== undefined) {
+                updateMockUI(s.mockMode);
+            }
             const el = document.getElementById('status');
-            el.textContent = s.status;
-            el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-blue' : 'text-green');
-            document.getElementById('statusSub').textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
-            document.getElementById('todayTrades').textContent = `${s.todayTrades || 0} / 10`;
-            document.getElementById('todayLosses').textContent = `${s.todayLosses || 0} losses today`;
-            document.getElementById('winRate').textContent = (s.stats?.winRate || 0) + '%';
-            document.getElementById('totalTrades').textContent = `${s.stats?.totalTrades || 0} total`;
+            if (el) {
+                el.textContent = s.status;
+                el.className = 'card-value ' + (s.status === 'IN_TRADE' ? 'text-blue' : 'text-green');
+            }
+            const statusSub = document.getElementById('statusSub');
+            if (statusSub) {
+                statusSub.textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
+            }
+            const todayTrades = document.getElementById('todayTrades');
+            if (todayTrades) {
+                todayTrades.textContent = `${s.todayTrades || 0} / 10`;
+            }
+            const todayLosses = document.getElementById('todayLosses');
+            if (todayLosses) {
+                todayLosses.textContent = `${s.todayLosses || 0} losses today`;
+            }
+            const winRate = document.getElementById('winRate');
+            if (winRate) {
+                winRate.textContent = (s.stats?.winRate || 0) + '%';
+            }
+            const totalTrades = document.getElementById('totalTrades');
+            if (totalTrades) {
+                totalTrades.textContent = `${s.stats?.totalTrades || 0} total`;
+            }
             const pnl = s.stats?.totalPnL || 0;
             const pnlEl = document.getElementById('totalPnl');
-            pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
-            pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
-            document.getElementById('mockBalance').textContent = 'Mock Balance: ₹' + (s.stats?.balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+            if (pnlEl) {
+                pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+                pnlEl.className = 'card-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
+            }
+            const mockBalance = document.getElementById('mockBalance');
+            if (mockBalance) {
+                mockBalance.textContent = 'Mock Balance: ₹' + (s.stats?.balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+            }
             const panel = document.getElementById('activePanel');
-            if (s.activeTrade) {
-                panel.style.display = 'block';
-                document.getElementById('activeDirection').textContent = s.activeTrade.decision;
-                document.getElementById('activeDirection').className = 'badge ' + (s.activeTrade.decision === 'BUY' ? 'badge-green' : 'badge-red');
-                document.getElementById('activeDetails').innerHTML = `
+            if (panel) {
+                if (s.activeTrade) {
+                    panel.style.display = 'block';
+                    const activeDir = document.getElementById('activeDirection');
+                    if (activeDir) {
+                        activeDir.textContent = s.activeTrade.decision;
+                        activeDir.className = 'badge ' + (s.activeTrade.decision === 'BUY' ? 'badge-green' : 'badge-red');
+                    }
+                    const activeDetails = document.getElementById('activeDetails');
+                    if (activeDetails) {
+                        activeDetails.innerHTML = `
       <div class="ind-item"><div class="ind-label">Entry</div>${s.activeTrade.price}</div>
       <div class="ind-item"><div class="ind-label">Stop Loss</div>${s.activeTrade.stop_loss}</div>
       <div class="ind-item"><div class="ind-label">Take Profit</div>${s.activeTrade.take_profit}</div>
       <div class="ind-item"><div class="ind-label">Quantity</div>${s.activeTrade.quantity}</div>
       <div class="ind-item"><div class="ind-label">Leverage</div>${s.activeTrade.leverage}x</div>
       <div class="ind-item"><div class="ind-label">Order ID</div><span class="text-dim">${(s.activeTrade.order_id || '').slice(0, 16)}</span></div>`;
-            } else { panel.style.display = 'none'; }
+                    }
+                } else {
+                    panel.style.display = 'none';
+                }
+            }
         }
 
         function renderTrades(trades) {
@@ -660,6 +914,7 @@
 
         function renderDelta(d) {
             const el = document.getElementById('deltaStatus');
+            if (!el) return;
             if (d.error) { el.textContent = 'NOT BOUND'; el.className = 'badge badge-red'; return; }
             el.textContent = d.connected ? 'CONNECTED' : 'DISCONNECTED';
             el.className = 'badge ' + (d.connected ? 'badge-green' : 'badge-red');
@@ -675,6 +930,10 @@
         }
 
         async function triggerRun() {
+            if (servicePaused) {
+                alert('Service is currently stopped/paused. Please restart the service first.');
+                return;
+            }
             const pre = document.getElementById('lastRun');
             pre.textContent = 'Running strategy...';
             try {
@@ -682,6 +941,103 @@
                 pre.textContent = JSON.stringify(data, null, 2);
                 setTimeout(refresh, 500);
             } catch (e) { pre.textContent = 'Error: ' + e.message; }
+        }
+
+        async function toggleService() {
+            const btn = document.getElementById('toggleServiceBtn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/settings/toggle-service', {
+                    method: 'POST',
+                    headers: authHeaders()
+                });
+                if (res.status === 401) { logout(); return; }
+                const data = await res.json();
+                if (data.success) {
+                    servicePaused = !data.isRunning;
+                    updateServiceUI(data.isRunning);
+                    setTimeout(refresh, 200);
+                } else {
+                    alert('Failed to toggle service: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Connection error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function updateServiceUI(isRunning) {
+            servicePaused = !isRunning;
+            const btn = document.getElementById('toggleServiceBtn');
+            const runBtn = document.getElementById('runBtn');
+            const badge = document.getElementById('stoppedBadge');
+            
+            if (isRunning) {
+                btn.textContent = '⏹ Stop Service';
+                btn.className = 'btn btn-danger';
+                btn.style.borderColor = 'var(--red)';
+                btn.style.color = 'var(--red)';
+                btn.style.background = 'transparent';
+                badge.style.display = 'none';
+                if (runBtn) {
+                    runBtn.disabled = servicePaused || mockModeActive === undefined;
+                    runBtn.style.opacity = servicePaused ? '0.5' : '1';
+                    runBtn.style.cursor = servicePaused ? 'not-allowed' : 'pointer';
+                }
+            } else {
+                btn.textContent = '▶ Restart Service';
+                btn.className = 'btn btn-success';
+                btn.style.borderColor = 'var(--green)';
+                btn.style.color = '#111827';
+                btn.style.background = 'var(--green)';
+                badge.style.display = 'inline-block';
+                if (runBtn) {
+                    runBtn.disabled = true;
+                    runBtn.style.opacity = '0.5';
+                    runBtn.style.cursor = 'not-allowed';
+                }
+            }
+        }
+
+        async function toggleMock() {
+            const btn = document.getElementById('toggleMockBtn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/settings/toggle-mock', {
+                    method: 'POST',
+                    headers: authHeaders()
+                });
+                if (res.status === 401) { logout(); return; }
+                const data = await res.json();
+                if (data.success) {
+                    mockModeActive = data.mockMode;
+                    updateMockUI(data.mockMode);
+                    setTimeout(refresh, 200);
+                } else {
+                    alert('Failed to toggle mock mode: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Connection error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function updateMockUI(isMock) {
+            mockModeActive = isMock;
+            const btn = document.getElementById('toggleMockBtn');
+            const banner = document.getElementById('liveWarningBanner');
+            
+            if (isMock) {
+                btn.textContent = '🎮 Mode: Mock (Enforced)';
+                btn.className = 'btn btn-mock-mode';
+                banner.style.display = 'none';
+            } else {
+                btn.textContent = '💰 Mode: Real';
+                btn.className = 'btn btn-live-mode';
+                banner.style.display = 'block';
+            }
         }
 
         function startAutoRefresh() {
