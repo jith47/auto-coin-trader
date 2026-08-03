@@ -52,13 +52,18 @@ export default {
                 const todayLosses = await db.getTodayLossCount();
                 const isRunning = await db.getSetting('is_running', 'true');
                 const mockMode = await db.getSetting('mock_mode', 'true');
+                const parallelTradesMode = await db.getSetting('parallel_trades_mode', 'false');
+                const activeTrades = await db.getActiveTrades();
                 return Response.json({
-                    status: activeTrade ? 'IN_TRADE' : 'SCANNING',
-                    activeTrade, stats,
+                    status: activeTrades.length > 0 ? 'IN_TRADE' : 'SCANNING',
+                    activeTrade: activeTrades[0] || null,
+                    activeTradesCount: activeTrades.length,
+                    stats,
                     todayTrades: todayCount, todayLosses,
                     timestamp: new Date().toISOString(),
                     isRunning: isRunning === 'true',
                     mockMode: mockMode === 'true',
+                    parallelTradesMode: parallelTradesMode === 'true',
                 });
             }
 
@@ -88,6 +93,17 @@ export default {
                 try {
                     await db.updateSetting('mock_mode', 'true');
                     return Response.json({ success: true, mockMode: true, message: 'Mock Mode strictly enforced' });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
+            if (url.pathname === '/api/settings/toggle-parallel-trades' && request.method === 'POST') {
+                try {
+                    const current = await db.getSetting('parallel_trades_mode', 'false');
+                    const nextState = current === 'true' ? 'false' : 'true';
+                    await db.updateSetting('parallel_trades_mode', nextState);
+                    return Response.json({ success: true, parallelTradesMode: nextState === 'true' });
                 } catch (err) {
                     return Response.json({ error: err.message }, { status: 500 });
                 }

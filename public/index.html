@@ -510,6 +510,7 @@
                     <span class="live-dot" id="liveDot"></span>
                     <button class="btn btn-warning" id="toggleServiceBtn" onclick="toggleService()">⏹ Stop Service</button>
                     <button class="btn btn-mock-mode" id="toggleMockBtn" style="cursor: not-allowed;" disabled>🎮 Enforced Mock Mode</button>
+                    <button class="btn" id="toggleParallelBtn" onclick="toggleParallelTrades()">⚡ Parallel Trades: Off</button>
                     <button class="btn btn-primary" id="runBtn" onclick="triggerRun()">▶ Run Now</button>
                     <button class="btn" onclick="refresh()">↻ Refresh</button>
                     <button class="btn btn-danger" onclick="logout()">Logout</button>
@@ -609,6 +610,7 @@
                                 <th>Time</th>
                                 <th>Closed</th>
                                 <th>Side</th>
+                                <th>Strategy</th>
                                 <th>Entry</th>
                                 <th>Exit</th>
                                 <th>SL</th>
@@ -811,6 +813,9 @@
             if (s.mockMode !== undefined) {
                 updateMockUI(s.mockMode);
             }
+            if (s.parallelTradesMode !== undefined) {
+                updateParallelUI(s.parallelTradesMode);
+            }
             const el = document.getElementById('status');
             if (el) {
                 el.textContent = s.status;
@@ -885,6 +890,7 @@
                 const pnlInr = t.pnl_inr != null ? (t.pnl_inr >= 0 ? '+' : '') + parseFloat(t.pnl_inr).toFixed(2) : null;
                 const pnlDisplay = pnlInr ? `${pnl} (₹${pnlInr})` : pnl;
                 const fullReason = t.reason || '—';
+                const strategyName = fullReason.split(' | ')[0] || '—';
                 const isLongReason = fullReason.length > 45;
                 const reasonHtml = isLongReason
                     ? `<div class="reason-cell" onclick="toggleReason(this)">
@@ -894,7 +900,7 @@
                     : `<div class="reason-cell"><div class="reason-content">${fullReason}</div></div>`;
 
                 const exitPrice = t.exit_price != null ? parseFloat(t.exit_price).toFixed(5) : '—';
-                return `<tr><td><span class="text-dim">#${t.id}</span></td><td>${time}</td><td>${closeTime}</td><td class="${sideClass}">${t.decision}</td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${exitPrice}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
+                return `<tr><td><span class="text-dim">#${t.id}</span></td><td>${time}</td><td>${closeTime}</td><td class="${sideClass}">${t.decision}</td><td><span class="badge badge-blue" style="font-size:0.7rem;">${strategyName}</span></td><td>${parseFloat(t.price || 0).toFixed(5)}</td><td>${exitPrice}</td><td>${parseFloat(t.stop_loss || 0).toFixed(5)}</td><td>${parseFloat(t.take_profit || 0).toFixed(5)}</td><td>${t.quantity}</td><td>${t.raw_response ? (JSON.parse(t.raw_response).score || '—') : '—'}</td><td><span class="badge ${statusBadge}">${t.status}</span></td><td class="${pnlClass}">${pnlDisplay}</td><td>${reasonHtml}</td></tr>`;
             }).join('');
         }
 
@@ -1037,6 +1043,42 @@
                 btn.textContent = '💰 Mode: Real';
                 btn.className = 'btn btn-live-mode';
                 banner.style.display = 'block';
+            }
+        }
+
+        async function toggleParallelTrades() {
+            const btn = document.getElementById('toggleParallelBtn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/settings/toggle-parallel-trades', {
+                    method: 'POST',
+                    headers: authHeaders()
+                });
+                if (res.status === 401) { logout(); return; }
+                const data = await res.json();
+                if (data.success) {
+                    updateParallelUI(data.parallelTradesMode);
+                    setTimeout(refresh, 200);
+                } else {
+                    alert('Failed to toggle parallel trades: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Connection error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function updateParallelUI(isParallel) {
+            const btn = document.getElementById('toggleParallelBtn');
+            if (btn) {
+                if (isParallel) {
+                    btn.textContent = '⚡ Parallel Trades: Enabled';
+                    btn.className = 'btn btn-primary';
+                } else {
+                    btn.textContent = '⚡ Parallel Trades: Disabled';
+                    btn.className = 'btn';
+                }
             }
         }
 

@@ -1,5 +1,6 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition, getInstrumentDetails, getINRFuturesBalance, getTradeHistory } from './coindcx.js';
 import { fetchAllMarketData, computeIndicators } from './binance.js';
+import { runAllStrategies } from './strategies.js';
 const CONFIG = {
     PAIR: 'B-ETH_USDT',
     MARGIN_CURRENCY: 'INR',
@@ -58,40 +59,59 @@ export class StrategyService {
                 ? ethKlines[ethKlines.length - 1].close
                 : 0;
 
-            // 2. Reconciliation & Sync
-            let positions = [];
-            if (!this.mockMode) {
-                positions = await getOpenPositions(this.env);
-                console.log(`[Strategy] Sync: Fetched ${Array.isArray(positions) ? positions.length : 0} positions from exchange.`);
-                if (positions === null) {
-                    console.error('[Strategy] RECONCILE: Positions API failed. Aborting evaluation to prevent duplicate trades.');
-                    return { status: 'ERROR', message: 'Positions API failed. Aborted for safety.' };
+            // 2. Parallel Trades Check & Management
+            const parallelSetting = await db.getSetting('parallel_trades_mode', 'false');
+            const isParallelMode = parallelSetting === 'true' && this.mockMode;
+
+            if (isParallelMode) {
+                const activeTrades = await db.getActiveTrades();
+                console.log(`[Strategy] Parallel Mock Mode ACTIVE. Managing ${activeTrades.length} open trade(s)...`);
+                let openCount = 0;
+                for (const trade of activeTrades) {
+                    const res = await this.manageTrade(trade, currentPrice);
+                    if (res && res.status === 'IN_TRADE') {
+                        openCount++;
+                    }
                 }
-            }
+                const MAX_PARALLEL_TRADES = 5;
+                if (openCount >= MAX_PARALLEL_TRADES) {
+                    console.log(`[Strategy] Parallel Mock Mode: Max parallel limit reached (${openCount}/${MAX_PARALLEL_TRADES}). Skipping new entries.`);
+                    return { status: 'MAX_PARALLEL_TRADES_REACHED', openCount, max: MAX_PARALLEL_TRADES };
+                }
+            } else {
+                // Single Trade Mode (standard behavior)
+                let positions = [];
+                if (!this.mockMode) {
+                    positions = await getOpenPositions(this.env);
+                    console.log(`[Strategy] Sync: Fetched ${Array.isArray(positions) ? positions.length : 0} positions from exchange.`);
+                    if (positions === null) {
+                        console.error('[Strategy] RECONCILE: Positions API failed. Aborting evaluation to prevent duplicate trades.');
+                        return { status: 'ERROR', message: 'Positions API failed. Aborted for safety.' };
+                    }
+                }
 
-            const activeTrade = await db.getActiveTrade();
-            const reconciliation = await this.reconcileTrades(activeTrade, positions, currentPrice);
+                const activeTrade = await db.getActiveTrade();
+                const reconciliation = await this.reconcileTrades(activeTrade, positions, currentPrice);
 
-            if (reconciliation.status === 'TRADE_CLOSED') {
-                console.log(`[Strategy] Trade sync completed: CLOSED. Exiting early.`);
-                return reconciliation;
-            }
+                if (reconciliation.status === 'TRADE_CLOSED') {
+                    console.log(`[Strategy] Trade sync completed: CLOSED. Exiting early.`);
+                    return reconciliation;
+                }
 
-            // 3. Manage Open Trade if exists
-            if (activeTrade && reconciliation.status === 'SYNC_STILL_OPEN') {
-                console.log(`[Strategy] Trade sync: STILL_OPEN. Managing trade...`);
-                return await this.manageTrade(activeTrade, currentPrice);
-            }
+                if (activeTrade && reconciliation.status === 'SYNC_STILL_OPEN') {
+                    console.log(`[Strategy] Trade sync: STILL_OPEN. Managing trade...`);
+                    return await this.manageTrade(activeTrade, currentPrice);
+                }
 
-            if (reconciliation.status === 'RECOVERED') {
-                console.log(`[Strategy] Trade sync: RECOVERED orphaned trade. Exiting to allow management in next cycle...`);
-                return reconciliation;
-            }
+                if (reconciliation.status === 'RECOVERED') {
+                    console.log(`[Strategy] Trade sync: RECOVERED orphaned trade. Exiting to allow management in next cycle...`);
+                    return reconciliation;
+                }
 
-            // Safety Guard: if activeTrade exists in DB but reconciliation didn't confirm closed, abort
-            if (activeTrade && reconciliation.status !== 'TRADE_CLOSED') {
-                console.warn(`[Strategy] Blocked scouting: DB trade ${activeTrade.id} is active, but reconciliation returned status: ${reconciliation.status}. Aborting cycle.`);
-                return { status: 'WAITING_FOR_SYNC', reason: 'Active trade status unresolved' };
+                if (activeTrade && reconciliation.status !== 'TRADE_CLOSED') {
+                    console.warn(`[Strategy] Blocked scouting: DB trade ${activeTrade.id} is active, but reconciliation returned status: ${reconciliation.status}. Aborting cycle.`);
+                    return { status: 'WAITING_FOR_SYNC', reason: 'Active trade status unresolved' };
+                }
             }
 
             // 4. Proceed to Scouting (if no active trade)
@@ -165,19 +185,17 @@ export class StrategyService {
                 return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong.reason}; ${killSwitchShort.reason} ` };
             }
 
-            // 6. Identify matching setup
-            const setup = this.evaluateSetups(this.indicators);
+            // 6. Multi-Strategy Runner — evaluate all 5 strategies, pick best signal
+            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE);
             if (!setup) {
-                // Clear structure detection time if no setup found (to reset timer)
                 await this.db.updateSetting('structure_detected_at', 0);
                 await this.db.updateSetting('last_detected_structure', 'none');
-                console.log('[Strategy] No valid setup');
+                console.log('[Strategy] No valid setup from any strategy');
                 return { status: 'NO_SETUP' };
             }
 
-            // No hold timer needed for directional alignment
-
-            console.log(`[Strategy] Setup found and confirmed: ${setup.type} ${setup.direction} `);
+            const score = setup.score;
+            console.log(`[Strategy] Winner: ${setup.type} ${setup.direction} score=${score}`);
 
             // 6b. Range filter — block low-conviction entries in choppy markets
             const rangeFilterResult = this.applyRangeFilter(this.indicators, setup);
@@ -191,14 +209,6 @@ export class StrategyService {
             if (killSwitch.triggered) {
                 console.log(`[Strategy] Kill switch triggered: ${killSwitch.reason} `);
                 return { status: 'KILL_SWITCH', reason: killSwitch.reason };
-            }
-
-            // 8. Score and threshold check
-            const score = this.scoreSignal(this.indicators, setup);
-            const threshold = CONFIG.MIN_ACC_SCORE;
-            console.log(`[Strategy] Score: ${score}/${threshold}`);
-            if (score < threshold) {
-                return { status: 'LOW_SCORE', score, threshold };
             }
 
             let signal = await this.buildSignal(this.indicators, setup, score);
@@ -423,7 +433,7 @@ export class StrategyService {
         return {
             decision: setup.direction,
             asset: CONFIG.PAIR,
-            reason: `DIRECTIONAL | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
+            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
             orderType: 'MARKET',
             quantity,
             leverage: this.leverage,

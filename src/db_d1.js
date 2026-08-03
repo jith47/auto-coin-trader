@@ -70,6 +70,14 @@ export class D1Database {
         ).first();
     }
 
+    // Get all active trades
+    async getActiveTrades() {
+        const { results } = await this.db.prepare(
+            "SELECT * FROM trade_logs WHERE status = 'OPEN' OR status = 'FILLED' ORDER BY timestamp DESC"
+        ).all();
+        return results || [];
+    }
+
     // Get trade by order_id
     async getTradeByOrderId(orderId) {
         return await this.db.prepare(
