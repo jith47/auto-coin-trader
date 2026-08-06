@@ -238,12 +238,14 @@ export async function fetch24hTicker(symbol) {
         highPrice: parseFloat(data.highPrice || 0),
         lowPrice: parseFloat(data.lowPrice || 0),
         volume: parseFloat(data.volume || 0),
+        bidPrice: parseFloat(data.bidPrice || data.lastPrice || 0),
+        askPrice: parseFloat(data.askPrice || data.lastPrice || 0),
     };
 }
 
 // --- Indicator computation (unchanged) ---
 
-export function computeIndicators(data, config) {
+export function computeIndicators(data, config = {}) {
     const btcK = data.btc.klines1m;
     const btcK5m = data.btc.klines5m || [];
     const ethK = data.eth.klines1m;
@@ -253,8 +255,8 @@ export function computeIndicators(data, config) {
     const ethChange1h = percentChange(ethK, 60);
     const btcChange5m = percentChange(btcK, 5);
     const ethChange5m = percentChange(ethK, 5);
-    const btc24h = data.btc.ticker24h;
-    const eth24h = data.eth.ticker24h;
+    const btc24h = data.btc.ticker24h || {};
+    const eth24h = data.eth.ticker24h || {};
     const btcDistHigh = btc24h.highPrice > 0 ? ((btc24h.highPrice - btcPrice) / btcPrice) * 100 : 0;
     const btcDistLow = btc24h.lowPrice > 0 ? ((btcPrice - btc24h.lowPrice) / btcPrice) * 100 : 0;
     const ethDistHigh = eth24h.highPrice > 0
@@ -266,8 +268,8 @@ export function computeIndicators(data, config) {
     const btcStructure = detectPriceStructure(btcK5m, SWEEP_LOOKBACK_5M);
     const btcKeyLevel = detectKeyLevel(btcPrice, btc24h.highPrice, btc24h.lowPrice);
     const relativeStrength = computeRelativeStrength(ethChange1h, btcChange1h);
-    const ethChange = data.eth.ticker24h.priceChangePercent;
-    const solChange = data.sol.ticker24h.priceChangePercent;
+    const ethChange = eth24h.priceChangePercent || 0;
+    const solChange = data.sol?.ticker24h?.priceChangePercent || 0;
     const sectorBias = computeSectorBias(ethChange, solChange);
     const session = getSessionType();
     const liquidations = data.eth.liquidations || { recentEvent: 'none' };
@@ -277,6 +279,27 @@ export function computeIndicators(data, config) {
         : 2.0;
     // Volume ratio: recent 10-candle avg vs full 1h avg
     const volumeRatio = computeVolumeRatio(ethK);
+    const atr14 = computeATR(ethK, 14);
+    const lastCandleCloseTime = ethK.length > 0 ? ethK[ethK.length - 1].closeTime : 0;
+
+    // 20-candle local range & position
+    const recent20 = ethK.slice(-20);
+    const rangeHigh20 = recent20.length > 0 ? Math.max(...recent20.map(k => k.high)) : ethPrice;
+    const rangeLow20 = recent20.length > 0 ? Math.min(...recent20.map(k => k.low)) : ethPrice;
+    const rangeSpan = rangeHigh20 - rangeLow20;
+    const rangePosition = rangeSpan > 0 ? (ethPrice - rangeLow20) / rangeSpan : 0.5;
+
+    // Spread in basis points
+    const bidPrice = eth24h.bidPrice || ethPrice;
+    const askPrice = eth24h.askPrice || ethPrice;
+    const midPrice = (bidPrice + askPrice) / 2 || ethPrice;
+    const spreadBps = midPrice > 0 && askPrice >= bidPrice && (askPrice - bidPrice) > 0
+        ? ((askPrice - bidPrice) / midPrice) * 10000
+        : 0;
+
+    const maxSpread = config.MAX_SPREAD_BPS || 15;
+    const regime = classifyRegime(ethChange5m, atr14, btcChange5m, ethPrice, spreadBps, maxSpread);
+
     return {
         btc: {
             price: btcPrice,
@@ -284,6 +307,7 @@ export function computeIndicators(data, config) {
             dailyChange: btc24h.priceChangePercent,
             distFromHigh: btcDistHigh, distFromLow: btcDistLow,
             cvdDirection: btcCvd.direction, cvdSlope: btcCvd.slope, cvdValue: btcCvd.value,
+            volumeDeltaDirection: btcCvd.direction, volumeDeltaSlope: btcCvd.slope, volumeDeltaValue: btcCvd.value,
             structure: btcStructure, klines: btcK,
             keyLevel: btcKeyLevel,
         },
@@ -293,15 +317,57 @@ export function computeIndicators(data, config) {
             dailyChange: eth24h.priceChangePercent,
             distFromHigh: ethDistHigh, distFromLow: ethDistLow,
             cvdDirection: ethCvd.direction, cvdSlope: ethCvd.slope, cvdValue: ethCvd.value,
+            volumeDeltaDirection: ethCvd.direction, volumeDeltaSlope: ethCvd.slope, volumeDeltaValue: ethCvd.value,
             relativeStrength: relativeStrength,
             klines: ethK, high24h: eth24h.highPrice, low24h: eth24h.lowPrice,
             ethRange: ethRange,
             volumeRatio: volumeRatio,
+            atr14: atr14,
+            lastCandleCloseTime: lastCandleCloseTime,
+            rangeHigh20: rangeHigh20,
+            rangeLow20: rangeLow20,
+            rangePosition: rangePosition,
+            spreadBps: spreadBps,
+            bidPrice: bidPrice,
+            askPrice: askPrice,
         },
-        sector: { ethChange, solChange, bias: sectorBias, solPrice: data.sol.ticker24h.lastPrice },
+        regime: regime,
+        sector: { ethChange, solChange, bias: sectorBias, solPrice: data.sol?.ticker24h?.lastPrice || 0 },
         liquidations: liquidations,
         session: session,
     };
+}
+
+export function computeATR(klines, period = 14) {
+    if (!klines || klines.length < period + 1) return 0;
+    let trSum = 0;
+    const slice = klines.slice(-(period + 1));
+    for (let i = 1; i < slice.length; i++) {
+        const high = slice[i].high;
+        const low = slice[i].low;
+        const prevClose = slice[i - 1].close;
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        trSum += tr;
+    }
+    return trSum / period;
+}
+
+export function classifyRegime(ethChange5m, atr14, btcChange5m, ethPrice, spreadBps = 0, maxSpreadBps = 15) {
+    if (!ethPrice || ethPrice === 0) return 'NO_TRADE';
+    if (spreadBps > maxSpreadBps) {
+        console.warn(`[Regime] Spread ${spreadBps.toFixed(1)} bps exceeds max ${maxSpreadBps} bps. Setting regime to NO_TRADE.`);
+        return 'NO_TRADE';
+    }
+    const atrPct = (atr14 / ethPrice) * 100;
+    const trendStrength = atrPct > 0 ? Math.abs(ethChange5m) / (atrPct * 2) : 0;
+    const btcAligned = Math.sign(ethChange5m) === Math.sign(btcChange5m) || Math.abs(btcChange5m) < 0.05;
+
+    if (trendStrength >= 1.0 && btcAligned) {
+        return ethChange5m > 0 ? 'TREND_UP' : 'TREND_DOWN';
+    } else if (trendStrength < 0.6) {
+        return 'RANGE';
+    }
+    return 'NO_TRADE';
 }
 
 export function percentChange(klines, periods) {

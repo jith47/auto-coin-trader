@@ -6,17 +6,20 @@ const CONFIG = {
     MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
     DEFAULT_LEVERAGE: 2,
-    SL_PCT: 0.3,
-    TP_PCT: 0.5,
-    MIN_ACC_SCORE: 65,
-    COOLDOWN_AFTER_LOSS_MS: 2 * 60 * 60 * 1000,
-    MAX_TRADES_PER_DAY: 5,
+    SL_PCT: 0.4,
+    TP_PCT: 0.8,
+    MIN_ACC_SCORE: 50,
+    COOLDOWN_AFTER_LOSS_MS: 5 * 60 * 1000,
+    MAX_TRADES_PER_DAY: 50,
     MOCK_MODE: true,
     INITIAL_INR_BALANCE: 500,
     USD_INR_RATE: 85,
     TIME_STOP_MINUTES: 10,
     TIME_STOP_MIN_MOVE_PCT: 0.05,
     ALLOWED_STRUCTURES: null,
+    ENABLE_PULLBACK: false,
+    MAX_SPREAD_BPS: 15,
+    MAX_CANDLE_AGE_MS: 120 * 1000,
 };
 export class StrategyService {
     constructor(env) {
@@ -53,11 +56,27 @@ export class StrategyService {
                 this.mockMode ? Promise.resolve(null) : getInstrumentDetails(CONFIG.PAIR),
             ]);
 
-            // Extract current ETH price from kline data for sync/management fallback
+            // Extract current ETH price and candle timestamp for dedup / freshness
             const ethKlines = data?.eth?.klines1m;
             const currentPrice = (Array.isArray(ethKlines) && ethKlines.length > 0)
                 ? ethKlines[ethKlines.length - 1].close
                 : 0;
+            const lastCandleClose = data?.eth?.lastCandleCloseTime || (Array.isArray(ethKlines) && ethKlines.length > 0 ? ethKlines[ethKlines.length - 1].closeTime : 0);
+
+            // Candle Deduplication Check
+            if (lastCandleClose > 0) {
+                const lastProcessed = await db.getSetting('last_processed_candle', '0');
+                if (parseInt(lastProcessed) >= lastCandleClose) {
+                    console.log(`[Strategy] DEDUP: Candle close ${lastCandleClose} already processed. Skipping.`);
+                    return { status: 'ALREADY_PROCESSED', candleTime: lastCandleClose };
+                }
+            }
+
+            // Data Freshness Check
+            if (lastCandleClose > 0 && Math.abs(Date.now() - lastCandleClose) > CONFIG.MAX_CANDLE_AGE_MS) {
+                console.warn(`[Strategy] STALE DATA: Last candle close is ${(Math.abs(Date.now() - lastCandleClose) / 1000).toFixed(0)}s old (max ${CONFIG.MAX_CANDLE_AGE_MS / 1000}s). Aborting.`);
+                return { status: 'STALE_DATA', ageSeconds: Math.round(Math.abs(Date.now() - lastCandleClose) / 1000) };
+            }
 
             // 2. Parallel Trades Check & Management
             const parallelSetting = await db.getSetting('parallel_trades_mode', 'false');
@@ -136,10 +155,10 @@ export class StrategyService {
             this.indicators = computeIndicators(data, CONFIG);
 
             console.log('[Strategy] Indicators:', JSON.stringify({
+                regime: this.indicators.regime,
                 btcPrice: this.indicators.btc.price?.toFixed(0),
                 ethPrice: this.indicators.eth.price?.toFixed(5),
-                btcCvd: this.indicators.btc.cvdDirection + '/' + this.indicators.btc.cvdSlope,
-                ethCvd: this.indicators.eth.cvdDirection + '/' + this.indicators.eth.cvdSlope,
+                volDelta: (this.indicators.eth.volumeDeltaDirection || this.indicators.eth.cvdDirection) + '/' + (this.indicators.eth.volumeDeltaSlope || this.indicators.eth.cvdSlope),
                 btc1h: this.indicators.btc.change1h?.toFixed(2) + '%',
                 btc5m: this.indicators.btc.change5m?.toFixed(2) + '%',
                 eth1h: this.indicators.eth.change1h?.toFixed(2) + '%',
@@ -152,6 +171,11 @@ export class StrategyService {
                 volRatio: this.indicators.eth.volumeRatio?.toFixed(2),
                 utcHour: this.indicators.session.hour?.toFixed(1),
             }));
+
+            // Record candle as processed
+            if (lastCandleClose > 0) {
+                await db.updateSetting('last_processed_candle', lastCandleClose.toString());
+            }
 
             // 3. New trade checks
             const cooldownCheck = await this.checkCooldowns();
@@ -185,8 +209,8 @@ export class StrategyService {
                 return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong.reason}; ${killSwitchShort.reason} ` };
             }
 
-            // 6. Multi-Strategy Runner — evaluate all 5 strategies, pick best signal
-            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE);
+            // 6. Strategy Runner — evaluate strategies (gated by regime in single/live mode)
+            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE, isParallelMode);
             if (!setup) {
                 await this.db.updateSetting('structure_detected_at', 0);
                 await this.db.updateSetting('last_detected_structure', 'none');
@@ -213,13 +237,24 @@ export class StrategyService {
 
             let signal = await this.buildSignal(this.indicators, setup, score);
 
+            if (signal.invalidCostGate) {
+                console.warn('[Strategy] Signal blocked by COST GATE.');
+                return { status: 'COST_GATE_BLOCKED', reason: 'Net reward after fees does not clear risk' };
+            }
+
             console.log('[Strategy] Generated Base Signal:', JSON.stringify(signal, null, 2));
             if (!signal.quantity || signal.quantity <= 0) {
                 console.warn('[Strategy] Signal generated but quantity is 0 (likely due to leverage safety limit). Refusing to trade.');
                 return { status: 'LOW_BALANCE_BLOCKED', reason: 'Insufficient balance to trade safely' };
             }
 
-            // 9. Pullback Confirmation / Pending Signal System
+            // Direct execution when pullback disabled (default v2 setting)
+            if (!CONFIG.ENABLE_PULLBACK) {
+                console.log(`[Strategy] Pullback confirmation disabled by config. Executing ${signal.decision} immediately.`);
+                return await this.executeTrade(signal);
+            }
+
+            // 9. Pullback Confirmation / Pending Signal System (optional)
             const pendingRaw = await db.getSetting('pending_signal', null);
             let pendingSignal = null;
             if (pendingRaw && pendingRaw !== 'none') {
@@ -236,7 +271,6 @@ export class StrategyService {
                     await db.updateSetting('pending_signal', 'none');
                     pendingSignal = null;
                 } else {
-                    // Check if price pulled back for a better entry (at least 0.05% pullback or better entry price)
                     const isBuy = pendingSignal.decision === 'BUY';
                     const initialEntry = pendingSignal.initialPrice;
                     const hasPulledBack = isBuy
@@ -247,7 +281,6 @@ export class StrategyService {
                         console.log(`[Strategy] PULLBACK CONFIRMED! Initial: ${initialEntry}, Current: ${currentEthPrice}. Executing pending ${pendingSignal.decision}...`);
                         await db.updateSetting('pending_signal', 'none');
                         
-                        // Re-calculate entry, SL, TP at actual entry price
                         signal.entry = currentEthPrice;
                         signal.stopLoss = this.roundToTick(isBuy ? currentEthPrice * (1 - CONFIG.SL_PCT / 100) : currentEthPrice * (1 + CONFIG.SL_PCT / 100), this.tickSize || 0.01);
                         signal.takeProfit = this.roundToTick(isBuy ? currentEthPrice * (1 + CONFIG.TP_PCT / 100) : currentEthPrice * (1 - CONFIG.TP_PCT / 100), this.tickSize || 0.01);
@@ -262,7 +295,6 @@ export class StrategyService {
                 }
             }
 
-            // Store new signal as PENDING to wait for pullback in subsequent ticks
             console.log(`[Strategy] New signal ${signal.decision} generated at ${currentEthPrice}. Storing as PENDING to wait for pullback...`);
             const newPending = {
                 decision: signal.decision,
@@ -323,89 +355,24 @@ export class StrategyService {
             return { blocked: true, reason: `BUY blocked: BTC support_holding + BTC CVD falling (divergence — sellers stepping in)` };
         }
 
-        // Rule 3: Position in range — don't buy at resistance, don't sell at support
-        // If ETH price is within 1.5% of the 24h high, it's at resistance — bad BUY entry.
-        // If ETH price is within 1.5% of the 24h low, it's at support — bad SELL entry.
-        const RANGE_PROXIMITY_PCT = 1.5;
-        if (direction === 'BUY' && ethDistFromHigh < RANGE_PROXIMITY_PCT && ethDistFromHigh >= 0) {
-            return { blocked: true, reason: `BUY blocked: ETH only ${ethDistFromHigh.toFixed(2)}% from 24h high (at resistance)` };
-        }
-        if (direction === 'SELL' && ethDistFromLow < RANGE_PROXIMITY_PCT && ethDistFromLow >= 0) {
-            return { blocked: true, reason: `SELL blocked: ETH only ${ethDistFromLow.toFixed(2)}% from 24h low (at support)` };
-        }
-
         return { blocked: false };
-    }
-    evaluateSetups(ind) {
-        console.log('[Strategy] ── Setup Evaluation ──');
-        console.log('[Strategy] Market State:', JSON.stringify({
-            btcStructure: ind.btc.structure,
-            btcCvd: ind.btc.cvdDirection + '/' + ind.btc.cvdSlope,
-            ethCvd: ind.eth.cvdDirection + '/' + ind.eth.cvdSlope,
-            btc1h: ind.btc.change1h?.toFixed(2),
-            eth5m: ind.eth.change5m?.toFixed(2),
-            relStrength: ind.eth.relativeStrength,
-        }));
-
-        // Structure Whitelist Check (optional if CONFIG.ALLOWED_STRUCTURES is specified)
-        if (Array.isArray(CONFIG.ALLOWED_STRUCTURES) && CONFIG.ALLOWED_STRUCTURES.length > 0) {
-            if (!CONFIG.ALLOWED_STRUCTURES.includes(ind.btc.structure)) {
-                console.log(`[Strategy] Blocked: BTC structure '${ind.btc.structure}' is not in allowed list [${CONFIG.ALLOWED_STRUCTURES.join(', ')}]`);
-                return null;
-            }
-        }
-
-        // LONG: ETH CVD rising + ETH 5m positive + BTC not dumping
-        const isLong = ind.eth.cvdDirection === 'rising'
-            && ind.eth.change5m > 0
-            && ind.btc.change1h > -0.3;
-
-        // SHORT: ETH CVD falling + ETH 5m negative + BTC not pumping
-        const isShort = ind.eth.cvdDirection === 'falling'
-            && ind.eth.change5m < 0
-            && ind.btc.change1h < 0.3;
-
-        if (isLong) {
-            console.log('[Strategy] DIRECTIONAL_ALIGNMENT BUY triggered');
-            return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'BUY' };
-        }
-        if (isShort) {
-            console.log('[Strategy] DIRECTIONAL_ALIGNMENT SELL triggered');
-            return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'SELL' };
-        }
-        return null;
-    }
-    scoreSignal(ind, setup) {
-        let score = 50;
-        const isLong = setup.direction === 'BUY';
-
-        // BTC structure bonus
-        if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') {
-            score += 15;
-        } else if (ind.btc.structure === 'support_holding' || ind.btc.structure === 'rejection') {
-            score += 10;
-        }
-
-        // ETH CVD slope bonus
-        if (ind.eth.cvdSlope === 'steep') {
-            score += 10;
-        } else if (ind.eth.cvdSlope === 'gradual') {
-            score += 5;
-        }
-
-        // Relative strength bonus
-        if ((isLong && ind.eth.relativeStrength === 'stronger') ||
-            (!isLong && ind.eth.relativeStrength === 'weaker')) {
-            score += 10;
-        }
-
-        console.log(`[Strategy] Score breakdown: base=50, structure=${ind.btc.structure}, cvdSlope=${ind.eth.cvdSlope}, RS=${ind.eth.relativeStrength}, total=${score}`);
-        return score;
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.eth.price;
         const slPercent = CONFIG.SL_PCT;
         const tpPercent = CONFIG.TP_PCT;
+
+        // Cost gate check: ensure net TP after roundtrip fees (0.15%) exceeds net SL risk
+        const estimatedFeePct = 0.15;
+        const netWinPct = tpPercent - estimatedFeePct;
+        const netLossPct = slPercent + estimatedFeePct;
+        const costGateRatio = netLossPct > 0 ? netWinPct / netLossPct : 0;
+
+        let invalidCostGate = false;
+        if (netWinPct <= 0 || costGateRatio < 1.0) {
+            console.warn(`[Strategy] COST GATE BLOCKED: TP (${tpPercent}%) after fees (${estimatedFeePct}%) netWin=${netWinPct.toFixed(2)}% vs netLoss=${netLossPct.toFixed(2)}% (ratio ${costGateRatio.toFixed(2)} < 1.0).`);
+            invalidCostGate = true;
+        }
 
         const slPrice = setup.direction === 'BUY'
             ? entry * (1 - slPercent / 100)
@@ -433,46 +400,22 @@ export class StrategyService {
         return {
             decision: setup.direction,
             asset: CONFIG.PAIR,
-            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | CVD:${ind.btc.cvdDirection}/${ind.eth.cvdDirection} | RS:${ind.eth.relativeStrength}`,
+            reason: `${setup.type} | Score:${score} | BTC:${ind.btc.structure} | VolDelta:${(ind.btc.volumeDeltaDirection || ind.btc.cvdDirection)}/${(ind.eth.volumeDeltaDirection || ind.eth.cvdDirection)} | RS:${ind.eth.relativeStrength}`,
             orderType: 'MARKET',
             quantity,
             leverage: this.leverage,
             entry,
+            bidPrice: ind.eth.bidPrice,
+            askPrice: ind.eth.askPrice,
+            spreadBps: ind.eth.spreadBps,
             stopLoss: sl,
             takeProfit: tp,
             tpLevels: [{ pctOfPosition: 100, price: tp }],
             setupType: setup.type,
             score,
             entryValueInr: marginInr,
+            invalidCostGate,
         };
-    }
-    invertSignal(signal) {
-        const originalDecision = signal.decision;
-        const originalSl = signal.stopLoss;
-        const originalTp = signal.takeProfit;
-        const entry = signal.entry;
-
-        const invertedDecision = originalDecision === 'BUY' ? 'SELL' : 'BUY';
-        
-        const slDist = Math.abs(entry - originalSl);
-        const tpDist = Math.abs(entry - originalTp);
-
-        const invertedSl = invertedDecision === 'BUY'
-            ? entry - slDist
-            : entry + slDist;
-
-        const invertedTp = invertedDecision === 'BUY'
-            ? entry + tpDist
-            : entry - tpDist;
-
-        signal.decision = invertedDecision;
-        signal.stopLoss = this.roundToTick(invertedSl, this.tickSize || 0.01);
-        signal.takeProfit = this.roundToTick(invertedTp, this.tickSize || 0.01);
-        signal.tpLevels = [{ pctOfPosition: 100, price: signal.takeProfit }];
-        signal.reason = `CONTRARIAN (${originalDecision} -> ${invertedDecision}) | ` + signal.reason;
-        
-        console.log(`[Strategy] Signal Inverted: ${originalDecision} -> ${invertedDecision}, Entry: ${entry}, Original SL: ${originalSl} -> Inverted SL: ${signal.stopLoss}, Original TP: ${originalTp} -> Inverted TP: ${signal.takeProfit}`);
-        return signal;
     }
     roundToTick(price, tick) {
         if (!tick || tick <= 0) return parseFloat(price.toFixed(6));
@@ -504,10 +447,22 @@ export class StrategyService {
         let leverage = this.leverage || CONFIG.DEFAULT_LEVERAGE;
         const maxLeverage = this.maxLeverage || 20;
 
-        const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
+        // Position sizing based on worst-case loss budget (v2 Section 11)
+        const slDistPct = Math.abs(entry - sl) / entry;
+        const expectedSlippagePct = 0.0005; // 0.05%
+        const feesPct = 0.0015; // 0.15% roundtrip
+        const spreadPct = 0.0005; // 0.05%
+        const worstCaseLossFraction = slDistPct + expectedSlippagePct + feesPct + spreadPct;
 
-        // Position size is margin * leverage
-        let positionValueUsd = marginAvailable * leverage;
+        // Risk at most 2.5% of total account balance on any single trade
+        const maxRiskUsd = balanceUsd * 0.025;
+        const riskBasedNotionalUsd = maxRiskUsd / (worstCaseLossFraction || 0.01);
+
+        const marginAvailable = balanceUsd * (CONFIG.MARGIN_PERCENT / 100);
+        const marginLeverageNotionalUsd = marginAvailable * leverage;
+
+        // Take the conservative minimum of risk-based notional and margin-limited notional
+        let positionValueUsd = Math.min(riskBasedNotionalUsd, marginLeverageNotionalUsd);
         let quantity = positionValueUsd / entry;
 
         // Enforce minimum notional (minNotional) in USD
