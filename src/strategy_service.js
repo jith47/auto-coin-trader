@@ -6,15 +6,15 @@ const CONFIG = {
     MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
     DEFAULT_LEVERAGE: 2,
-    SL_PCT: 0.4,
-    TP_PCT: 0.8,
+    SL_PCT: 0.3,
+    TP_PCT: 0.6,
     MIN_ACC_SCORE: 50,
     COOLDOWN_AFTER_LOSS_MS: 5 * 60 * 1000,
     MAX_TRADES_PER_DAY: 50,
     MOCK_MODE: true,
     INITIAL_INR_BALANCE: 500,
     USD_INR_RATE: 85,
-    TIME_STOP_MINUTES: 10,
+    TIME_STOP_MINUTES: 30,
     TIME_STOP_MIN_MOVE_PCT: 0.05,
     ALLOWED_STRUCTURES: null,
     ENABLE_PULLBACK: false,
@@ -359,8 +359,16 @@ export class StrategyService {
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.eth.price;
-        const slPercent = CONFIG.SL_PCT;
-        const tpPercent = CONFIG.TP_PCT;
+        // Dynamic ATR-based SL & TP calculation
+        const atr = ind.eth.atr14 || (entry * 0.002);
+        const atrPct = (atr / entry) * 100;
+
+        let slPercent = Math.max(0.15, Math.min(0.50, atrPct * 1.5));
+        let tpPercent = Math.max(0.25, Math.min(1.00, atrPct * 2.5));
+
+        if (tpPercent / slPercent < 1.4) {
+            tpPercent = slPercent * 1.5;
+        }
 
         // Cost gate check: ensure net TP after roundtrip fees (0.15%) exceeds net SL risk
         const estimatedFeePct = 0.15;
@@ -370,7 +378,7 @@ export class StrategyService {
 
         let invalidCostGate = false;
         if (netWinPct <= 0 || costGateRatio < 1.0) {
-            console.warn(`[Strategy] COST GATE BLOCKED: TP (${tpPercent}%) after fees (${estimatedFeePct}%) netWin=${netWinPct.toFixed(2)}% vs netLoss=${netLossPct.toFixed(2)}% (ratio ${costGateRatio.toFixed(2)} < 1.0).`);
+            console.warn(`[Strategy] COST GATE BLOCKED: TP (${tpPercent.toFixed(2)}%) after fees (${estimatedFeePct}%) netWin=${netWinPct.toFixed(2)}% vs netLoss=${netLossPct.toFixed(2)}% (ratio ${costGateRatio.toFixed(2)} < 1.0).`);
             invalidCostGate = true;
         }
 
@@ -649,11 +657,21 @@ export class StrategyService {
             const ageMs = now - activeTrade.timestamp;
             const priceChangePct = ((currentPrice - entryPrice) / entryPrice) * 100 * (isLong ? 1 : -1);
 
-            // Optimize Time Stop
+            // Trailing Stop activation: move SL to break-even once price moves +0.3% in our favor
+            let slPrice = parseFloat(activeTrade.stop_loss);
+            if (priceChangePct >= 0.30) {
+                const breakEvenSl = isLong ? entryPrice * 1.0005 : entryPrice * 0.9995;
+                if ((isLong && breakEvenSl > slPrice) || (!isLong && breakEvenSl < slPrice)) {
+                    slPrice = breakEvenSl;
+                    console.log(`[Strategy] Trailing stop activated: moved SL to breakeven ${slPrice.toFixed(2)} (current gain: ${priceChangePct.toFixed(2)}%)`);
+                }
+            }
+
+            // Optimize Time Stop (30m): only close if trade is in loss or stagnant (<= 0.05%)
             const timeStopMs = (CONFIG.TIME_STOP_MINUTES || 30) * 60 * 1000;
-            const minMovePct = CONFIG.TIME_STOP_MIN_MOVE_PCT !== undefined ? CONFIG.TIME_STOP_MIN_MOVE_PCT : 0.1;
-            if (ageMs > timeStopMs && priceChangePct < minMovePct) {
-                console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% < ${minMovePct}%`);
+            const minMovePct = CONFIG.TIME_STOP_MIN_MOVE_PCT !== undefined ? CONFIG.TIME_STOP_MIN_MOVE_PCT : 0.05;
+            if (ageMs > timeStopMs && priceChangePct <= minMovePct) {
+                console.log(`[Strategy] Time-stop triggered: Age=${(ageMs / 60000).toFixed(1)}m, Move=${priceChangePct.toFixed(2)}% <= ${minMovePct}%`);
                 await this.closeTradeInDb(activeTrade, currentPrice, 'TIME_STOP');
                 return { status: 'TRADE_CLOSED', reason: 'TIME_STOP', pnl: priceChangePct * parseFloat(activeTrade.leverage) };
             }
@@ -670,7 +688,6 @@ export class StrategyService {
             }
 
             // Determine effective SL — move to break-even after any TP hit
-            let slPrice = parseFloat(activeTrade.stop_loss);
             if (executedPct > 0) {
                 // Break-even SL after first TP
                 slPrice = entryPrice;

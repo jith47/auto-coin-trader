@@ -1,24 +1,65 @@
 /**
- * Multi-Strategy Evaluators
+ * Multi-Strategy Evaluators (Revamped)
  * 
  * Each strategy receives the shared `indicators` object (from computeIndicators)
  * and returns either a setup object { type, direction, score } or null.
  *
  * Strategies:
- *  1. Directional Alignment (current) — CVD + momentum alignment
- *  2. RSI Mean Reversion — oversold/overbought extremes
- *  3. Volume Spike Momentum — high-volume directional bursts
- *  4. BTC-ETH Divergence — cross-pair lag catch-up
- *  5. Wick Reversal — rejected price levels with volume confirmation
+ *  1. EMA_VWAP_CONFLUENCE — Trend following with EMA 9/21 crossover + VWAP filter
+ *  2. MOMENTUM_BREAKOUT — Range breakout momentum with dynamic ATR & volume expansion
+ *  3. BOLLINGER_SQUEEZE — Volatility squeeze mean reversion at outer bands with RSI filter
  */
 
-// ─── Helper: RSI Calculation ─────────────────────────────────────────────────
+// ─── Indicator Helpers ────────────────────────────────────────────────────────
+
+/**
+ * Compute Exponential Moving Average (EMA).
+ */
+export function computeEMA(klines, period) {
+    if (!klines || klines.length < period) return null;
+    const closes = klines.map(k => k.close);
+    const k = 2 / (period + 1);
+    let ema = closes.slice(0, period).reduce((s, c) => s + c, 0) / period;
+    for (let i = period; i < closes.length; i++) {
+        ema = (closes[i] * k) + (ema * (1 - k));
+    }
+    return ema;
+}
+
+/**
+ * Compute Volume-Weighted Average Price (VWAP) over a rolling window.
+ */
+export function computeVWAP(klines, window = 60) {
+    if (!klines || klines.length === 0) return null;
+    const slice = klines.slice(-window);
+    let totalTypicalPriceVol = 0;
+    let totalVol = 0;
+    for (const k of slice) {
+        const typicalPrice = (k.high + k.low + k.close) / 3;
+        totalTypicalPriceVol += typicalPrice * k.volume;
+        totalVol += k.volume;
+    }
+    return totalVol > 0 ? totalTypicalPriceVol / totalVol : slice[slice.length - 1].close;
+}
+
+/**
+ * Compute Bollinger Bands (20-period, 2 std dev) and Band Width (BBW).
+ */
+export function computeBollingerBands(klines, period = 20, multiplier = 2) {
+    if (!klines || klines.length < period) return null;
+    const slice = klines.slice(-period);
+    const closes = slice.map(k => k.close);
+    const mean = closes.reduce((s, c) => s + c, 0) / period;
+    const variance = closes.reduce((s, c) => s + Math.pow(c - mean, 2), 0) / period;
+    const stdDev = Math.sqrt(variance);
+    const upper = mean + (multiplier * stdDev);
+    const lower = mean - (multiplier * stdDev);
+    const bbw = mean > 0 ? (upper - lower) / mean : 0;
+    return { middle: mean, upper, lower, bbw, stdDev };
+}
 
 /**
  * Compute RSI (Relative Strength Index) from kline close prices.
- * @param {Array} klines - Array of kline objects with `.close`
- * @param {number} period - RSI period (default 14)
- * @returns {{ value: number, trend: 'rising'|'falling'|'flat' }}
  */
 export function computeRSI(klines, period = 14) {
     if (!klines || klines.length < period + 2) {
@@ -28,7 +69,6 @@ export function computeRSI(klines, period = 14) {
     const closes = klines.map(k => k.close);
     let gains = 0, losses = 0;
 
-    // Initial average gain/loss
     for (let i = closes.length - period; i < closes.length; i++) {
         const change = closes[i] - closes[i - 1];
         if (change > 0) gains += change;
@@ -42,7 +82,6 @@ export function computeRSI(klines, period = 14) {
     const rs = avgGain / avgLoss;
     const rsi = 100 - (100 / (1 + rs));
 
-    // Compute previous RSI for trend (2 bars ago)
     let prevGains = 0, prevLosses = 0;
     for (let i = closes.length - period - 1; i < closes.length - 1; i++) {
         const change = closes[i] - closes[i - 1];
@@ -61,288 +100,161 @@ export function computeRSI(klines, period = 14) {
     return { value: rsi, trend, prevValue: prevRsi };
 }
 
-// ─── Helper: Volume Spike Detection ──────────────────────────────────────────
 
-/**
- * Detect a volume spike in the last N candles.
- * Returns spike info if last 2-3 candles have 1.5x+ average volume with consistent direction.
- */
-export function detectVolumeSpike(klines, lookback = 30, spikeMultiplier = 1.5) {
-    if (!klines || klines.length < lookback + 2) {
-        return { detected: false };
-    }
+// ─── Strategy 1: EMA/VWAP Confluence ─────────────────────────────────────────
 
-    const avgVolume = klines.slice(-lookback - 2, -2)
-        .reduce((s, k) => s + k.volume, 0) / lookback;
-
-    const last2 = klines.slice(-2);
-    const spikeVolume = last2.reduce((s, k) => s + k.volume, 0) / 2;
-
-    if (avgVolume <= 0 || spikeVolume < avgVolume * spikeMultiplier) {
-        return { detected: false };
-    }
-
-    // Check directional consistency
-    const allGreen = last2.every(k => k.close > k.open);
-    const allRed = last2.every(k => k.close < k.open);
-
-    if (!allGreen && !allRed) {
-        return { detected: false };
-    }
-
-    return {
-        detected: true,
-        direction: allGreen ? 'BUY' : 'SELL',
-        volumeRatio: spikeVolume / avgVolume,
-    };
-}
-
-// ─── Helper: BTC-ETH Divergence Detection ────────────────────────────────────
-
-/**
- * Detect when BTC has moved significantly but ETH hasn't followed yet.
- * Returns divergence info if BTC moved >threshold but ETH lagged.
- */
-export function detectBtcEthDivergence(btcChange5m, ethChange5m, threshold = 0.15, lagThreshold = 0.08) {
-    const btcMoved = Math.abs(btcChange5m) > threshold;
-    const ethLagged = Math.abs(ethChange5m) < lagThreshold;
-
-    if (!btcMoved || !ethLagged) {
-        return { detected: false };
-    }
-
-    return {
-        detected: true,
-        direction: btcChange5m > 0 ? 'BUY' : 'SELL',
-        btcMove: btcChange5m,
-        ethMove: ethChange5m,
-        gap: Math.abs(btcChange5m) - Math.abs(ethChange5m),
-    };
-}
-
-// ─── Helper: Wick Reversal Detection ─────────────────────────────────────────
-
-/**
- * Detect a high-wick reversal candle with volume confirmation.
- * A candle with >50% wick and close opposite to wick direction is a reversal signal.
- */
-export function detectWickReversal(klines, volumeLookback = 30, volumeMultiplier = 1.2) {
-    if (!klines || klines.length < volumeLookback + 1) {
-        return { detected: false };
-    }
-
-    const current = klines[klines.length - 1];
-    const range = current.high - current.low;
-    if (range <= 0) return { detected: false };
-
-    const upperWick = (current.high - Math.max(current.open, current.close)) / range;
-    const lowerWick = (Math.min(current.open, current.close) - current.low) / range;
-
-    // Volume confirmation
-    const avgVol = klines.slice(-volumeLookback - 1, -1)
-        .reduce((s, k) => s + k.volume, 0) / volumeLookback;
-    const hasVolume = avgVol > 0 && current.volume >= avgVol * volumeMultiplier;
-
-    // Bullish wick reversal: long lower wick + green close + volume
-    if (lowerWick > 0.5 && current.close > current.open && hasVolume) {
-        return {
-            detected: true,
-            direction: 'BUY',
-            wickRatio: lowerWick,
-            volumeRatio: current.volume / avgVol,
-        };
-    }
-
-    // Bearish wick reversal: long upper wick + red close + volume
-    if (upperWick > 0.5 && current.close < current.open && hasVolume) {
-        return {
-            detected: true,
-            direction: 'SELL',
-            wickRatio: upperWick,
-            volumeRatio: current.volume / avgVol,
-        };
-    }
-
-    return { detected: false };
-}
-
-// ─── Strategy 1: Directional Alignment ───────────────────────────────────────
-
-export function evalDirectionalAlignment(ind) {
+export function evalEmaVwapConfluence(ind) {
     const ethKlines = ind.eth.klines;
-    if (!ethKlines || ethKlines.length === 0) return null;
+    if (!ethKlines || ethKlines.length < 30) return null;
 
-    const lastCandle = ethKlines[ethKlines.length - 1];
-    const isGreenCandle = lastCandle.close > lastCandle.open;
-    const isRedCandle = lastCandle.close < lastCandle.open;
-
-    const ethVolDir = ind.eth.volumeDeltaDirection || ind.eth.cvdDirection;
-    const ethVolSlope = ind.eth.volumeDeltaSlope || ind.eth.cvdSlope;
-
-    // RSI calculation for exhaustion check
-    const rsiObj = computeRSI(ethKlines, 14);
-    const rsiVal = rsiObj ? rsiObj.value : 50;
-
-    const rangePos = ind.eth.rangePosition !== undefined ? ind.eth.rangePosition : 0.5;
-
-    // v2 §7.1 Long candidate conditions:
-    // - ETH 5m return positive
-    // - BTC 5m return / 1h change non-opposing
-    // - Last ETH candle closes above open (green)
-    // - ETH close above 20m local midpoint (rangePos > 0.5)
-    // - RSI not at exhaustion range (RSI < 70)
-    const isLong = ethVolDir === 'rising'
-        && ind.eth.change5m > 0
-        && ind.btc.change1h > -0.3
-        && isGreenCandle
-        && rangePos >= 0.45
-        && rsiVal < 70;
-
-    const isShort = ethVolDir === 'falling'
-        && ind.eth.change5m < 0
-        && ind.btc.change1h < 0.3
-        && isRedCandle
-        && rangePos <= 0.55
-        && rsiVal > 30;
-
-    if (isLong) {
-        let score = 50;
-        if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') score += 15;
-        else if (ind.btc.structure === 'support_holding' || ind.btc.structure === 'rejection') score += 10;
-        if (ethVolSlope === 'steep') score += 10;
-        else if (ethVolSlope === 'gradual') score += 5;
-        if (ind.eth.relativeStrength === 'stronger') score += 10;
-        if (ind.eth.volumeRatio && ind.eth.volumeRatio > 1.2) score += 5;
-        return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'BUY', score, rsi: rsiVal, rangePos };
-    }
-    if (isShort) {
-        let score = 50;
-        if (ind.btc.structure === 'sweep_reclaim_bullish' || ind.btc.structure === 'sweep_reclaim_bearish') score += 15;
-        else if (ind.btc.structure === 'support_holding' || ind.btc.structure === 'rejection') score += 10;
-        if (ethVolSlope === 'steep') score += 10;
-        else if (ethVolSlope === 'gradual') score += 5;
-        if (ind.eth.relativeStrength === 'weaker') score += 10;
-        if (ind.eth.volumeRatio && ind.eth.volumeRatio > 1.2) score += 5;
-        return { type: 'DIRECTIONAL_ALIGNMENT', direction: 'SELL', score, rsi: rsiVal, rangePos };
-    }
-    return null;
-}
-
-// ─── Strategy 2: RSI Mean Reversion ──────────────────────────────────────────
-
-export function evalRSIMeanReversion(ind) {
-    const ethKlines = ind.eth.klines;
-    if (!ethKlines || ethKlines.length < 20) return null;
-
+    const ema9 = computeEMA(ethKlines, 9);
+    const ema21 = computeEMA(ethKlines, 21);
+    const vwap = computeVWAP(ethKlines, 60);
     const rsi = computeRSI(ethKlines, 14);
 
-    // Oversold bounce: RSI < 35 and turning up
-    if (rsi.value < 35 && rsi.trend === 'rising') {
-        let score = 55;
-        if (ind.btc.change1h > -0.2) score += 10;
-        if (ind.eth.relativeStrength !== 'weaker') score += 5;
-        if (rsi.value < 25) score += 5;
-        return { type: 'RSI_MEAN_REVERSION', direction: 'BUY', score, rsiValue: rsi.value };
+    if (!ema9 || !ema21 || !vwap) return null;
+
+    const lastCandle = ethKlines[ethKlines.length - 1];
+    const price = lastCandle.close;
+    const isGreen = lastCandle.close > lastCandle.open;
+    const isRed = lastCandle.close < lastCandle.open;
+
+    // LONG: EMA9 > EMA21, price above VWAP, green candle, RSI between 40 and 68
+    const isLong = ema9 > ema21
+        && price > vwap
+        && isGreen
+        && rsi.value >= 40 && rsi.value <= 68
+        && ind.btc.change1h > -0.3;
+
+    // SHORT: EMA9 < EMA21, price below VWAP, red candle, RSI between 32 and 60
+    const isShort = ema9 < ema21
+        && price < vwap
+        && isRed
+        && rsi.value >= 32 && rsi.value <= 60
+        && ind.btc.change1h < 0.3;
+
+    if (isLong) {
+        let score = 60;
+        const distEma9 = Math.abs(price - ema9) / price;
+        if (distEma9 < 0.003) score += 10;
+        if (ind.eth.volumeRatio && ind.eth.volumeRatio > 1.15) score += 10;
+        if (ind.eth.relativeStrength === 'stronger') score += 10;
+        return { type: 'EMA_VWAP_CONFLUENCE', direction: 'BUY', score, ema9, ema21, vwap, rsi: rsi.value };
     }
 
-    // Overbought reversal: RSI > 65 and turning down
-    if (rsi.value > 65 && rsi.trend === 'falling') {
-        let score = 55;
-        if (ind.btc.change1h < 0.2) score += 10;
-        if (ind.eth.relativeStrength !== 'stronger') score += 5;
-        if (rsi.value > 75) score += 5;
-        return { type: 'RSI_MEAN_REVERSION', direction: 'SELL', score, rsiValue: rsi.value };
+    if (isShort) {
+        let score = 60;
+        const distEma9 = Math.abs(price - ema9) / price;
+        if (distEma9 < 0.003) score += 10;
+        if (ind.eth.volumeRatio && ind.eth.volumeRatio > 1.15) score += 10;
+        if (ind.eth.relativeStrength === 'weaker') score += 10;
+        return { type: 'EMA_VWAP_CONFLUENCE', direction: 'SELL', score, ema9, ema21, vwap, rsi: rsi.value };
     }
 
     return null;
 }
 
 
-// ─── Strategy 3: Volume Spike Momentum ───────────────────────────────────────
+// ─── Strategy 2: Momentum Breakout ───────────────────────────────────────────
 
-export function evalVolumeSikeMomentum(ind) {
+export function evalMomentumBreakout(ind) {
     const ethKlines = ind.eth.klines;
     if (!ethKlines || ethKlines.length < 35) return null;
 
-    const spike = detectVolumeSpike(ethKlines);
-    if (!spike.detected) return null;
+    const recent20 = ethKlines.slice(-21, -1);
+    if (recent20.length < 20) return null;
 
-    const ethVolDir = ind.eth.volumeDeltaDirection || ind.eth.cvdDirection;
+    const high20 = Math.max(...recent20.map(k => k.high));
+    const low20 = Math.min(...recent20.map(k => k.low));
 
-    let score = 55;
-    // Bonus: Volume Delta confirms direction
-    if ((spike.direction === 'BUY' && ethVolDir === 'rising') ||
-        (spike.direction === 'SELL' && ethVolDir === 'falling')) {
-        score += 10;
+    const lastCandle = ethKlines[ethKlines.length - 1];
+    const price = lastCandle.close;
+    const atr = ind.eth.atr14 || (price * 0.002);
+    const volumeRatio = ind.eth.volumeRatio || 1.0;
+
+    const ema9 = computeEMA(ethKlines, 9);
+    const ema21 = computeEMA(ethKlines, 21);
+
+    if (!ema9 || !ema21) return null;
+
+    // LONG breakout: price closes above high20 + 0.25*ATR, green candle, volume > 1.2x avg, EMA9 > EMA21
+    const isLong = price > high20 + (0.25 * atr)
+        && lastCandle.close > lastCandle.open
+        && volumeRatio >= 1.2
+        && ema9 > ema21;
+
+    // SHORT breakdown: price closes below low20 - 0.25*ATR, red candle, volume > 1.2x avg, EMA9 < EMA21
+    const isShort = price < low20 - (0.25 * atr)
+        && lastCandle.close < lastCandle.open
+        && volumeRatio >= 1.2
+        && ema9 < ema21;
+
+    if (isLong) {
+        let score = 65;
+        if (volumeRatio > 1.6) score += 10;
+        if (ind.eth.relativeStrength === 'stronger') score += 10;
+        return { type: 'MOMENTUM_BREAKOUT', direction: 'BUY', score, high20, low20, volumeRatio };
     }
-    // Bonus: BTC not opposing
-    if ((spike.direction === 'BUY' && ind.btc.change5m > -0.1) ||
-        (spike.direction === 'SELL' && ind.btc.change5m < 0.1)) {
-        score += 5;
-    }
-    // Bonus: higher volume spike = stronger
-    if (spike.volumeRatio > 3.0) score += 5;
 
-    return { type: 'VOLUME_SPIKE', direction: spike.direction, score, volumeRatio: spike.volumeRatio };
+    if (isShort) {
+        let score = 65;
+        if (volumeRatio > 1.6) score += 10;
+        if (ind.eth.relativeStrength === 'weaker') score += 10;
+        return { type: 'MOMENTUM_BREAKOUT', direction: 'SELL', score, high20, low20, volumeRatio };
+    }
+
+    return null;
 }
 
-// ─── Strategy 4: BTC-ETH Divergence ──────────────────────────────────────────
 
-export function evalBtcEthDivergence(ind) {
-    const div = detectBtcEthDivergence(ind.btc.change5m, ind.eth.change5m);
-    if (!div.detected) return null;
+// ─── Strategy 3: Bollinger Squeeze Reversion ─────────────────────────────────
 
-    const btcVolDir = ind.btc.volumeDeltaDirection || ind.btc.cvdDirection;
-
-    let score = 55;
-    // Bonus: BTC Volume Delta confirms direction
-    if ((div.direction === 'BUY' && btcVolDir === 'rising') ||
-        (div.direction === 'SELL' && btcVolDir === 'falling')) {
-        score += 10;
-    }
-    // Bonus: larger gap = ETH has more room to catch up
-    if (div.gap > 0.5) score += 5;
-    // Bonus: relative strength confirms lag (ETH is weaker when BTC is up)
-    if ((div.direction === 'BUY' && ind.eth.relativeStrength === 'weaker') ||
-        (div.direction === 'SELL' && ind.eth.relativeStrength === 'stronger')) {
-        score += 5;
-    }
-
-    return { type: 'BTC_ETH_DIVERGENCE', direction: div.direction, score, gap: div.gap };
-}
-
-// ─── Strategy 5: Wick Reversal ───────────────────────────────────────────────
-
-export function evalWickReversal(ind) {
+export function evalBollingerSqueeze(ind) {
     const ethKlines = ind.eth.klines;
     if (!ethKlines || ethKlines.length < 35) return null;
 
-    const wick = detectWickReversal(ethKlines);
-    if (!wick.detected) return null;
+    const bb = computeBollingerBands(ethKlines, 20, 2);
+    if (!bb) return null;
 
-    const ethVolDir = ind.eth.volumeDeltaDirection || ind.eth.cvdDirection;
+    const rsi = computeRSI(ethKlines, 14);
+    const lastCandle = ethKlines[ethKlines.length - 1];
 
-    let score = 55;
-    // Bonus: BTC structure supports reversal
-    if ((wick.direction === 'BUY' && (ind.btc.structure === 'support_holding' || ind.btc.structure === 'sweep_reclaim_bullish')) ||
-        (wick.direction === 'SELL' && (ind.btc.structure === 'rejection' || ind.btc.structure === 'sweep_reclaim_bearish'))) {
-        score += 10;
+    // Squeeze filter: BBW should be compressed (< 1.8% of price)
+    const isSqueezed = bb.bbw <= 0.018;
+    if (!isSqueezed) return null;
+
+    // LONG: Low touched or pierced lower band, RSI < 38 & rising, BTC not dumping
+    const isLong = lastCandle.low <= bb.lower * 1.0008
+        && rsi.value < 38 && rsi.trend === 'rising'
+        && ind.btc.change5m > -0.3;
+
+    // SHORT: High touched or pierced upper band, RSI > 62 & falling, BTC not pumping
+    const isShort = lastCandle.high >= bb.upper * 0.9992
+        && rsi.value > 62 && rsi.trend === 'falling'
+        && ind.btc.change5m < 0.3;
+
+    if (isLong) {
+        let score = 60;
+        if (rsi.value < 28) score += 10;
+        if (bb.bbw < 0.010) score += 10;
+        return { type: 'BOLLINGER_SQUEEZE', direction: 'BUY', score, rsi: rsi.value, bbw: bb.bbw };
     }
-    // Bonus: Volume Delta confirms
-    if ((wick.direction === 'BUY' && ethVolDir === 'rising') ||
-        (wick.direction === 'SELL' && ethVolDir === 'falling')) {
-        score += 5;
-    }
-    // Bonus: deeper wick = stronger rejection
-    if (wick.wickRatio > 0.75) score += 5;
 
-    return { type: 'WICK_REVERSAL', direction: wick.direction, score, wickRatio: wick.wickRatio };
+    if (isShort) {
+        let score = 60;
+        if (rsi.value > 72) score += 10;
+        if (bb.bbw < 0.010) score += 10;
+        return { type: 'BOLLINGER_SQUEEZE', direction: 'SELL', score, rsi: rsi.value, bbw: bb.bbw };
+    }
+
+    return null;
 }
+
 
 // ─── Strategy Runner ─────────────────────────────────────────────────────────
 
 /**
- * Run strategies and return the best signal (highest score).
+ * Run active strategies and return the best signal (highest score).
  * @param {object} ind - indicators from computeIndicators()
  * @param {number} minScore - minimum score to accept (default 65)
  * @param {boolean} isParallelMock - whether in parallel mock mode
@@ -350,16 +262,13 @@ export function evalWickReversal(ind) {
  */
 export function runAllStrategies(ind, minScore = 65, isParallelMock = false) {
     const allStrategies = [
-        { name: 'DirectionalAlignment', fn: evalDirectionalAlignment, regimes: ['TREND_UP', 'TREND_DOWN'] },
-        { name: 'RSIMeanReversion', fn: evalRSIMeanReversion, regimes: ['RANGE'] },
-        { name: 'VolumeSpikeMomentum', fn: evalVolumeSikeMomentum, regimes: ['TREND_UP', 'TREND_DOWN'] },
-        { name: 'BtcEthDivergence', fn: evalBtcEthDivergence, regimes: ['TREND_UP', 'TREND_DOWN'] },
-        { name: 'WickReversal', fn: evalWickReversal, regimes: ['RANGE'] },
+        { name: 'EmaVwapConfluence', fn: evalEmaVwapConfluence, regimes: ['TREND_UP', 'TREND_DOWN'] },
+        { name: 'MomentumBreakout', fn: evalMomentumBreakout, regimes: ['TREND_UP', 'TREND_DOWN'] },
+        { name: 'BollingerSqueeze', fn: evalBollingerSqueeze, regimes: ['RANGE'] },
     ];
 
     const currentRegime = ind.regime || 'RANGE';
 
-    // In single/live mode, filter by current regime. In parallel mock mode, run all.
     let eligibleStrategies = allStrategies;
     if (!isParallelMock) {
         if (currentRegime === 'NO_TRADE') {
@@ -390,7 +299,6 @@ export function runAllStrategies(ind, minScore = 65, isParallelMock = false) {
         return null;
     }
 
-    // Pick the highest scoring signal
     results.sort((a, b) => b.score - a.score);
     const best = results[0];
     console.log(`[Strategies] Winner: ${best.type} ${best.direction} score=${best.score} (${results.length} candidates)`);

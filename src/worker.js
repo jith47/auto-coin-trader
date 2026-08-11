@@ -72,6 +72,15 @@ export default {
                 return Response.json(trades);
             }
 
+            if (url.pathname === '/api/strategy-stats') {
+                try {
+                    const stats = await db.getStrategyStats();
+                    return Response.json(stats);
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
             if (url.pathname === '/api/run') {
                 const service = new StrategyService(env);
                 const result = await service.run(db);

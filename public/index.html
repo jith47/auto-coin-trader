@@ -484,6 +484,111 @@
             font-family: 'Inter', sans-serif;
             font-weight: 600;
         }
+
+        /* Collapsible Strategy UI */
+        .strategy-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .strategy-card:hover {
+            border-color: var(--blue);
+        }
+
+        .strategy-header {
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.02);
+            user-select: none;
+            transition: background 0.15s;
+        }
+
+        .strategy-header:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .strategy-title-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .strategy-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .strategy-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            flex-wrap: wrap;
+        }
+
+        .strategy-body {
+            padding: 16px 18px;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+            display: none;
+        }
+
+        .strategy-body.open {
+            display: block;
+        }
+
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+            margin-bottom: 12px;
+        }
+
+        .strat-detail-box {
+            background: var(--surface2);
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .strat-detail-label {
+            font-size: 0.7rem;
+            color: var(--dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+
+        .strat-detail-val {
+            font-size: 0.9rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .win-progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(239, 68, 68, 0.3);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+
+        .win-progress-fill {
+            height: 100%;
+            background: var(--green);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
     </style>
 </head>
 
@@ -550,6 +655,25 @@
                     <span class="badge badge-blue" id="activeDirection">—</span>
                 </div>
                 <div class="indicator-grid" id="activeDetails"></div>
+            </div>
+
+            <!-- Strategy Breakdown Panel (Collapsible UI) -->
+            <div class="panel" id="strategiesPanel">
+                <div class="panel-header">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="panel-title">🎯 Strategy Performance & Breakdown</span>
+                        <span class="badge badge-purple">5 Active Strategies</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span class="text-dim" style="font-size: 0.8rem;" id="strategyOverallStats">—</span>
+                        <button class="btn" id="toggleMainPanelBtn" onclick="toggleMainStrategyPanel()" style="padding: 4px 10px; font-size: 0.75rem;">▼ Expand All</button>
+                    </div>
+                </div>
+                <div id="strategyPanelBody" style="padding: 16px 20px;">
+                    <div id="strategyListContainer" style="display: flex; flex-direction: column; gap: 12px;">
+                        <div class="text-dim" style="text-align: center; padding: 16px;">Loading strategy performance data...</div>
+                    </div>
+                </div>
             </div>
 
             <div class="panel" id="marketDataPanel">
@@ -699,11 +823,12 @@
 
         async function refresh() {
             try {
-                const [statusRes, tradesRes, deltaRes, marketDataRes] = await Promise.all([
+                const [statusRes, tradesRes, deltaRes, marketDataRes, strategyStatsRes] = await Promise.all([
                     apiFetch('/api/status').catch(err => { console.error("Status fetch error:", err); return null; }),
                     apiFetch('/api/trades').catch(err => { console.error("Trades fetch error:", err); return []; }),
                     apiFetch('/api/delta').catch(err => { console.error("Delta fetch error:", err); return null; }),
                     apiFetch('/api/market-data').catch(err => { console.error("Market data fetch error:", err); return null; }),
+                    apiFetch('/api/strategy-stats').catch(err => { console.error("Strategy stats fetch error:", err); return []; }),
                 ]);
                 console.log("marketDataRes fetched:", marketDataRes);
                 if (statusRes) {
@@ -734,9 +859,162 @@
                         console.error("renderMarketData error:", renderErr);
                     }
                 }
+                if (strategyStatsRes) {
+                    try {
+                        renderStrategyStats(strategyStatsRes);
+                    } catch (stratErr) {
+                        console.error("renderStrategyStats error:", stratErr);
+                    }
+                }
             } catch (e) {
                 console.error("refresh error:", e);
             }
+        }
+
+        let openStrategyKeys = new Set();
+        let allStrategyPanelsExpanded = false;
+
+        function toggleStrategyCard(key) {
+            const body = document.getElementById('strat-body-' + key);
+            const arrow = document.getElementById('strat-arrow-' + key);
+            if (!body) return;
+            if (body.classList.contains('open')) {
+                body.classList.remove('open');
+                openStrategyKeys.delete(key);
+                if (arrow) arrow.textContent = '▼ Expand';
+            } else {
+                body.classList.add('open');
+                openStrategyKeys.add(key);
+                if (arrow) arrow.textContent = '▲ Collapse';
+            }
+        }
+
+        function toggleMainStrategyPanel() {
+            allStrategyPanelsExpanded = !allStrategyPanelsExpanded;
+            const btn = document.getElementById('toggleMainPanelBtn');
+            const cards = document.querySelectorAll('.strategy-body');
+            cards.forEach(b => {
+                const key = b.id.replace('strat-body-', '');
+                const arrow = document.getElementById('strat-arrow-' + key);
+                if (allStrategyPanelsExpanded) {
+                    b.classList.add('open');
+                    openStrategyKeys.add(key);
+                    if (arrow) arrow.textContent = '▲ Collapse';
+                } else {
+                    b.classList.remove('open');
+                    openStrategyKeys.delete(key);
+                    if (arrow) arrow.textContent = '▼ Expand';
+                }
+            });
+            if (btn) btn.textContent = allStrategyPanelsExpanded ? '▲ Collapse All' : '▼ Expand All';
+        }
+
+        function formatDate(ts) {
+            if (!ts) return '—';
+            const d = new Date(ts);
+            return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+
+        function renderStrategyStats(strategies) {
+            if (!Array.isArray(strategies)) return;
+
+            const totalTradesAll = strategies.reduce((sum, s) => sum + s.totalTrades, 0);
+            const totalWinsAll = strategies.reduce((sum, s) => sum + s.wins, 0);
+            const overallWinRate = totalTradesAll > 0 ? ((totalWinsAll / totalTradesAll) * 100).toFixed(1) : '0.0';
+            
+            const headerEl = document.getElementById('strategyOverallStats');
+            if (headerEl) {
+                headerEl.textContent = `${strategies.length} Strategies · ${totalTradesAll} Trades (${overallWinRate}% Win Rate)`;
+            }
+
+            const container = document.getElementById('strategyListContainer');
+            if (!container) return;
+
+            container.innerHTML = strategies.map(s => {
+                const isOpen = openStrategyKeys.has(s.key);
+                const pnlInrFormatted = (s.totalPnlInr >= 0 ? '+' : '') + s.totalPnlInr.toFixed(2);
+                const pnlPctFormatted = (s.totalPnlPct >= 0 ? '+' : '') + s.totalPnlPct.toFixed(2) + '%';
+                const pnlClass = s.totalPnlInr > 0 ? 'text-green' : s.totalPnlInr < 0 ? 'text-red' : 'text-dim';
+                const winRateClass = s.winRate >= 50 ? 'text-green' : s.winRate > 0 ? 'text-amber' : 'text-dim';
+                
+                const regimesBadges = (s.regimes || []).map(r => `<span class="badge badge-blue" style="font-size:0.65rem;padding:2px 8px;">${r}</span>`).join(' ');
+
+                // Profit time range
+                let profitTimeRangeStr = 'No profitable trades yet';
+                if (s.firstProfitTime && s.lastProfitTime) {
+                    if (s.firstProfitTime === s.lastProfitTime) {
+                        profitTimeRangeStr = formatDate(s.firstProfitTime);
+                    } else {
+                        profitTimeRangeStr = `${formatDate(s.firstProfitTime)} ➔ ${formatDate(s.lastProfitTime)}`;
+                    }
+                }
+
+                // Active activity time range
+                let activityTimeRangeStr = 'No activity logged yet';
+                if (s.firstTradeTime && s.lastTradeTime) {
+                    if (s.firstTradeTime === s.lastTradeTime) {
+                        activityTimeRangeStr = formatDate(s.firstTradeTime);
+                    } else {
+                        activityTimeRangeStr = `${formatDate(s.firstTradeTime)} ➔ ${formatDate(s.lastTradeTime)}`;
+                    }
+                }
+
+                return `
+                    <div class="strategy-card">
+                        <div class="strategy-header" onclick="toggleStrategyCard('${s.key}')">
+                            <div class="strategy-title-group">
+                                <span class="strategy-name">${s.name}</span>
+                                ${regimesBadges}
+                            </div>
+                            <div class="strategy-meta">
+                                <div><span class="text-dim" style="font-size:0.75rem;">Trades:</span> <b>${s.totalTrades}</b></div>
+                                <div><span class="text-dim" style="font-size:0.75rem;">Win Rate:</span> <b class="${winRateClass}">${s.winRate}%</b></div>
+                                <div><span class="text-dim" style="font-size:0.75rem;">P&L:</span> <b class="${pnlClass}">${pnlPctFormatted} (₹${pnlInrFormatted})</b></div>
+                                <button class="btn" id="strat-arrow-${s.key}" style="padding: 2px 8px; font-size: 0.7rem;">${isOpen ? '▲ Collapse' : '▼ Expand'}</button>
+                            </div>
+                        </div>
+                        <div class="strategy-body ${isOpen ? 'open' : ''}" id="strat-body-${s.key}">
+                            <p class="text-dim" style="font-size:0.8rem; margin-bottom: 12px; line-height: 1.4;">${s.description}</p>
+                            
+                            <div class="strategy-grid">
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Trades Breakdown</div>
+                                    <div class="strat-detail-val">
+                                        <span class="text-green">${s.wins} W</span> / <span class="text-red">${s.losses} L</span> / <span class="text-dim">${s.breakevens} B</span>
+                                        <div class="win-progress-bar">
+                                            <div class="win-progress-fill" style="width: ${s.winRate}%;"></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Time Range of Profit</div>
+                                    <div class="strat-detail-val text-green" style="font-size:0.8rem;">${profitTimeRangeStr}</div>
+                                </div>
+
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Overall Active Time Window</div>
+                                    <div class="strat-detail-val text-dim" style="font-size:0.8rem;">${activityTimeRangeStr}</div>
+                                </div>
+
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Avg P&L / Trade</div>
+                                    <div class="strat-detail-val ${s.avgPnlPct > 0 ? 'text-green' : s.avgPnlPct < 0 ? 'text-red' : 'text-dim'}">
+                                        ${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct}%
+                                    </div>
+                                </div>
+
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Best / Worst Trade</div>
+                                    <div class="strat-detail-val" style="font-size:0.8rem;">
+                                        <span class="text-green">+${s.maxPnlPct}%</span> | <span class="text-red">${s.minPnlPct}%</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
         }
 
         function renderMarketData(m) {
