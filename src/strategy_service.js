@@ -12,10 +12,10 @@ const CONFIG = {
     COOLDOWN_AFTER_LOSS_MS: 5 * 60 * 1000,
     MAX_TRADES_PER_DAY: 50,
     MOCK_MODE: true,
-    INITIAL_INR_BALANCE: 500,
+    INITIAL_INR_BALANCE: 2500,
     USD_INR_RATE: 85,
-    TIME_STOP_MINUTES: 30,
-    TIME_STOP_MIN_MOVE_PCT: 0.05,
+    TIME_STOP_MINUTES: 60,
+    TIME_STOP_MIN_MOVE_PCT: 0.15,
     ALLOWED_STRUCTURES: null,
     ENABLE_PULLBACK: false,
     MAX_SPREAD_BPS: 15,
@@ -188,7 +188,7 @@ export class StrategyService {
             if (this.mockMode) {
                 const currentBalance = await this.db.getMockBalance();
                 const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
-                if (drawdownPct >= 2.0) {
+                if (drawdownPct >= 20.0) {
                     console.log(`[Strategy] CIRCUIT BREAKER: Mock balance ₹${currentBalance.toFixed(2)} (Drawdown ${drawdownPct.toFixed(1)}%)`);
                     return { status: 'CIRCUIT_BREAKER', reason: `Mock balance below drawdown limit (${drawdownPct.toFixed(1)}%)` };
                 }
@@ -363,8 +363,8 @@ export class StrategyService {
         const atr = ind.eth.atr14 || (entry * 0.002);
         const atrPct = (atr / entry) * 100;
 
-        let slPercent = Math.max(0.15, Math.min(0.50, atrPct * 1.5));
-        let tpPercent = Math.max(0.25, Math.min(1.00, atrPct * 2.5));
+        let slPercent = Math.max(0.25, Math.min(0.50, atrPct * 1.5));
+        let tpPercent = Math.max(slPercent + 0.30, Math.min(1.00, atrPct * 2.5));
 
         if (tpPercent / slPercent < 1.4) {
             tpPercent = slPercent * 1.5;
@@ -473,11 +473,11 @@ export class StrategyService {
         let positionValueUsd = Math.min(riskBasedNotionalUsd, marginLeverageNotionalUsd);
         let quantity = positionValueUsd / entry;
 
-        // Enforce minimum notional (minNotional) in USD
+        // Enforce minimum notional (minNotional) in USD — skip in mock mode (no real exchange orders)
         const minNotionalUsd = this.minNotional || (CONFIG.PAIR.includes('USDT') ? 24.0 : 0);
         const currentNotionalUsd = quantity * entry;
 
-        if (currentNotionalUsd < minNotionalUsd) {
+        if (!this.mockMode && currentNotionalUsd < minNotionalUsd) {
             console.log(`[Strategy] Position value ${currentNotionalUsd.toFixed(2)} USD below min notional ${minNotionalUsd} USD. Adjusting...`);
 
             // Set quantity to meet min notional

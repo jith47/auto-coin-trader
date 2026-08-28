@@ -34,17 +34,17 @@ export class D1Database {
     async updateTradeStatus(tradeId, status, exitPrice = null, pnl = null, closeReason = null, exitValueInr = null, pnlInr = null) {
         try {
             const closedAt = status === 'CLOSED' ? Date.now() : null;
-            // Use the numeric ID primarily if it's passed, or try to match by order_id as fallback
-            const isUuid = typeof tradeId === 'string' && tradeId.includes('-');
+            const isNumericId = typeof tradeId === 'number' || (typeof tradeId === 'string' && /^\d+$/.test(tradeId));
+            const col = isNumericId ? 'id' : 'order_id';
             
             const stmt = this.db.prepare(`
                 UPDATE trade_logs
                 SET status = ?, exit_price = ?, pnl = ?, close_reason = ?, exit_value_inr = ?, pnl_inr = ?,
                     closed_at = COALESCE(closed_at, ?)
-                WHERE ${isUuid ? 'order_id' : 'id'} = ?
+                WHERE ${col} = ?
             `);
             const result = await stmt.bind(status, exitPrice, pnl, closeReason, exitValueInr, pnlInr, closedAt, tradeId).run();
-            console.log(`[DB] updateTradeStatus for ${tradeId} to ${status}: ${result.success ? 'Success' : 'Failed'}`);
+            console.log(`[DB] updateTradeStatus (${col}=${tradeId}) to ${status}: ${result.success ? 'Success' : 'Failed'}`);
             return result;
         } catch (err) {
             console.error(`[DB] updateTradeStatus error for ${tradeId}:`, err.message);
@@ -54,11 +54,12 @@ export class D1Database {
 
     // Update TP levels status
     async updateTPLevels(tradeId, tpLevels) {
-        const isUuid = typeof tradeId === 'string' && tradeId.includes('-');
+        const isNumericId = typeof tradeId === 'number' || (typeof tradeId === 'string' && /^\d+$/.test(tradeId));
+        const col = isNumericId ? 'id' : 'order_id';
         const stmt = this.db.prepare(`
             UPDATE trade_logs
             SET tp_levels = ?
-            WHERE ${isUuid ? 'order_id' : 'id'} = ?
+            WHERE ${col} = ?
         `);
         return await stmt.bind(JSON.stringify(tpLevels), tradeId).run();
     }

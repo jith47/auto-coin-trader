@@ -262,7 +262,7 @@ export function evalBollingerSqueeze(ind) {
  */
 export function runAllStrategies(ind, minScore = 65, isParallelMock = false) {
     const allStrategies = [
-        { name: 'EmaVwapConfluence', fn: evalEmaVwapConfluence, regimes: ['TREND_UP', 'TREND_DOWN'] },
+        { name: 'EmaVwapConfluence', fn: evalEmaVwapConfluence, regimes: ['TREND_UP', 'TREND_DOWN', 'RANGE'] },
         { name: 'MomentumBreakout', fn: evalMomentumBreakout, regimes: ['TREND_UP', 'TREND_DOWN'] },
         { name: 'BollingerSqueeze', fn: evalBollingerSqueeze, regimes: ['RANGE'] },
     ];

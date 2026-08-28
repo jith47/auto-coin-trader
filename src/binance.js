@@ -364,10 +364,10 @@ export function classifyRegime(ethChange5m, atr14, btcChange5m, ethPrice, spread
 
     if (trendStrength >= 1.0 && btcAligned) {
         return ethChange5m > 0 ? 'TREND_UP' : 'TREND_DOWN';
-    } else if (trendStrength < 0.6) {
-        return 'RANGE';
     }
-    return 'NO_TRADE';
+    // Everything else (including moderate movement 0.6-1.0) is RANGE — 
+    // individual strategies have their own internal momentum/trend checks
+    return 'RANGE';
 }
 
 export function percentChange(klines, periods) {

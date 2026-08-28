@@ -164,9 +164,13 @@ export default {
 
     async scheduled(event, env, ctx) {
         console.log('[Worker] Cron triggered');
-        const db = new D1Database(env.DB);
-        const service = new StrategyService(env);
-        const result = await service.run(db);
-        console.log('[Worker] Result:', JSON.stringify(result));
+        try {
+            const db = new D1Database(env.DB);
+            const service = new StrategyService(env);
+            const result = await service.run(db);
+            console.log('[Worker] Result:', JSON.stringify(result));
+        } catch (err) {
+            console.error('[Worker] Cron execution error:', err.message, err.stack);
+        }
     },
 };
