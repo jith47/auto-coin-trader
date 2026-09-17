@@ -6,20 +6,20 @@ const CONFIG = {
     MARGIN_CURRENCY: 'INR',
     MARGIN_PERCENT: 70,
     DEFAULT_LEVERAGE: 2,
-    SL_PCT: 0.3,
-    TP_PCT: 0.6,
-    MIN_ACC_SCORE: 50,
-    COOLDOWN_AFTER_LOSS_MS: 5 * 60 * 1000,
-    MAX_TRADES_PER_DAY: 50,
+    SL_PCT: 0.5,
+    TP_PCT: 1.0,
+    MIN_ACC_SCORE: 55,
+    COOLDOWN_AFTER_LOSS_MS: 0,
+    MAX_TRADES_PER_DAY: 200,
     MOCK_MODE: true,
     INITIAL_INR_BALANCE: 2500,
     USD_INR_RATE: 85,
-    TIME_STOP_MINUTES: 60,
-    TIME_STOP_MIN_MOVE_PCT: 0.15,
+    TIME_STOP_MINUTES: 45,
+    TIME_STOP_MIN_MOVE_PCT: 0.05,
     ALLOWED_STRUCTURES: null,
     ENABLE_PULLBACK: false,
-    MAX_SPREAD_BPS: 15,
-    MAX_CANDLE_AGE_MS: 120 * 1000,
+    MAX_SPREAD_BPS: 50,
+    MAX_CANDLE_AGE_MS: 300 * 1000,
 };
 export class StrategyService {
     constructor(env) {
@@ -63,20 +63,8 @@ export class StrategyService {
                 : 0;
             const lastCandleClose = data?.eth?.lastCandleCloseTime || (Array.isArray(ethKlines) && ethKlines.length > 0 ? ethKlines[ethKlines.length - 1].closeTime : 0);
 
-            // Candle Deduplication Check
-            if (lastCandleClose > 0) {
-                const lastProcessed = await db.getSetting('last_processed_candle', '0');
-                if (parseInt(lastProcessed) >= lastCandleClose) {
-                    console.log(`[Strategy] DEDUP: Candle close ${lastCandleClose} already processed. Skipping.`);
-                    return { status: 'ALREADY_PROCESSED', candleTime: lastCandleClose };
-                }
-            }
-
-            // Data Freshness Check
-            if (lastCandleClose > 0 && Math.abs(Date.now() - lastCandleClose) > CONFIG.MAX_CANDLE_AGE_MS) {
-                console.warn(`[Strategy] STALE DATA: Last candle close is ${(Math.abs(Date.now() - lastCandleClose) / 1000).toFixed(0)}s old (max ${CONFIG.MAX_CANDLE_AGE_MS / 1000}s). Aborting.`);
-                return { status: 'STALE_DATA', ageSeconds: Math.round(Math.abs(Date.now() - lastCandleClose) / 1000) };
-            }
+            // V4: No candle dedup — we want to evaluate every cron tick
+            // V4: No stale data check — we trade with whatever we have
 
             // 2. Parallel Trades Check & Management
             const parallelSetting = await db.getSetting('parallel_trades_mode', 'false');
@@ -92,7 +80,7 @@ export class StrategyService {
                         openCount++;
                     }
                 }
-                const MAX_PARALLEL_TRADES = 5;
+                const MAX_PARALLEL_TRADES = 10;
                 if (openCount >= MAX_PARALLEL_TRADES) {
                     console.log(`[Strategy] Parallel Mock Mode: Max parallel limit reached (${openCount}/${MAX_PARALLEL_TRADES}). Skipping new entries.`);
                     return { status: 'MAX_PARALLEL_TRADES_REACHED', openCount, max: MAX_PARALLEL_TRADES };
@@ -177,43 +165,12 @@ export class StrategyService {
                 await db.updateSetting('last_processed_candle', lastCandleClose.toString());
             }
 
-            // 3. New trade checks
-            const cooldownCheck = await this.checkCooldowns();
-            if (!cooldownCheck.canTrade) {
-                console.log(`[Strategy] Blocked: ${cooldownCheck.reason} `);
-                return { status: 'BLOCKED', reason: cooldownCheck.reason };
-            }
+            // V4: No cooldown, no circuit breaker, no kill switches — let it trade
 
-            // 4. Max drawdown circuit breaker
-            if (this.mockMode) {
-                const currentBalance = await this.db.getMockBalance();
-                const drawdownPct = ((CONFIG.INITIAL_INR_BALANCE - currentBalance) / CONFIG.INITIAL_INR_BALANCE) * 100;
-                if (drawdownPct >= 20.0) {
-                    console.log(`[Strategy] CIRCUIT BREAKER: Mock balance ₹${currentBalance.toFixed(2)} (Drawdown ${drawdownPct.toFixed(1)}%)`);
-                    return { status: 'CIRCUIT_BREAKER', reason: `Mock balance below drawdown limit (${drawdownPct.toFixed(1)}%)` };
-                }
-            } else {
-                // Real mode: check INR balance floor
-                const inrBalance = await getINRFuturesBalance(this.env);
-                if (inrBalance !== null && inrBalance < 50) {
-                    console.log(`[Strategy] CIRCUIT BREAKER: INR balance ₹${inrBalance.toFixed(2)} below minimum ₹50`);
-                    return { status: 'CIRCUIT_BREAKER', reason: `INR balance ₹${inrBalance.toFixed(2)} below minimum` };
-                }
-            }
-
-            // 5. Check kill switches for both directions to log status
-            const killSwitchLong = await this.checkKillSwitches(this.indicators, { direction: 'BUY' });
-            const killSwitchShort = await this.checkKillSwitches(this.indicators, { direction: 'SELL' });
-            if (killSwitchLong.triggered && killSwitchShort.triggered) {
-                console.log(`[Strategy] All directions blocked: LONG = ${killSwitchLong.reason}, SHORT = ${killSwitchShort.reason} `);
-                return { status: 'KILL_SWITCH', reason: `Both blocked: ${killSwitchLong.reason}; ${killSwitchShort.reason} ` };
-            }
-
-            // 6. Strategy Runner — evaluate strategies (gated by regime in single/live mode)
-            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE, isParallelMode);
+            // V5: Strategy Runner — fetch disabled strategies & run remaining enabled ones
+            const disabledStrategies = await db.getDisabledStrategies();
+            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE, true, disabledStrategies);
             if (!setup) {
-                await this.db.updateSetting('structure_detected_at', 0);
-                await this.db.updateSetting('last_detected_structure', 'none');
                 console.log('[Strategy] No valid setup from any strategy');
                 return { status: 'NO_SETUP' };
             }
@@ -221,26 +178,7 @@ export class StrategyService {
             const score = setup.score;
             console.log(`[Strategy] Winner: ${setup.type} ${setup.direction} score=${score}`);
 
-            // 6b. Range filter — block low-conviction entries in choppy markets
-            const rangeFilterResult = this.applyRangeFilter(this.indicators, setup);
-            if (rangeFilterResult.blocked) {
-                console.log(`[Strategy] RANGE FILTER blocked: ${rangeFilterResult.reason}`);
-                return { status: 'RANGE_FILTERED', reason: rangeFilterResult.reason };
-            }
-
-            // 7. Verify kill switch doesn't block the found direction
-            const killSwitch = setup.direction === 'BUY' ? killSwitchLong : killSwitchShort;
-            if (killSwitch.triggered) {
-                console.log(`[Strategy] Kill switch triggered: ${killSwitch.reason} `);
-                return { status: 'KILL_SWITCH', reason: killSwitch.reason };
-            }
-
             let signal = await this.buildSignal(this.indicators, setup, score);
-
-            if (signal.invalidCostGate) {
-                console.warn('[Strategy] Signal blocked by COST GATE.');
-                return { status: 'COST_GATE_BLOCKED', reason: 'Net reward after fees does not clear risk' };
-            }
 
             console.log('[Strategy] Generated Base Signal:', JSON.stringify(signal, null, 2));
             if (!signal.quantity || signal.quantity <= 0) {
@@ -359,28 +297,15 @@ export class StrategyService {
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.eth.price;
-        // Dynamic ATR-based SL & TP calculation
+        // Dynamic ATR-based SL & TP calculation (ATR-scaled, 2:1 R:R min, wider SL)
         const atr = ind.eth.atr14 || (entry * 0.002);
         const atrPct = (atr / entry) * 100;
 
-        let slPercent = Math.max(0.25, Math.min(0.50, atrPct * 1.5));
-        let tpPercent = Math.max(slPercent + 0.30, Math.min(1.00, atrPct * 2.5));
+        let slPercent = Math.max(0.40, Math.min(1.00, atrPct * 2.0));
+        let tpPercent = Math.max(slPercent * 1.5, Math.min(2.00, atrPct * 3.5));
 
-        if (tpPercent / slPercent < 1.4) {
-            tpPercent = slPercent * 1.5;
-        }
-
-        // Cost gate check: ensure net TP after roundtrip fees (0.15%) exceeds net SL risk
-        const estimatedFeePct = 0.15;
-        const netWinPct = tpPercent - estimatedFeePct;
-        const netLossPct = slPercent + estimatedFeePct;
-        const costGateRatio = netLossPct > 0 ? netWinPct / netLossPct : 0;
-
+        // V4: No cost gate — we want trades to execute
         let invalidCostGate = false;
-        if (netWinPct <= 0 || costGateRatio < 1.0) {
-            console.warn(`[Strategy] COST GATE BLOCKED: TP (${tpPercent.toFixed(2)}%) after fees (${estimatedFeePct}%) netWin=${netWinPct.toFixed(2)}% vs netLoss=${netLossPct.toFixed(2)}% (ratio ${costGateRatio.toFixed(2)} < 1.0).`);
-            invalidCostGate = true;
-        }
 
         const slPrice = setup.direction === 'BUY'
             ? entry * (1 - slPercent / 100)
@@ -556,13 +481,11 @@ export class StrategyService {
                 };
                 console.log('[Strategy] Mock trade simulated.');
 
-                // Deduct entry fee
+                // Entry fee logging (Capital fixed at 2500 INR in mock mode)
                 const entryValueUsdt = signal.quantity * signal.entry;
                 const feeUsdt = entryValueUsdt * 0.001; // 0.1% Fee
                 const feeInr = feeUsdt * CONFIG.USD_INR_RATE;
-                const currentBalance = await this.db.getMockBalance();
-                await this.db.updateMockBalance(currentBalance - feeInr);
-                console.log(`[Strategy] Mock Entry Fee deducted: ${feeInr.toFixed(2)} INR ($${feeUsdt.toFixed(4)})`);
+                console.log(`[Strategy] Mock Entry Fee: ${feeInr.toFixed(2)} INR ($${feeUsdt.toFixed(4)}). Capital fixed at 2500 INR.`);
             } else {
                 result = await placeOrder(
                     this.env, CONFIG.PAIR, signal.decision, signal.quantity,
@@ -907,22 +830,9 @@ export class StrategyService {
 
         const finalPortionPnlInr = portionPnLInr - entryFeeInrPortion - exitFeeInrPortion;
 
-        // Update Mock Balance ONLY in mock mode
+        // Log Mock Settlement ONLY in mock mode (Capital fixed at 2500 INR)
         if (isMock) {
-            const currentBalance = await this.db.getMockBalance();
-            const newBalance = currentBalance + finalPortionPnlInr;
-            await this.db.updateMockBalance(newBalance);
-            console.log(`[Strategy] Mock Settlement (${(portionFraction * 100).toFixed(0)}%): PnL=${portionPnLInr.toFixed(2)}, Fees=${(entryFeeInrPortion + exitFeeInrPortion).toFixed(2)}, Net=${finalPortionPnlInr.toFixed(2)} INR. New Balance: ${newBalance.toFixed(2)}`);
-
-            if (this.mockMode) {
-                const startBalance = 2500; // Starting mock balance in settings
-                const mockPnlPct = ((newBalance - startBalance) / startBalance) * 100;
-                if (mockPnlPct >= 100.0) {
-                    console.log(`[Strategy] AUTO-SWITCH SUCCESS: Mock P&L reached ${mockPnlPct.toFixed(1)}% (Balance: ₹${newBalance.toFixed(2)}). Switching to REAL mode.`);
-                    await this.db.updateSetting('mock_mode', 'false');
-                    this.mockMode = false;
-                }
-            }
+            console.log(`[Strategy] Mock Settlement (${(portionFraction * 100).toFixed(0)}%): PnL=${portionPnLInr.toFixed(2)}, Fees=${(entryFeeInrPortion + exitFeeInrPortion).toFixed(2)}, Net=${finalPortionPnlInr.toFixed(2)} INR. (Capital fixed at ₹2500)`);
         } else {
             console.log(`[Strategy] Real Settlement Sync (${(portionFraction * 100).toFixed(0)}%): PnL=${portionPnLInr.toFixed(2)}, Fees=${(entryFeeInrPortion + exitFeeInrPortion).toFixed(2)}, Net=${finalPortionPnlInr.toFixed(2)} INR`);
         }

@@ -166,18 +166,15 @@ export class D1Database {
         return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     }
 
-    // Mock Balance Management
+    // Mock Balance Management (Fixed at ₹2500)
     async getMockBalance() {
-        const result = await this.db.prepare(
-            "SELECT value FROM settings WHERE key = 'mock_balance_inr'"
-        ).first();
-        return parseFloat(result?.value || '2500');
+        return 2500.0;
     }
 
     async updateMockBalance(newBalance) {
         return await this.db.prepare(
-            "UPDATE settings SET value = ? WHERE key = 'mock_balance_inr'"
-        ).bind(newBalance.toFixed(2)).run();
+            "INSERT INTO settings (key, value) VALUES ('mock_balance_inr', '2500') ON CONFLICT(key) DO UPDATE SET value = '2500'"
+        ).run();
     }
 
     // Generic Setting Management
@@ -189,83 +186,65 @@ export class D1Database {
     }
 
     async updateSetting(key, value) {
-        // Use UPSERT pattern
-        const existing = await this.getSetting(key);
-        if (existing !== null) {
-            return await this.db.prepare(
-                "UPDATE settings SET value = ? WHERE key = ?"
-            ).bind(value.toString(), key).run();
-        } else {
-            return await this.db.prepare(
-                "INSERT INTO settings (key, value) VALUES (?, ?)"
-            ).bind(key, value.toString()).run();
+        return await this.db.prepare(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind(key, value.toString()).run();
+    }
+
+    async getDisabledStrategies() {
+        const { results } = await this.db.prepare(
+            "SELECT key, value FROM settings WHERE key LIKE 'strategy_disabled_%'"
+        ).all();
+        const disabled = new Set();
+        if (Array.isArray(results)) {
+            for (const row of results) {
+                if (row.value === 'true') {
+                    const stratKey = row.key.replace('strategy_disabled_', '');
+                    disabled.add(stratKey);
+                }
+            }
         }
+        return disabled;
+    }
+
+    async toggleStrategy(stratKey) {
+        const key = `strategy_disabled_${stratKey}`;
+        const current = await this.getSetting(key, 'false');
+        const nextState = current === 'true' ? 'false' : 'true';
+        await this.updateSetting(key, nextState);
+        return nextState !== 'true'; // returns true if enabled, false if disabled
     }
 
     // Get detailed per-strategy statistics
     async getStrategyStats() {
         const KNOWN_STRATEGIES = [
-            {
-                key: 'EMA_VWAP_CONFLUENCE',
-                name: 'EMA/VWAP Confluence',
-                description: 'EMA-9/21 momentum crossover confirmed by VWAP fair value position and RSI',
-                regimes: ['TREND_UP', 'TREND_DOWN'],
-            },
-            {
-                key: 'MOMENTUM_BREAKOUT',
-                name: 'Momentum Breakout',
-                description: '20-candle high/low breakouts with dynamic ATR filter, EMA trend, and volume expansion',
-                regimes: ['TREND_UP', 'TREND_DOWN'],
-            },
-            {
-                key: 'BOLLINGER_SQUEEZE',
-                name: 'Bollinger Squeeze Reversion',
-                description: 'Band compression mean reversion at lower/upper bands with RSI extremes',
-                regimes: ['RANGE'],
-            },
-            {
-                key: 'DIRECTIONAL_ALIGNMENT',
-                name: 'Directional Alignment (Legacy)',
-                description: 'Volume Delta + Momentum alignment on closed candles (Legacy)',
-                regimes: ['TREND_UP', 'TREND_DOWN'],
-            },
-            {
-                key: 'RSI_MEAN_REVERSION',
-                name: 'RSI Mean Reversion (Legacy)',
-                description: 'Overbought / Oversold reversals in ranging conditions (Legacy)',
-                regimes: ['RANGE'],
-            },
-            {
-                key: 'VOLUME_SPIKE',
-                name: 'Volume Spike Momentum (Legacy)',
-                description: 'High-volume directional bursts on completed 1m candles (Legacy)',
-                regimes: ['TREND_UP', 'TREND_DOWN'],
-            },
-            {
-                key: 'BTC_ETH_DIVERGENCE',
-                name: 'BTC-ETH Divergence (Legacy)',
-                description: 'Cross-pair lag catch-up when BTC moves >0.15% (Legacy)',
-                regimes: ['TREND_UP', 'TREND_DOWN'],
-            },
-            {
-                key: 'WICK_REVERSAL',
-                name: 'Wick Reversal (Legacy)',
-                description: 'High upper/lower wick rejection candles (Legacy)',
-                regimes: ['RANGE'],
-            }
+            { key: 'MOMENTUM_5M', name: 'Momentum 5m', description: 'ETH 5-min price momentum with volume surge' },
+            { key: 'VWAP_CROSS', name: 'VWAP Cross', description: 'Price cross of 20-period Volume Weighted Average Price' },
+            { key: 'EMA_RIBBON', name: 'EMA Ribbon', description: 'Fast EMA (5) vs Slow EMA (20) trend & momentum alignment' },
+            { key: 'BOLLINGER_SQUEEZE', name: 'Bollinger Squeeze', description: 'Volatility compression & breakout expansion' },
+            { key: 'RSI_DIVERGENCE', name: 'RSI Divergence', description: '14-period RSI divergence & extreme reversal' },
+            { key: 'DELTA_FLIP', name: 'Delta Flip', description: 'Order flow / CVD direction flip with taker volume' },
+            { key: 'ABSORPTION', name: 'Absorption', description: 'Volume spike with range compression near extremes' },
+            { key: 'MEAN_REVERT_Z', name: 'Mean Reversion Z-Score', description: 'Statistical Z-score deviation (> 1.8) from mean' },
+            { key: 'MOMENTUM_DIVERGE', name: 'Momentum Divergence', description: 'Price momentum vs volume exhaustion divergence' },
+            { key: 'MULTI_TF_ALIGN', name: 'Multi-TF Alignment', description: 'Confluence across BTC 1h, ETH 5m & Taker flow' },
         ];
+
+        const disabledSet = await this.getDisabledStrategies();
 
         const { results } = await this.db.prepare(`
             SELECT 
                 CASE 
-                    WHEN reason LIKE '%EMA_VWAP_CONFLUENCE%' THEN 'EMA_VWAP_CONFLUENCE'
-                    WHEN reason LIKE '%MOMENTUM_BREAKOUT%' THEN 'MOMENTUM_BREAKOUT'
+                    WHEN reason LIKE '%MOMENTUM_5M%' THEN 'MOMENTUM_5M'
+                    WHEN reason LIKE '%VWAP_CROSS%' THEN 'VWAP_CROSS'
+                    WHEN reason LIKE '%EMA_RIBBON%' THEN 'EMA_RIBBON'
                     WHEN reason LIKE '%BOLLINGER_SQUEEZE%' THEN 'BOLLINGER_SQUEEZE'
-                    WHEN reason LIKE '%DIRECTIONAL_ALIGNMENT%' OR reason LIKE '%TREND_CONTINUATION%' OR reason LIKE '%RELATIVE_%' THEN 'DIRECTIONAL_ALIGNMENT'
-                    WHEN reason LIKE '%RSI_MEAN_REVERSION%' THEN 'RSI_MEAN_REVERSION'
-                    WHEN reason LIKE '%VOLUME_SPIKE%' THEN 'VOLUME_SPIKE'
-                    WHEN reason LIKE '%BTC_ETH_DIVERGENCE%' THEN 'BTC_ETH_DIVERGENCE'
-                    WHEN reason LIKE '%WICK_REVERSAL%' OR reason LIKE '%SWEEP_RECLAIM%' THEN 'WICK_REVERSAL'
+                    WHEN reason LIKE '%RSI_DIVERGENCE%' THEN 'RSI_DIVERGENCE'
+                    WHEN reason LIKE '%DELTA_FLIP%' THEN 'DELTA_FLIP'
+                    WHEN reason LIKE '%ABSORPTION%' THEN 'ABSORPTION'
+                    WHEN reason LIKE '%MEAN_REVERT_Z%' THEN 'MEAN_REVERT_Z'
+                    WHEN reason LIKE '%MOMENTUM_DIVERGE%' THEN 'MOMENTUM_DIVERGE'
+                    WHEN reason LIKE '%MULTI_TF_ALIGN%' THEN 'MULTI_TF_ALIGN'
                     ELSE 'OTHER'
                 END as strat_key,
                 COUNT(*) as total_trades,
@@ -315,7 +294,7 @@ export class D1Database {
                 key: strat.key,
                 name: strat.name,
                 description: strat.description,
-                regimes: strat.regimes,
+                enabled: !disabledSet.has(strat.key),
                 totalTrades,
                 wins,
                 losses,

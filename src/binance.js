@@ -3,6 +3,8 @@
  * Real trades execute on CoinDCX futures, and Binance endpoints can be blocked
  * from Cloudflare Workers, so production should prefer CoinDCX futures values.
  */
+import { fetchEdgeMarketData } from './edge_data.js';
+
 const SYMBOLS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT' };
 const CVD_STEEP_THRESHOLD = 0.5;
 const CVD_GRADUAL_THRESHOLD = 0.15;
@@ -74,7 +76,8 @@ export async function fetchAllMarketData() {
     const [
         btcKlines1m, btcKlines5m, btc24h,
         ethKlines1m, eth24h,
-        sol24h
+        sol24h,
+        edgeData
     ] = await Promise.all([
         fetchKlines(BTC, '1m', 70),
         fetchKlines(BTC, '5m', 30),
@@ -82,12 +85,14 @@ export async function fetchAllMarketData() {
         fetchKlines(ETH, '1m', 70),
         fetch24hTicker(ETH),
         fetch24hTicker(SOL),
+        fetchEdgeMarketData('ETHUSDT'),
     ]);
     const liquidations = estimateLiquidationEvents(btcKlines1m);
     return {
         btc: { klines1m: btcKlines1m, klines5m: btcKlines5m, ticker24h: btc24h },
         eth: { klines1m: ethKlines1m, ticker24h: eth24h, liquidations },
         sol: { ticker24h: sol24h },
+        edge: edgeData,
     };
 }
 
@@ -335,6 +340,7 @@ export function computeIndicators(data, config = {}) {
         sector: { ethChange, solChange, bias: sectorBias, solPrice: data.sol?.ticker24h?.lastPrice || 0 },
         liquidations: liquidations,
         session: session,
+        edge: data.edge || null,
     };
 }
 

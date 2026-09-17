@@ -662,7 +662,7 @@
                 <div class="panel-header">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="panel-title">🎯 Strategy Performance & Breakdown</span>
-                        <span class="badge badge-purple">5 Active Strategies</span>
+                        <span class="badge badge-purple" id="activeStratBadge">10 V5 Strategies</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <span class="text-dim" style="font-size: 0.8rem;" id="strategyOverallStats">—</span>
@@ -821,15 +821,23 @@
             document.getElementById('passwordInput').value = '';
         }
 
+        let lastStrategyStatsFetch = 0;
+
         async function refresh() {
             try {
+                const now = Date.now();
+                const fetchStats = (now - lastStrategyStatsFetch > 60000);
+                
                 const [statusRes, tradesRes, deltaRes, marketDataRes, strategyStatsRes] = await Promise.all([
                     apiFetch('/api/status').catch(err => { console.error("Status fetch error:", err); return null; }),
                     apiFetch('/api/trades').catch(err => { console.error("Trades fetch error:", err); return []; }),
                     apiFetch('/api/delta').catch(err => { console.error("Delta fetch error:", err); return null; }),
                     apiFetch('/api/market-data').catch(err => { console.error("Market data fetch error:", err); return null; }),
-                    apiFetch('/api/strategy-stats').catch(err => { console.error("Strategy stats fetch error:", err); return []; }),
+                    fetchStats ? apiFetch('/api/strategy-stats').catch(err => { console.error("Strategy stats fetch error:", err); return null; }) : Promise.resolve(null),
                 ]);
+                if (fetchStats && strategyStatsRes) {
+                    lastStrategyStatsFetch = now;
+                }
                 console.log("marketDataRes fetched:", marketDataRes);
                 if (statusRes) {
                     try {
@@ -915,16 +923,45 @@
             return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         }
 
+        async function toggleStrategy(stratKey) {
+            try {
+                const res = await fetch('/api/settings/toggle-strategy', {
+                    method: 'POST',
+                    headers: {
+                        ...authHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ key: stratKey })
+                });
+                if (res.status === 401) { logout(); return; }
+                const data = await res.json();
+                if (data.success) {
+                    const statsRes = await apiFetch('/api/strategy-stats');
+                    if (statsRes) renderStrategyStats(statsRes);
+                } else {
+                    alert('Failed to toggle strategy: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Connection error: ' + err.message);
+            }
+        }
+
         function renderStrategyStats(strategies) {
             if (!Array.isArray(strategies)) return;
 
+            const activeStrategies = strategies.filter(s => s.enabled !== false);
             const totalTradesAll = strategies.reduce((sum, s) => sum + s.totalTrades, 0);
             const totalWinsAll = strategies.reduce((sum, s) => sum + s.wins, 0);
             const overallWinRate = totalTradesAll > 0 ? ((totalWinsAll / totalTradesAll) * 100).toFixed(1) : '0.0';
             
             const headerEl = document.getElementById('strategyOverallStats');
             if (headerEl) {
-                headerEl.textContent = `${strategies.length} Strategies · ${totalTradesAll} Trades (${overallWinRate}% Win Rate)`;
+                headerEl.textContent = `${activeStrategies.length}/${strategies.length} Active · ${totalTradesAll} Trades (${overallWinRate}% Win Rate)`;
+            }
+
+            const badgeEl = document.getElementById('activeStratBadge');
+            if (badgeEl) {
+                badgeEl.textContent = `${activeStrategies.length}/${strategies.length} Active V5 Strategies`;
             }
 
             const container = document.getElementById('strategyListContainer');
@@ -932,12 +969,15 @@
 
             container.innerHTML = strategies.map(s => {
                 const isOpen = openStrategyKeys.has(s.key);
+                const isEnabled = s.enabled !== false;
                 const pnlInrFormatted = (s.totalPnlInr >= 0 ? '+' : '') + s.totalPnlInr.toFixed(2);
                 const pnlPctFormatted = (s.totalPnlPct >= 0 ? '+' : '') + s.totalPnlPct.toFixed(2) + '%';
                 const pnlClass = s.totalPnlInr > 0 ? 'text-green' : s.totalPnlInr < 0 ? 'text-red' : 'text-dim';
                 const winRateClass = s.winRate >= 50 ? 'text-green' : s.winRate > 0 ? 'text-amber' : 'text-dim';
                 
-                const regimesBadges = (s.regimes || []).map(r => `<span class="badge badge-blue" style="font-size:0.65rem;padding:2px 8px;">${r}</span>`).join(' ');
+                const statusBadge = isEnabled
+                    ? `<span class="badge badge-green" style="font-size:0.65rem;padding:2px 8px;">ACTIVE</span>`
+                    : `<span class="badge badge-red" style="font-size:0.65rem;padding:2px 8px;">PAUSED</span>`;
 
                 // Profit time range
                 let profitTimeRangeStr = 'No profitable trades yet';
@@ -960,16 +1000,19 @@
                 }
 
                 return `
-                    <div class="strategy-card">
+                    <div class="strategy-card" style="${!isEnabled ? 'opacity: 0.65; filter: grayscale(30%);' : ''}">
                         <div class="strategy-header" onclick="toggleStrategyCard('${s.key}')">
                             <div class="strategy-title-group">
                                 <span class="strategy-name">${s.name}</span>
-                                ${regimesBadges}
+                                ${statusBadge}
                             </div>
                             <div class="strategy-meta">
                                 <div><span class="text-dim" style="font-size:0.75rem;">Trades:</span> <b>${s.totalTrades}</b></div>
                                 <div><span class="text-dim" style="font-size:0.75rem;">Win Rate:</span> <b class="${winRateClass}">${s.winRate}%</b></div>
                                 <div><span class="text-dim" style="font-size:0.75rem;">P&L:</span> <b class="${pnlClass}">${pnlPctFormatted} (₹${pnlInrFormatted})</b></div>
+                                <button class="btn" onclick="event.stopPropagation(); toggleStrategy('${s.key}')" style="padding: 3px 10px; font-size: 0.75rem; font-weight: 600; ${isEnabled ? 'background: rgba(239, 68, 68, 0.15); color: var(--red); border: 1px solid var(--red);' : 'background: rgba(16, 185, 129, 0.15); color: var(--green); border: 1px solid var(--green);'}">
+                                    ${isEnabled ? '⏸ Pause' : '▶ Resume'}
+                                </button>
                                 <button class="btn" id="strat-arrow-${s.key}" style="padding: 2px 8px; font-size: 0.7rem;">${isOpen ? '▲ Collapse' : '▼ Expand'}</button>
                             </div>
                         </div>
@@ -1362,13 +1405,17 @@
 
         function startAutoRefresh() {
             refresh();
-            let countdown = 10;
+            let countdown = 25;
             const timerEl = document.getElementById('timer');
             clearInterval(refreshInterval);
             refreshInterval = setInterval(() => {
+                if (document.hidden) {
+                    timerEl.textContent = `Auto-refresh: Paused (tab backgrounded)`;
+                    return;
+                }
                 countdown--;
                 timerEl.textContent = `Auto-refresh: ${countdown}s`;
-                if (countdown <= 0) { refresh(); countdown = 10; }
+                if (countdown <= 0) { refresh(); countdown = 25; }
             }, 1000);
         }
     </script>

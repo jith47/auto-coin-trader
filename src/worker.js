@@ -118,6 +118,19 @@ export default {
                 }
             }
 
+            if (url.pathname === '/api/settings/toggle-strategy' && request.method === 'POST') {
+                try {
+                    const { key } = await request.json();
+                    if (!key) {
+                        return Response.json({ error: 'Missing strategy key' }, { status: 400 });
+                    }
+                    const enabled = await db.toggleStrategy(key);
+                    return Response.json({ success: true, key, enabled });
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
             if (url.pathname === '/api/delta') {
                 try {
                     if (env.DELTA_FEED) {
