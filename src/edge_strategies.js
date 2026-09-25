@@ -1,335 +1,396 @@
 /**
- * V5 EDGE STRATEGIES — 10 distinct, non-overlapping strategies
+ * V7 ADAPTIVE TOURNAMENT STRATEGY ENGINE — 15 Diverse Market Strategies
  * 
- * Kept Strategy:
- *  1. MOMENTUM_5M — Proven working strategy (ETH 5m price momentum with volume)
+ * Predatory & Institutional Strategies:
+ *  1. SWEEP_RECLAIM        — Liquidity Sweep & Reclaim (Structural)
+ *  2. STOP_HUNT            — Stop Loss Hunter (Microstructure Range Reversal)
+ *  3. OI_TRAP              — Open Interest Trap (Positioning Fade)
+ *  4. SESSION_OPEN         — Session Open Momentum (Institutional Timing)
+ *  5. FUNDING_SQUEEZE      — Funding Rate Squeeze (Cascade Reversal)
+ *  6. LIQUIDATION_CASCADE  — Liquidation Cascade Rider (Structural Momentum)
+ *  7. ABSORPTION_REVERSAL  — Smart Money Absorption (Order Flow Reversal)
+ *  8. RETAIL_FADE          — Retail Sentiment Fade (Contrarian Cascade)
+ *  9. WHALE_IMBALANCE      — Whale Imbalance Detection (Order Flow Follow)
+ * 10. MICRO_SCALP          — Micro Momentum Scalp (3-Bar Acceleration)
  * 
- * New Technical & Market Microstructure Strategies:
- *  2. VWAP_CROSS — Price cross of 20-candle Volume Weighted Average Price
- *  3. EMA_RIBBON — Fast EMA (5) vs Slow EMA (20) trend alignment & momentum
- *  4. BOLLINGER_SQUEEZE — Volatility compression followed by breakout expansion
- *  5. RSI_DIVERGENCE — 14-period RSI divergence & extreme reversal
- *  6. DELTA_FLIP — Order flow / CVD direction flip with taker volume confirmation
- *  7. ABSORPTION — High volume surge with tight candle range (liquidity absorption)
- *  8. MEAN_REVERT_Z — Statistical Z-score deviation (> 1.8 std dev) from SMA
- *  9. MOMENTUM_DIVERGE — Price momentum vs Volume momentum exhaustion divergence
- * 10. MULTI_TF_ALIGN — Confluence across BTC 1h trend, ETH 5m momentum & taker flow
+ * Proven Legacy Strategies:
+ * 11. MOMENTUM_5M          — 5M Momentum Surge with Volume Expansion
+ * 12. TAKER_SURGE          — Aggressive Taker Order Flow Surge
+ * 13. CVD_PRICE_DIV        — Cumulative Volume Delta Divergence vs Price
+ * 14. BTC_FOLLOW           — BTC Trend Leader Exploitation
+ * 15. RANGE_BOUNCE         — Range Boundary Fade & Reversal
  */
 
-// ── INDICATOR HELPER FUNCTIONS ──
-
-function getCloses(klines) {
-    if (!klines || !Array.isArray(klines)) return [];
-    return klines.map(k => k.close).filter(c => typeof c === 'number' && !isNaN(c));
-}
-
-function calculateSMA(closes, period) {
-    if (closes.length < period) return null;
-    const slice = closes.slice(closes.length - period);
-    const sum = slice.reduce((a, b) => a + b, 0);
-    return sum / period;
-}
-
-function calculateEMA(closes, period) {
-    if (closes.length < period) return null;
-    const k = 2 / (period + 1);
-    let ema = closes.slice(0, period).reduce((s, c) => s + c, 0) / period;
-    for (let i = period; i < closes.length; i++) {
-        ema = (closes[i] * k) + (ema * (1 - k));
-    }
-    return ema;
-}
-
-function calculateStdDev(closes, period, sma) {
-    if (closes.length < period) return null;
-    const slice = closes.slice(closes.length - period);
-    const mean = sma ?? (slice.reduce((a, b) => a + b, 0) / period);
-    const squaredDiffs = slice.map(val => Math.pow(val - mean, 2));
-    const variance = squaredDiffs.reduce((a, b) => a + b, 0) / period;
-    return Math.sqrt(variance);
-}
-
-function calculateVWAP(klines, period = 20) {
-    if (!klines || klines.length < period) return null;
-    const slice = klines.slice(klines.length - period);
-    let cumulativeTPV = 0;
-    let cumulativeVol = 0;
-    for (const k of slice) {
-        const tp = (k.high + k.low + k.close) / 3;
-        const vol = k.volume || 1;
-        cumulativeTPV += tp * vol;
-        cumulativeVol += vol;
-    }
-    return cumulativeVol > 0 ? cumulativeTPV / cumulativeVol : null;
-}
-
-function calculateRSI(closes, period = 14) {
-    if (closes.length < period + 1) return 50;
-    let gains = 0;
-    let losses = 0;
-    for (let i = closes.length - period; i < closes.length; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff >= 0) gains += diff;
-        else losses -= diff;
-    }
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
-}
-
-// ── 1. MOMENTUM_5M (KEPT WORKING STRATEGY) ──
-export function evalMomentum5m(ind) {
-    const eth5m = ind.eth.change5m || 0;
-    const volRatio = ind.eth.volumeRatio || 1;
-    
-    if (eth5m > 0.12 && volRatio > 0.8) {
-        return { type: 'MOMENTUM_5M', direction: 'BUY', score: 62 + Math.min(28, Math.round(eth5m * 20 + (volRatio - 0.8) * 10)) };
-    }
-    if (eth5m < -0.12 && volRatio > 0.8) {
-        return { type: 'MOMENTUM_5M', direction: 'SELL', score: 62 + Math.min(28, Math.round(Math.abs(eth5m) * 20 + (volRatio - 0.8) * 10)) };
-    }
-    return null;
-}
-
-// ── 2. VWAP_CROSS ──
-export function evalVwapCross(ind) {
+// ── 1. SWEEP_RECLAIM (Structural Liquidity Sweep & Reclaim) ──
+export function evalSweepReclaim(ind) {
+    const btcStruct = ind.btc.structure;
+    const liqEvent = ind.liquidations?.recentEvent;
     const klines = ind.eth.klines;
-    if (!klines || klines.length < 20) return null;
 
-    const vwap = calculateVWAP(klines, 20);
-    if (!vwap) return null;
+    // Check BTC structure triggers first
+    if (btcStruct === 'sweep_reclaim_bullish' || liqEvent === 'longs_flushed') {
+        const score = 72 + (liqEvent === 'longs_flushed' ? 10 : 0);
+        return { type: 'SWEEP_RECLAIM', direction: 'BUY', score };
+    }
+    if (btcStruct === 'sweep_reclaim_bearish' || liqEvent === 'shorts_squeezed') {
+        const score = 72 + (liqEvent === 'shorts_squeezed' ? 10 : 0);
+        return { type: 'SWEEP_RECLAIM', direction: 'SELL', score };
+    }
 
-    const curr = klines[klines.length - 1];
+    // Microstructure check on ETH 1m klines (look back 15 candles)
+    if (!klines || klines.length < 16) return null;
+    const lookback = klines.slice(-16, -1);
+    const current = klines[klines.length - 1];
     const prev = klines[klines.length - 2];
-    const volRatio = ind.eth.volumeRatio || 1.0;
 
-    // Bullish cross over VWAP with volume
-    if (prev.close <= vwap && curr.close > vwap && volRatio >= 0.7) {
-        return { type: 'VWAP_CROSS', direction: 'BUY', score: 64 + Math.min(20, Math.round((volRatio - 0.7) * 15)) };
-    }
-    // Bearish cross under VWAP with volume
-    if (prev.close >= vwap && curr.close < vwap && volRatio >= 0.7) {
-        return { type: 'VWAP_CROSS', direction: 'SELL', score: 64 + Math.min(20, Math.round((volRatio - 0.7) * 15)) };
+    const swingLow = Math.min(...lookback.map(k => k.low));
+    const swingHigh = Math.max(...lookback.map(k => k.high));
+
+    // Bullish reclaim: previous or current wick pierced swing low, but current close reclaims above
+    const sweptLow = prev.low < swingLow || current.low < swingLow;
+    if (sweptLow && current.close > swingLow && current.close > current.open) {
+        const depth = ((swingLow - Math.min(prev.low, current.low)) / swingLow) * 100;
+        return { type: 'SWEEP_RECLAIM', direction: 'BUY', score: 68 + Math.min(22, Math.round(depth * 50)) };
     }
 
-    // Extended away from VWAP with momentum
-    const distPct = ((curr.close - vwap) / vwap) * 100;
-    if (distPct > 0.15 && ind.eth.change5m > 0.08) {
-        return { type: 'VWAP_CROSS', direction: 'BUY', score: 62 };
-    }
-    if (distPct < -0.15 && ind.eth.change5m < -0.08) {
-        return { type: 'VWAP_CROSS', direction: 'SELL', score: 62 };
+    // Bearish reclaim: previous or current wick pierced swing high, but current close rejects below
+    const sweptHigh = prev.high > swingHigh || current.high > swingHigh;
+    if (sweptHigh && current.close < swingHigh && current.close < current.open) {
+        const depth = ((Math.max(prev.high, current.high) - swingHigh) / swingHigh) * 100;
+        return { type: 'SWEEP_RECLAIM', direction: 'SELL', score: 68 + Math.min(22, Math.round(depth * 50)) };
     }
 
     return null;
 }
 
-// ── 3. EMA_RIBBON ──
-export function evalEmaRibbon(ind) {
-    const closes = getCloses(ind.eth.klines);
-    if (closes.length < 20) return null;
-
-    const ema5 = calculateEMA(closes, 5);
-    const ema20 = calculateEMA(closes, 20);
-    if (!ema5 || !ema20) return null;
-
-    const eth5m = ind.eth.change5m || 0;
-    const spreadPct = ((ema5 - ema20) / ema20) * 100;
-
-    // Fast EMA above slow EMA & current price moving up
-    if (spreadPct > 0.04 && eth5m > 0.04) {
-        return { type: 'EMA_RIBBON', direction: 'BUY', score: 63 + Math.min(25, Math.round(spreadPct * 50)) };
-    }
-    // Fast EMA below slow EMA & current price moving down
-    if (spreadPct < -0.04 && eth5m < -0.04) {
-        return { type: 'EMA_RIBBON', direction: 'SELL', score: 63 + Math.min(25, Math.round(Math.abs(spreadPct) * 50)) };
-    }
-
-    return null;
-}
-
-// ── 4. BOLLINGER_SQUEEZE ──
-export function evalBollingerSqueeze(ind) {
-    const closes = getCloses(ind.eth.klines);
-    if (closes.length < 20) return null;
-
-    const sma = calculateSMA(closes, 20);
-    const stdDev = calculateStdDev(closes, 20, sma);
-    if (!sma || !stdDev || sma === 0) return null;
-
-    const upperBand = sma + (2 * stdDev);
-    const lowerBand = sma - (2 * stdDev);
-    const bandwidthPct = ((upperBand - lowerBand) / sma) * 100;
-    const lastClose = closes[closes.length - 1];
-    const eth5m = ind.eth.change5m || 0;
-
-    // Squeeze condition (narrow bands < 0.8%) followed by breakout
-    if (bandwidthPct < 0.8) {
-        if (lastClose > sma && eth5m > 0.05) {
-            return { type: 'BOLLINGER_SQUEEZE', direction: 'BUY', score: 66 };
-        }
-        if (lastClose < sma && eth5m < -0.05) {
-            return { type: 'BOLLINGER_SQUEEZE', direction: 'SELL', score: 66 };
-        }
-    }
-
-    // Outer band touch / breakout
-    if (lastClose >= upperBand && eth5m > 0.08) {
-        return { type: 'BOLLINGER_SQUEEZE', direction: 'BUY', score: 65 };
-    }
-    if (lastClose <= lowerBand && eth5m < -0.08) {
-        return { type: 'BOLLINGER_SQUEEZE', direction: 'SELL', score: 65 };
-    }
-
-    return null;
-}
-
-// ── 5. RSI_DIVERGENCE ──
-export function evalRsiDivergence(ind) {
-    const closes = getCloses(ind.eth.klines);
-    if (closes.length < 25) return null;
-
-    const rsi = calculateRSI(closes, 14);
-    const eth5m = ind.eth.change5m || 0;
-
-    // Oversold reversal (< 35) with positive 5m change
-    if (rsi < 35 && eth5m > 0.03) {
-        return { type: 'RSI_DIVERGENCE', direction: 'BUY', score: 65 + Math.round((35 - rsi) * 0.8) };
-    }
-    // Overbought reversal (> 65) with negative 5m change
-    if (rsi > 65 && eth5m < -0.03) {
-        return { type: 'RSI_DIVERGENCE', direction: 'SELL', score: 65 + Math.round((rsi - 65) * 0.8) };
-    }
-
-    // Divergence check over last 15 bars
-    const recentPrices = closes.slice(closes.length - 5);
-    const olderPrices = closes.slice(closes.length - 15, closes.length - 5);
-    const minRecentPrice = Math.min(...recentPrices);
-    const minOlderPrice = Math.min(...olderPrices);
-    const maxRecentPrice = Math.max(...recentPrices);
-    const maxOlderPrice = Math.max(...olderPrices);
-
-    const rsiOlder = calculateRSI(closes.slice(0, closes.length - 5), 14);
-
-    // Bullish Divergence: Lower price low, but higher RSI
-    if (minRecentPrice < minOlderPrice && rsi > rsiOlder + 3) {
-        return { type: 'RSI_DIVERGENCE', direction: 'BUY', score: 68 };
-    }
-    // Bearish Divergence: Higher price high, but lower RSI
-    if (maxRecentPrice > maxOlderPrice && rsi < rsiOlder - 3) {
-        return { type: 'RSI_DIVERGENCE', direction: 'SELL', score: 68 };
-    }
-
-    return null;
-}
-
-// ── 6. DELTA_FLIP ──
-export function evalDeltaFlip(ind) {
-    const edge = ind.edge;
-    const cvd = ind.eth.cvdDirection;
-    const eth5m = ind.eth.change5m || 0;
-
-    const takerRatio = edge?.takerFlow?.buySellRatio ?? 1.0;
-
-    // Rising CVD & Taker Buy dominance > 1.15
-    if (cvd === 'rising' && takerRatio > 1.15 && eth5m >= 0) {
-        return { type: 'DELTA_FLIP', direction: 'BUY', score: 65 + Math.min(25, Math.round((takerRatio - 1.15) * 40)) };
-    }
-    // Falling CVD & Taker Sell dominance < 0.85
-    if (cvd === 'falling' && takerRatio < 0.85 && eth5m <= 0) {
-        return { type: 'DELTA_FLIP', direction: 'SELL', score: 65 + Math.min(25, Math.round((0.85 - takerRatio) * 40)) };
-    }
-
-    return null;
-}
-
-// ── 7. ABSORPTION ──
-export function evalAbsorption(ind) {
+// ── 2. STOP_HUNT (Stop Loss Hunter at 20-Candle Extremes) ──
+export function evalStopHunt(ind) {
     const klines = ind.eth.klines;
     if (!klines || klines.length < 5) return null;
 
-    const curr = klines[klines.length - 1];
-    const range = curr.high - curr.low;
-    if (range <= 0) return null;
+    const current = klines[klines.length - 1];
+    const rangeHigh = ind.eth.rangeHigh20 || current.high;
+    const rangeLow = ind.eth.rangeLow20 || current.low;
+    const pos = ind.eth.rangePosition != null ? ind.eth.rangePosition : 0.5;
 
-    const body = Math.abs(curr.close - curr.open);
-    const bodyRatio = body / range;
-    const volRatio = ind.eth.volumeRatio || 1.0;
-    const rangePos = ind.eth.rangePosition ?? 0.5;
+    const candleRange = current.high - current.low;
+    if (candleRange <= 0) return null;
 
-    // High volume (> 1.3x) with compressed body (< 35% of range) = Heavy absorption
-    if (volRatio > 1.3 && bodyRatio < 0.35) {
-        // Absorption near range low = smart money buying bottom -> BUY
-        if (rangePos < 0.4) {
-            return { type: 'ABSORPTION', direction: 'BUY', score: 66 + Math.min(20, Math.round((volRatio - 1.3) * 20)) };
+    const lowerWick = (Math.min(current.open, current.close) - current.low) / candleRange;
+    const upperWick = (current.high - Math.max(current.open, current.close)) / candleRange;
+
+    // Lower stop hunt: price dipped to/below rangeLow with long lower wick (> 40%) & closed green/inside
+    if ((current.low <= rangeLow * 1.0002 || pos < 0.15) && lowerWick >= 0.40 && current.close >= current.open) {
+        return { type: 'STOP_HUNT', direction: 'BUY', score: 66 + Math.round(lowerWick * 20) };
+    }
+
+    // Upper stop hunt: price reached to/above rangeHigh with long upper wick (> 40%) & closed red/inside
+    if ((current.high >= rangeHigh * 0.9998 || pos > 0.85) && upperWick >= 0.40 && current.close <= current.open) {
+        return { type: 'STOP_HUNT', direction: 'SELL', score: 66 + Math.round(upperWick * 20) };
+    }
+
+    return null;
+}
+
+// ── 3. OI_TRAP (Open Interest Trap) ──
+export function evalOiTrap(ind) {
+    const oi = ind.edge?.openInterest;
+    if (!oi) return null;
+
+    const oiChangePct = oi.changePct5m || 0;
+    const eth5m = ind.eth.change5m || 0;
+    const taker = ind.edge?.takerFlow?.buySellRatio || 1.0;
+    const ethCvd = ind.eth.cvdDirection;
+
+    // Condition: Significant OI expansion (> 0.20%) but price stagnating / absorbing (|eth5m| < 0.12%)
+    if (Math.abs(oiChangePct) >= 0.20 && Math.abs(eth5m) < 0.12) {
+        // Retail longs trapped: buying flow high or CVD rising, but price couldn't rally -> trap!
+        if (taker >= 1.20 || ethCvd === 'rising') {
+            return { type: 'OI_TRAP', direction: 'SELL', score: 68 + Math.min(22, Math.round(Math.abs(oiChangePct) * 15)) };
         }
-        // Absorption near range high = smart money selling top -> SELL
-        if (rangePos > 0.6) {
-            return { type: 'ABSORPTION', direction: 'SELL', score: 66 + Math.min(20, Math.round((volRatio - 1.3) * 20)) };
+        // Retail shorts trapped: selling flow high or CVD falling, but price refused to dump -> trap!
+        if (taker <= 0.80 || ethCvd === 'falling') {
+            return { type: 'OI_TRAP', direction: 'BUY', score: 68 + Math.min(22, Math.round(Math.abs(oiChangePct) * 15)) };
         }
     }
 
     return null;
 }
 
-// ── 8. MEAN_REVERT_Z ──
-export function evalMeanRevertZ(ind) {
-    const closes = getCloses(ind.eth.klines);
-    if (closes.length < 20) return null;
+// ── 4. SESSION_OPEN (Session Open Momentum) ──
+export function evalSessionOpen(ind) {
+    const hour = ind.session?.hour ?? (new Date().getUTCHours() + new Date().getUTCMinutes() / 60);
+    // London Open window: 07:00 - 08:30 UTC
+    // US / New York Open window: 12:30 - 14:30 UTC
+    const isLondon = hour >= 7.0 && hour <= 8.5;
+    const isUS = hour >= 12.5 && hour <= 14.5;
 
-    const sma = calculateSMA(closes, 20);
-    const stdDev = calculateStdDev(closes, 20, sma);
-    if (!sma || !stdDev || stdDev === 0) return null;
+    if (!isLondon && !isUS) return null;
 
-    const lastClose = closes[closes.length - 1];
-    const zScore = (lastClose - sma) / stdDev;
+    const btc5m = ind.btc.change5m || 0;
     const eth5m = ind.eth.change5m || 0;
 
-    // Severe downside stretch (Z < -1.8) with bounce sign -> BUY
-    if (zScore < -1.8 && eth5m > -0.10) {
-        return { type: 'MEAN_REVERT_Z', direction: 'BUY', score: 64 + Math.min(25, Math.round(Math.abs(zScore) * 6)) };
+    // Directional alignment across BTC & ETH with conviction
+    if (btc5m > 0.08 && eth5m > 0.08) {
+        const bonus = Math.min(18, Math.round((btc5m + eth5m) * 25));
+        return { type: 'SESSION_OPEN', direction: 'BUY', score: 70 + bonus };
     }
-    // Severe upside stretch (Z > 1.8) with rejection sign -> SELL
-    if (zScore > 1.8 && eth5m < 0.10) {
-        return { type: 'MEAN_REVERT_Z', direction: 'SELL', score: 64 + Math.min(25, Math.round(zScore * 6)) };
+    if (btc5m < -0.08 && eth5m < -0.08) {
+        const bonus = Math.min(18, Math.round(Math.abs(btc5m + eth5m) * 25));
+        return { type: 'SESSION_OPEN', direction: 'SELL', score: 70 + bonus };
     }
 
     return null;
 }
 
-// ── 9. MOMENTUM_DIVERGE ──
-export function evalMomentumDiverge(ind) {
+// ── 5. FUNDING_SQUEEZE (Funding Rate Squeeze) ──
+export function evalFundingSqueeze(ind) {
+    const funding = ind.edge?.fundingRate;
+    if (funding == null) return null;
+
+    const eth5m = ind.eth.change5m || 0;
+    const ethCvd = ind.eth.cvdDirection;
+
+    // Extreme positive funding (longs paying heavily > 0.025% per 8h)
+    // When momentum turns down, leveraged longs are liquidated
+    if (funding >= 0.00025 && (eth5m < -0.04 || ethCvd === 'falling')) {
+        const bonus = Math.min(20, Math.round(funding * 40000));
+        return { type: 'FUNDING_SQUEEZE', direction: 'SELL', score: 66 + bonus };
+    }
+
+    // Negative funding (shorts paying heavily < -0.008% per 8h)
+    // When momentum turns up, shorts are squeezed violently
+    if (funding <= -0.00008 && (eth5m > 0.04 || ethCvd === 'rising')) {
+        const bonus = Math.min(20, Math.round(Math.abs(funding) * 50000));
+        return { type: 'FUNDING_SQUEEZE', direction: 'BUY', score: 66 + bonus };
+    }
+
+    return null;
+}
+
+// ── 6. LIQUIDATION_CASCADE (Liquidation Cascade Rider) ──
+export function evalLiquidationCascade(ind) {
+    const liqEvent = ind.liquidations?.recentEvent;
+    const volRatio = ind.eth.volumeRatio || 1.0;
+    const eth5m = ind.eth.change5m || 0;
+
+    // Direct liquidation alert from tracker
+    if (liqEvent === 'longs_flushed') {
+        return { type: 'LIQUIDATION_CASCADE', direction: 'SELL', score: 76 };
+    }
+    if (liqEvent === 'shorts_squeezed') {
+        return { type: 'LIQUIDATION_CASCADE', direction: 'BUY', score: 76 };
+    }
+
+    // Microstructure cascade: high volume surge (> 1.8x) combined with rapid breakout momentum
+    if (volRatio >= 1.8) {
+        if (eth5m > 0.18) {
+            return { type: 'LIQUIDATION_CASCADE', direction: 'BUY', score: 68 + Math.min(22, Math.round(eth5m * 20)) };
+        }
+        if (eth5m < -0.18) {
+            return { type: 'LIQUIDATION_CASCADE', direction: 'SELL', score: 68 + Math.min(22, Math.round(Math.abs(eth5m) * 20)) };
+        }
+    }
+
+    return null;
+}
+
+// ── 7. ABSORPTION_REVERSAL (Smart Money Absorption) ──
+export function evalAbsorptionReversal(ind) {
+    const volRatio = ind.eth.volumeRatio || 1.0;
+    const klines = ind.eth.klines;
+    if (!klines || klines.length < 3) return null;
+
+    const lastK = klines[klines.length - 1];
+    if (!lastK.open || lastK.open <= 0) return null;
+
+    const candleBodyPct = (Math.abs(lastK.close - lastK.open) / lastK.open) * 100;
+    const taker = ind.edge?.takerFlow?.buySellRatio || 1.0;
+    const ethCvd = ind.eth.cvdDirection;
+
+    // High volume (> 1.5x) with tiny candle body (< 0.05%) indicates aggressive absorption
+    if (volRatio >= 1.5 && candleBodyPct < 0.05) {
+        // Smart money absorbing selling into bids: trade with buyers
+        if (taker >= 1.15 || ethCvd === 'rising') {
+            return { type: 'ABSORPTION_REVERSAL', direction: 'BUY', score: 66 + Math.min(22, Math.round((volRatio - 1.5) * 15)) };
+        }
+        // Smart money absorbing buying into asks: trade with sellers
+        if (taker <= 0.85 || ethCvd === 'falling') {
+            return { type: 'ABSORPTION_REVERSAL', direction: 'SELL', score: 66 + Math.min(22, Math.round((volRatio - 1.5) * 15)) };
+        }
+    }
+
+    return null;
+}
+
+// ── 8. RETAIL_FADE (Retail Sentiment Fade) ──
+export function evalRetailFade(ind) {
+    const lsRatio = ind.edge?.globalLS?.ratio;
+    if (lsRatio == null) return null;
+
+    const eth5m = ind.eth.change5m || 0;
+
+    // Retail heavily long (> 1.60) and price starts falling -> crowd panic unwind
+    if (lsRatio >= 1.60 && eth5m < -0.04) {
+        const bonus = Math.min(20, Math.round((lsRatio - 1.60) * 15));
+        return { type: 'RETAIL_FADE', direction: 'SELL', score: 66 + bonus };
+    }
+
+    // Retail heavily short (< 0.65) and price starts rising -> crowd squeeze unwind
+    if (lsRatio <= 0.65 && eth5m > 0.04) {
+        const bonus = Math.min(20, Math.round((0.65 - lsRatio) * 20));
+        return { type: 'RETAIL_FADE', direction: 'BUY', score: 66 + bonus };
+    }
+
+    return null;
+}
+
+// ── 9. WHALE_IMBALANCE (Whale Imbalance Detection) ──
+export function evalWhaleImbalance(ind) {
+    const taker = ind.edge?.takerFlow?.buySellRatio;
+    if (taker == null) return null;
+
+    const oiChangePct = ind.edge?.openInterest?.changePct5m || 0;
+    const ethCvd = ind.eth.cvdDirection;
+
+    // Institutional aggressive buy flow (taker > 1.35) with steady/growing OI
+    if (taker >= 1.35 && oiChangePct >= -0.05 && ethCvd === 'rising') {
+        const score = 68 + Math.min(22, Math.round((taker - 1.35) * 25));
+        return { type: 'WHALE_IMBALANCE', direction: 'BUY', score };
+    }
+
+    // Institutional aggressive sell flow (taker < 0.72) with steady/growing OI
+    if (taker <= 0.72 && oiChangePct >= -0.05 && ethCvd === 'falling') {
+        const score = 68 + Math.min(22, Math.round((0.72 - taker) * 25));
+        return { type: 'WHALE_IMBALANCE', direction: 'SELL', score };
+    }
+
+    return null;
+}
+
+// ── 10. MICRO_SCALP (Micro Momentum Scalp) ──
+export function evalMicroScalp(ind) {
+    const klines = ind.eth.klines;
+    if (!klines || klines.length < 4) return null;
+
+    const c1 = klines[klines.length - 3];
+    const c2 = klines[klines.length - 2];
+    const c3 = klines[klines.length - 1];
+
+    const b1 = c1.close - c1.open;
+    const b2 = c2.close - c2.open;
+    const b3 = c3.close - c3.open;
+
+    // 3 consecutive bullish bars with accelerating or strong size
+    if (b1 > 0 && b2 > 0 && b3 > 0) {
+        const pct3 = c1.open > 0 ? ((c3.close - c1.open) / c1.open) * 100 : 0;
+        if (pct3 >= 0.10) {
+            return { type: 'MICRO_SCALP', direction: 'BUY', score: 65 + Math.min(25, Math.round(pct3 * 40)) };
+        }
+    }
+
+    // 3 consecutive bearish bars with accelerating or strong size
+    if (b1 < 0 && b2 < 0 && b3 < 0) {
+        const pct3 = c1.open > 0 ? ((c1.open - c3.close) / c1.open) * 100 : 0;
+        if (pct3 >= 0.10) {
+            return { type: 'MICRO_SCALP', direction: 'SELL', score: 65 + Math.min(25, Math.round(pct3 * 40)) };
+        }
+    }
+
+    return null;
+}
+
+// ── 11. MOMENTUM_5M (5M Momentum Surge with Volume Expansion) ──
+export function evalMomentum5m(ind) {
     const eth5m = ind.eth.change5m || 0;
     const volRatio = ind.eth.volumeRatio || 1.0;
 
-    // Price pushing UP strong (> +0.10%) but volume collapsing (< 0.6x) = Exhaustion -> SELL
-    if (eth5m > 0.10 && volRatio < 0.65) {
-        return { type: 'MOMENTUM_DIVERGE', direction: 'SELL', score: 64 + Math.round((0.65 - volRatio) * 30) };
+    if (eth5m > 0.12 && volRatio > 0.8) {
+        const score = 62 + Math.min(28, Math.round(eth5m * 20 + (volRatio - 0.8) * 10));
+        return { type: 'MOMENTUM_5M', direction: 'BUY', score };
     }
-    // Price pushing DOWN strong (< -0.10%) but volume collapsing (< 0.6x) = Exhaustion -> BUY
-    if (eth5m < -0.10 && volRatio < 0.65) {
-        return { type: 'MOMENTUM_DIVERGE', direction: 'BUY', score: 64 + Math.round((0.65 - volRatio) * 30) };
+    if (eth5m < -0.12 && volRatio > 0.8) {
+        const score = 62 + Math.min(28, Math.round(Math.abs(eth5m) * 20 + (volRatio - 0.8) * 10));
+        return { type: 'MOMENTUM_5M', direction: 'SELL', score };
     }
-
     return null;
 }
 
-// ── 10. MULTI_TF_ALIGN ──
-export function evalMultiTfAlign(ind) {
-    const btc1h = ind.btc?.change1h || 0;
-    const eth5m = ind.eth?.change5m || 0;
-    const takerRatio = ind.edge?.takerFlow?.buySellRatio ?? 1.0;
+// ── 12. TAKER_SURGE (Aggressive Taker Order Flow Surge) ──
+export function evalTakerSurge(ind) {
+    const tf = ind.edge?.takerFlow;
+    if (!tf) return null;
+    const ratio = tf.buySellRatio || 1.0;
+    const change = tf.ratioChange5m || 0;
 
-    // Bullish alignment across macro (BTC 1h > +0.15%), micro (ETH 5m > +0.05%), and order flow (Taker > 1.05)
-    if (btc1h > 0.15 && eth5m > 0.05 && takerRatio >= 1.05) {
-        return { type: 'MULTI_TF_ALIGN', direction: 'BUY', score: 68 + Math.min(20, Math.round(btc1h * 15)) };
+    // Aggressive buyers taking liquidity with accelerating momentum
+    if (ratio >= 1.30 && change > 0.08) {
+        const score = 65 + Math.min(25, Math.round((ratio - 1.30) * 30 + change * 20));
+        return { type: 'TAKER_SURGE', direction: 'BUY', score };
     }
-    // Bearish alignment across macro (BTC 1h < -0.15%), micro (ETH 5m < -0.05%), and order flow (Taker < 0.95)
-    if (btc1h < -0.15 && eth5m < -0.05 && takerRatio <= 0.95) {
-        return { type: 'MULTI_TF_ALIGN', direction: 'SELL', score: 68 + Math.min(20, Math.round(Math.abs(btc1h) * 15)) };
+    // Aggressive sellers taking liquidity with accelerating downward flow
+    if (ratio <= 0.75 && change < -0.08) {
+        const score = 65 + Math.min(25, Math.round((0.75 - ratio) * 30 + Math.abs(change) * 20));
+        return { type: 'TAKER_SURGE', direction: 'SELL', score };
     }
-
     return null;
 }
+
+// ── 13. CVD_PRICE_DIV (Cumulative Volume Delta Divergence vs Price) ──
+export function evalCvdPriceDiv(ind) {
+    const eth5m = ind.eth.change5m || 0;
+    const ethCvd = ind.eth.cvdDirection;
+    const cvdSlope = ind.eth.cvdSlope;
+
+    // Price falling but delta/CVD is rising -> Bullish Absorption / Divergence
+    if (eth5m < -0.08 && (ethCvd === 'rising' || cvdSlope === 'rising')) {
+        const score = 66 + Math.min(24, Math.round(Math.abs(eth5m) * 30));
+        return { type: 'CVD_PRICE_DIV', direction: 'BUY', score };
+    }
+    // Price rising but delta/CVD is falling -> Bearish Exhaustion / Divergence
+    if (eth5m > 0.08 && (ethCvd === 'falling' || cvdSlope === 'falling')) {
+        const score = 66 + Math.min(24, Math.round(eth5m * 30));
+        return { type: 'CVD_PRICE_DIV', direction: 'SELL', score };
+    }
+    return null;
+}
+
+// ── 14. BTC_FOLLOW (BTC Trend Leader Exploitation) ──
+export function evalBtcFollow(ind) {
+    const btc5m = ind.btc.change5m || 0;
+    const eth5m = ind.eth.change5m || 0;
+
+    // BTC made a strong positive move (>=0.18%) and ETH has not fully caught up
+    if (btc5m >= 0.18 && eth5m < btc5m * 0.6) {
+        const lag = btc5m - eth5m;
+        const score = 65 + Math.min(25, Math.round(lag * 40));
+        return { type: 'BTC_FOLLOW', direction: 'BUY', score };
+    }
+    // BTC made a strong negative dump (<=-0.18%) and ETH has not fully caught down
+    if (btc5m <= -0.18 && eth5m > btc5m * 0.6) {
+        const lag = eth5m - btc5m;
+        const score = 65 + Math.min(25, Math.round(lag * 40));
+        return { type: 'BTC_FOLLOW', direction: 'SELL', score };
+    }
+    return null;
+}
+
+// ── 15. RANGE_BOUNCE (Range Boundary Fade & Reversal) ──
+export function evalRangeBounce(ind) {
+    const rangePos = ind.eth.rangePosition;
+    if (rangePos == null || isNaN(rangePos)) return null;
+    const eth5m = ind.eth.change5m || 0;
+
+    // Price at range bottom (<= 15%), rejecting further drops
+    if (rangePos <= 0.15 && eth5m > -0.06) {
+        const score = 64 + Math.min(26, Math.round((0.15 - rangePos) * 100));
+        return { type: 'RANGE_BOUNCE', direction: 'BUY', score };
+    }
+    // Price at range top (>= 85%), rejecting further pumps
+    if (rangePos >= 0.85 && eth5m < 0.06) {
+        const score = 64 + Math.min(26, Math.round((rangePos - 0.85) * 100));
+        return { type: 'RANGE_BOUNCE', direction: 'SELL', score };
+    }
+    return null;
+}
+

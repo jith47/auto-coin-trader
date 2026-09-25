@@ -661,8 +661,8 @@
             <div class="panel" id="strategiesPanel">
                 <div class="panel-header">
                     <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="panel-title">🎯 Strategy Performance & Breakdown</span>
-                        <span class="badge badge-purple" id="activeStratBadge">10 V5 Strategies</span>
+                        <span class="panel-title">🏆 Strategy Tournament & Adaptive Selection</span>
+                        <span class="badge badge-purple" id="activeStratBadge">15 V7 Tournament Strategies</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <span class="text-dim" style="font-size: 0.8rem;" id="strategyOverallStats">—</span>
@@ -950,6 +950,10 @@
             if (!Array.isArray(strategies)) return;
 
             const activeStrategies = strategies.filter(s => s.enabled !== false);
+            const hotCount = strategies.filter(s => s.tournamentStatus === 'HOT').length;
+            const warmCount = strategies.filter(s => s.tournamentStatus === 'WARM').length;
+            const coldCount = strategies.filter(s => s.tournamentStatus === 'COLD').length;
+
             const totalTradesAll = strategies.reduce((sum, s) => sum + s.totalTrades, 0);
             const totalWinsAll = strategies.reduce((sum, s) => sum + s.wins, 0);
             const overallWinRate = totalTradesAll > 0 ? ((totalWinsAll / totalTradesAll) * 100).toFixed(1) : '0.0';
@@ -961,7 +965,7 @@
 
             const badgeEl = document.getElementById('activeStratBadge');
             if (badgeEl) {
-                badgeEl.textContent = `${activeStrategies.length}/${strategies.length} Active V5 Strategies`;
+                badgeEl.textContent = `V7 Tournament: ${hotCount} HOT · ${warmCount} WARM · ${coldCount} COLD`;
             }
 
             const container = document.getElementById('strategyListContainer');
@@ -976,8 +980,17 @@
                 const winRateClass = s.winRate >= 50 ? 'text-green' : s.winRate > 0 ? 'text-amber' : 'text-dim';
                 
                 const statusBadge = isEnabled
-                    ? `<span class="badge badge-green" style="font-size:0.65rem;padding:2px 8px;">ACTIVE</span>`
+                    ? `<span class="badge badge-green" style="font-size:0.65rem;padding:2px 8px;">ENABLED</span>`
                     : `<span class="badge badge-red" style="font-size:0.65rem;padding:2px 8px;">PAUSED</span>`;
+
+                const tourneyStatus = s.tournamentStatus || 'WARM';
+                const tourneyBadge = tourneyStatus === 'HOT'
+                    ? `<span class="badge badge-green" style="font-size:0.65rem;padding:2px 8px;font-weight:700;">🟢 HOT (TRADING)</span>`
+                    : tourneyStatus === 'COLD'
+                    ? `<span class="badge badge-red" style="font-size:0.65rem;padding:2px 8px;font-weight:700;">🔴 COLD (BENCHED)</span>`
+                    : `<span class="badge badge-amber" style="font-size:0.65rem;padding:2px 8px;font-weight:700;">🟡 WARM (TESTING)</span>`;
+
+                const shadowWrClass = s.shadowWinRate >= 55 ? 'text-green' : s.shadowWinRate < 45 && s.shadowResolved >= 5 ? 'text-red' : 'text-amber';
 
                 // Profit time range
                 let profitTimeRangeStr = 'No profitable trades yet';
@@ -1002,13 +1015,15 @@
                 return `
                     <div class="strategy-card" style="${!isEnabled ? 'opacity: 0.65; filter: grayscale(30%);' : ''}">
                         <div class="strategy-header" onclick="toggleStrategyCard('${s.key}')">
-                            <div class="strategy-title-group">
+                            <div class="strategy-title-group" style="display:flex; align-items:center; gap:8px;">
                                 <span class="strategy-name">${s.name}</span>
+                                ${tourneyBadge}
                                 ${statusBadge}
                             </div>
                             <div class="strategy-meta">
-                                <div><span class="text-dim" style="font-size:0.75rem;">Trades:</span> <b>${s.totalTrades}</b></div>
-                                <div><span class="text-dim" style="font-size:0.75rem;">Win Rate:</span> <b class="${winRateClass}">${s.winRate}%</b></div>
+                                <div><span class="text-dim" style="font-size:0.75rem;">Shadow WR:</span> <b class="${shadowWrClass}">${s.shadowWinRate || 0}% (${s.shadowResolved || 0})</b></div>
+                                <div><span class="text-dim" style="font-size:0.75rem;">Live Trades:</span> <b>${s.totalTrades}</b></div>
+                                <div><span class="text-dim" style="font-size:0.75rem;">Live WR:</span> <b class="${winRateClass}">${s.winRate}%</b></div>
                                 <div><span class="text-dim" style="font-size:0.75rem;">P&L:</span> <b class="${pnlClass}">${pnlPctFormatted} (₹${pnlInrFormatted})</b></div>
                                 <button class="btn" onclick="event.stopPropagation(); toggleStrategy('${s.key}')" style="padding: 3px 10px; font-size: 0.75rem; font-weight: 600; ${isEnabled ? 'background: rgba(239, 68, 68, 0.15); color: var(--red); border: 1px solid var(--red);' : 'background: rgba(16, 185, 129, 0.15); color: var(--green); border: 1px solid var(--green);'}">
                                     ${isEnabled ? '⏸ Pause' : '▶ Resume'}
@@ -1021,7 +1036,17 @@
                             
                             <div class="strategy-grid">
                                 <div class="strat-detail-box">
-                                    <div class="strat-detail-label">Trades Breakdown</div>
+                                    <div class="strat-detail-label">Tournament Status & Shadow Signals</div>
+                                    <div class="strat-detail-val" style="font-size:0.85rem;">
+                                        ${tourneyBadge}
+                                        <div style="margin-top: 6px;">
+                                            Rolling WR: <b class="${shadowWrClass}">${s.shadowWinRate || 0}%</b> (${s.shadowResolved || 0} evaluated, ${s.shadowPending || 0} pending)
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="strat-detail-box">
+                                    <div class="strat-detail-label">Live Trades Breakdown</div>
                                     <div class="strat-detail-val">
                                         <span class="text-green">${s.wins} W</span> / <span class="text-red">${s.losses} L</span> / <span class="text-dim">${s.breakevens} B</span>
                                         <div class="win-progress-bar">

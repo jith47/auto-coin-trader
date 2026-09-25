@@ -1,6 +1,6 @@
 import { placeOrder, getOpenPositions, getMarketPrice, getAccountBalance, closePartialPosition, getInstrumentDetails, getINRFuturesBalance, getTradeHistory } from './coindcx.js';
 import { fetchAllMarketData, computeIndicators } from './binance.js';
-import { runAllStrategies } from './strategies.js';
+import { runTournament, runAllStrategies } from './strategies.js';
 const CONFIG = {
     PAIR: 'B-ETH_USDT',
     MARGIN_CURRENCY: 'INR',
@@ -14,8 +14,8 @@ const CONFIG = {
     MOCK_MODE: true,
     INITIAL_INR_BALANCE: 2500,
     USD_INR_RATE: 85,
-    TIME_STOP_MINUTES: 45,
-    TIME_STOP_MIN_MOVE_PCT: 0.05,
+    TIME_STOP_MINUTES: 15,
+    TIME_STOP_MIN_MOVE_PCT: 0.03,
     ALLOWED_STRUCTURES: null,
     ENABLE_PULLBACK: false,
     MAX_SPREAD_BPS: 50,
@@ -165,13 +165,17 @@ export class StrategyService {
                 await db.updateSetting('last_processed_candle', lastCandleClose.toString());
             }
 
-            // V4: No cooldown, no circuit breaker, no kill switches — let it trade
+            // Hourly cleanup of old shadow signals (> 7 days)
+            const currentMin = new Date().getMinutes();
+            if (currentMin === 0) {
+                db.cleanupOldShadowSignals().catch(e => console.warn('[Tournament] Shadow cleanup err:', e.message));
+            }
 
-            // V5: Strategy Runner — fetch disabled strategies & run remaining enabled ones
+            // V7: Adaptive Strategy Tournament — evaluate all, record shadow signals, trade with winners
             const disabledStrategies = await db.getDisabledStrategies();
-            const setup = runAllStrategies(this.indicators, CONFIG.MIN_ACC_SCORE, true, disabledStrategies);
+            const setup = await runTournament(this.indicators, db, disabledStrategies, CONFIG.MIN_ACC_SCORE);
             if (!setup) {
-                console.log('[Strategy] No valid setup from any strategy');
+                console.log('[Strategy] No valid setup from tournament');
                 return { status: 'NO_SETUP' };
             }
 
@@ -261,50 +265,20 @@ export class StrategyService {
      * Verified: blocks all 3 losses (#186-#188), zero false positives on 8 wins.
      */
     applyRangeFilter(ind, setup) {
-        const direction = setup.direction;
-        const btcStructure = ind.btc.structure;
-        const btcCvd = ind.btc.cvdDirection;
-        const ethCvd = ind.eth.cvdDirection;
-        const ethDistFromHigh = ind.eth.distFromHigh || 0;
-        const ethDistFromLow = ind.eth.distFromLow || 0;
-        const rs = ind.eth.relativeStrength;
-
-        console.log(`[Strategy] Range Filter check: struct=${btcStructure}, btcCVD=${btcCvd}, ethCVD=${ethCvd}, RS=${rs}, distHigh=${ethDistFromHigh.toFixed(2)}%, distLow=${ethDistFromLow.toFixed(2)}%`);
-
-        // Rule 1: BTC ranging + ETH CVD not confirming direction
-        // In a ranging BTC market, only trade if ETH has independent buying/selling pressure
-        if (btcStructure === 'ranging') {
-            if (direction === 'BUY' && ethCvd !== 'rising') {
-                return { blocked: true, reason: `BTC ranging + ETH CVD ${ethCvd} (not rising) — no trend confirmation for BUY` };
-            }
-            if (direction === 'SELL' && ethCvd !== 'falling') {
-                return { blocked: true, reason: `BTC ranging + ETH CVD ${ethCvd} (not falling) — no trend confirmation for SELL` };
-            }
-        }
-
-        // Rule 2: CVD divergence on rejection structure
-        // If BTC shows "rejection" (bearish wick pattern) but BTC CVD is rising,
-        // buyers are stepping in — the rejection is likely to fail. Don't short.
-        // Mirror: if BTC shows "support_holding" but BTC CVD is falling, don't go long.
-        if (direction === 'SELL' && btcStructure === 'rejection' && btcCvd === 'rising') {
-            return { blocked: true, reason: `SELL blocked: BTC rejection + BTC CVD rising (divergence — buyers stepping in)` };
-        }
-        if (direction === 'BUY' && btcStructure === 'support_holding' && btcCvd === 'falling') {
-            return { blocked: true, reason: `BUY blocked: BTC support_holding + BTC CVD falling (divergence — sellers stepping in)` };
-        }
-
+        // V6: Bypass range filter to allow predatory setups to trigger freely across all regimes
         return { blocked: false };
     }
     async buildSignal(ind, setup, score) {
         const entry = ind.eth.price;
-        // Dynamic ATR-based SL & TP calculation (ATR-scaled, 2:1 R:R min, wider SL)
+        // V6: Tight predatory scalping parameters (SL 0.12-0.25%, TP 0.20-0.50%)
+        // Rapid small scalps that avoid getting swept by market maker stop runs
         const atr = ind.eth.atr14 || (entry * 0.002);
         const atrPct = (atr / entry) * 100;
 
-        let slPercent = Math.max(0.40, Math.min(1.00, atrPct * 2.0));
-        let tpPercent = Math.max(slPercent * 1.5, Math.min(2.00, atrPct * 3.5));
+        let slPercent = Math.max(0.12, Math.min(0.25, atrPct * 0.9));
+        let tpPercent = Math.max(0.20, Math.min(0.50, slPercent * 1.8));
 
-        // V4: No cost gate — we want trades to execute
+        // V6: No cost gate — we want trades to execute
         let invalidCostGate = false;
 
         const slPrice = setup.direction === 'BUY'

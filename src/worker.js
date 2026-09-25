@@ -81,6 +81,15 @@ export default {
                 }
             }
 
+            if (url.pathname === '/api/strategy-health') {
+                try {
+                    const health = await db.getAllStrategyHealth();
+                    return Response.json(health);
+                } catch (err) {
+                    return Response.json({ error: err.message }, { status: 500 });
+                }
+            }
+
             if (url.pathname === '/api/run') {
                 const service = new StrategyService(env);
                 const result = await service.run(db);

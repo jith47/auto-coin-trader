@@ -215,36 +215,283 @@ export class D1Database {
         return nextState !== 'true'; // returns true if enabled, false if disabled
     }
 
-    // Get detailed per-strategy statistics
+    // Ensure shadow_signals table exists
+    async ensureShadowTable() {
+        if (this._shadowTableReady) return;
+        try {
+            await this.db.prepare(`
+                CREATE TABLE IF NOT EXISTS shadow_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp INTEGER NOT NULL,
+                    strategy_key TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    outcome TEXT DEFAULT 'PENDING',
+                    exit_price REAL,
+                    resolved_at INTEGER
+                )
+            `).run();
+            this._shadowTableReady = true;
+        } catch (e) {
+            console.error('[DB] ensureShadowTable error:', e.message);
+        }
+    }
+
+    // Log a shadow signal for tournament tracking (debounced 3m per strategy)
+    async logShadowSignal(strategyKey, direction, score, entryPrice) {
+        try {
+            await this.ensureShadowTable();
+            const debouncedTime = Date.now() - (3 * 60 * 1000);
+            const existing = await this.db.prepare(`
+                SELECT id FROM shadow_signals
+                WHERE strategy_key = ? AND outcome = 'PENDING' AND timestamp > ?
+                LIMIT 1
+            `).bind(strategyKey, debouncedTime).first();
+
+            if (existing) {
+                return; // Already tracking a recent pending signal for this strategy
+            }
+
+            return await this.db.prepare(`
+                INSERT INTO shadow_signals (timestamp, strategy_key, direction, score, entry_price, outcome)
+                VALUES (?, ?, ?, ?, ?, 'PENDING')
+            `).bind(Date.now(), strategyKey, direction, score, entryPrice).run();
+        } catch (err) {
+            console.error(`[DB] logShadowSignal error for ${strategyKey}:`, err.message);
+        }
+    }
+
+    // Resolve pending shadow signals based on price action
+    async resolveShadowSignals(currentPrice) {
+        if (!currentPrice || currentPrice <= 0) return 0;
+        try {
+            await this.ensureShadowTable();
+            const { results } = await this.db.prepare(`
+                SELECT id, timestamp, strategy_key, direction, score, entry_price
+                FROM shadow_signals
+                WHERE outcome = 'PENDING'
+                ORDER BY timestamp ASC
+                LIMIT 50
+            `).all();
+
+            if (!results || results.length === 0) return 0;
+
+            const now = Date.now();
+            let resolvedCount = 0;
+
+            for (const sig of results) {
+                const ageMs = now - sig.timestamp;
+                if (ageMs < 60 * 1000) continue; // Give it at least 1 minute
+
+                const movePct = sig.direction === 'BUY'
+                    ? ((currentPrice - sig.entry_price) / sig.entry_price) * 100
+                    : ((sig.entry_price - currentPrice) / sig.entry_price) * 100;
+
+                let outcome = null;
+                // Win/Loss threshold: 0.15% move
+                if (movePct >= 0.15) {
+                    outcome = 'WIN';
+                } else if (movePct <= -0.15) {
+                    outcome = 'LOSS';
+                } else if (ageMs >= 15 * 60 * 1000) {
+                    // After 15 minutes, check smaller threshold
+                    if (movePct >= 0.05) outcome = 'WIN';
+                    else if (movePct <= -0.05) outcome = 'LOSS';
+                    else outcome = 'EXPIRED';
+                } else if (ageMs >= 20 * 60 * 1000) {
+                    outcome = 'EXPIRED';
+                }
+
+                if (outcome) {
+                    await this.db.prepare(`
+                        UPDATE shadow_signals
+                        SET outcome = ?, exit_price = ?, resolved_at = ?
+                        WHERE id = ?
+                    `).bind(outcome, currentPrice, now, sig.id).run();
+                    resolvedCount++;
+                }
+            }
+
+            if (resolvedCount > 0) {
+                console.log(`[DB] Resolved ${resolvedCount} pending shadow signals`);
+            }
+            return resolvedCount;
+        } catch (err) {
+            console.error('[DB] resolveShadowSignals error:', err.message);
+            return 0;
+        }
+    }
+
+    // Get rolling health for all strategies
+    async getAllStrategyHealth() {
+        const KNOWN_STRATEGIES = [
+            { key: 'SWEEP_RECLAIM', name: 'Sweep & Reclaim', description: 'Institutional liquidity sweep & reclaim of swing extremes' },
+            { key: 'STOP_HUNT', name: 'Stop Loss Hunter', description: 'Microstructure snap-back after retail stop hunt wicks' },
+            { key: 'OI_TRAP', name: 'OI Trap Fade', description: 'Fade retail positioning trap when OI surges without price progress' },
+            { key: 'SESSION_OPEN', name: 'Session Open Momentum', description: 'Institutional volatility exploitation at London & US opens' },
+            { key: 'FUNDING_SQUEEZE', name: 'Funding Squeeze', description: 'Ride forced unwinds when overleveraged funding side turns' },
+            { key: 'LIQUIDATION_CASCADE', name: 'Liquidation Cascade', description: 'Ride cascading margin liquidations on high volume' },
+            { key: 'ABSORPTION_REVERSAL', name: 'Smart Money Absorption', description: 'Follow smart money absorption into tight compression' },
+            { key: 'RETAIL_FADE', name: 'Retail Sentiment Fade', description: 'Contrarian cascade when lopsided crowd gets caught' },
+            { key: 'WHALE_IMBALANCE', name: 'Whale Imbalance', description: 'Follow aggressive institutional taker flow imbalances' },
+            { key: 'MICRO_SCALP', name: 'Micro Scalp', description: 'Ultra-short 3-bar accelerating momentum scalp' },
+            { key: 'MOMENTUM_5M', name: '5M Momentum Surge', description: 'High-volume 5-minute directional momentum breakouts' },
+            { key: 'TAKER_SURGE', name: 'Taker Flow Surge', description: 'Surge in aggressive market taker orders dominating order book' },
+            { key: 'CVD_PRICE_DIV', name: 'CVD Divergence', description: 'Cumulative volume delta divergence vs price direction' },
+            { key: 'BTC_FOLLOW', name: 'BTC Trend Follower', description: 'Exploiting ETH lag during aggressive Bitcoin macro moves' },
+            { key: 'RANGE_BOUNCE', name: 'Range Boundary Bounce', description: 'Mean reversion fade at 20-candle consolidation boundaries' },
+        ];
+
+        try {
+            await this.ensureShadowTable();
+            // Fetch the most recent resolved signals to calculate rolling stats
+            const { results } = await this.db.prepare(`
+                SELECT strategy_key, outcome
+                FROM shadow_signals
+                WHERE outcome IN ('WIN', 'LOSS')
+                ORDER BY resolved_at DESC, timestamp DESC
+                LIMIT 400
+            `).all();
+
+            // Also get pending counts
+            const { results: pendingResults } = await this.db.prepare(`
+                SELECT strategy_key, COUNT(*) as count
+                FROM shadow_signals
+                WHERE outcome = 'PENDING'
+                GROUP BY strategy_key
+            `).all();
+
+            const pendingMap = new Map();
+            if (Array.isArray(pendingResults)) {
+                for (const p of pendingResults) {
+                    pendingMap.set(p.strategy_key, p.count);
+                }
+            }
+
+            const stratSignals = new Map();
+            if (Array.isArray(results)) {
+                for (const r of results) {
+                    if (!stratSignals.has(r.strategy_key)) {
+                        stratSignals.set(r.strategy_key, []);
+                    }
+                    const list = stratSignals.get(r.strategy_key);
+                    if (list.length < 20) {
+                        list.push(r.outcome);
+                    }
+                }
+            }
+
+            const healthMap = {};
+            for (const strat of KNOWN_STRATEGIES) {
+                const signals = stratSignals.get(strat.key) || [];
+                const totalResolved = signals.length;
+                const wins = signals.filter(o => o === 'WIN').length;
+                const losses = totalResolved - wins;
+                const winRate = totalResolved > 0 ? parseFloat(((wins / totalResolved) * 100).toFixed(1)) : 0;
+                const pendingCount = pendingMap.get(strat.key) || 0;
+
+                let status = 'WARM';
+                if (totalResolved < 5) {
+                    status = 'WARM'; // Grace period (allow testing)
+                } else if (winRate >= 55) {
+                    status = 'HOT';
+                } else if (winRate < 45) {
+                    status = 'COLD';
+                } else {
+                    status = 'WARM';
+                }
+
+                healthMap[strat.key] = {
+                    key: strat.key,
+                    name: strat.name,
+                    description: strat.description,
+                    status,
+                    winRate,
+                    wins,
+                    losses,
+                    totalResolved,
+                    pendingCount,
+                };
+            }
+            return healthMap;
+        } catch (err) {
+            console.error('[DB] getAllStrategyHealth error:', err.message);
+            // Fallback default health map
+            const fallback = {};
+            for (const strat of KNOWN_STRATEGIES) {
+                fallback[strat.key] = {
+                    key: strat.key,
+                    name: strat.name,
+                    description: strat.description,
+                    status: 'WARM',
+                    winRate: 0,
+                    wins: 0,
+                    losses: 0,
+                    totalResolved: 0,
+                    pendingCount: 0
+                };
+            }
+            return fallback;
+        }
+    }
+
+    // Cleanup shadow signals older than 7 days
+    async cleanupOldShadowSignals() {
+        try {
+            await this.ensureShadowTable();
+            const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+            const res = await this.db.prepare(`
+                DELETE FROM shadow_signals WHERE timestamp < ?
+            `).bind(cutoff).run();
+            console.log(`[DB] Cleaned up old shadow signals before ${new Date(cutoff).toISOString()}`);
+            return res;
+        } catch (err) {
+            console.error('[DB] cleanupOldShadowSignals error:', err.message);
+        }
+    }
+
+    // Get detailed per-strategy statistics (including legacy + predatory pool)
     async getStrategyStats() {
         const KNOWN_STRATEGIES = [
-            { key: 'MOMENTUM_5M', name: 'Momentum 5m', description: 'ETH 5-min price momentum with volume surge' },
-            { key: 'VWAP_CROSS', name: 'VWAP Cross', description: 'Price cross of 20-period Volume Weighted Average Price' },
-            { key: 'EMA_RIBBON', name: 'EMA Ribbon', description: 'Fast EMA (5) vs Slow EMA (20) trend & momentum alignment' },
-            { key: 'BOLLINGER_SQUEEZE', name: 'Bollinger Squeeze', description: 'Volatility compression & breakout expansion' },
-            { key: 'RSI_DIVERGENCE', name: 'RSI Divergence', description: '14-period RSI divergence & extreme reversal' },
-            { key: 'DELTA_FLIP', name: 'Delta Flip', description: 'Order flow / CVD direction flip with taker volume' },
-            { key: 'ABSORPTION', name: 'Absorption', description: 'Volume spike with range compression near extremes' },
-            { key: 'MEAN_REVERT_Z', name: 'Mean Reversion Z-Score', description: 'Statistical Z-score deviation (> 1.8) from mean' },
-            { key: 'MOMENTUM_DIVERGE', name: 'Momentum Divergence', description: 'Price momentum vs volume exhaustion divergence' },
-            { key: 'MULTI_TF_ALIGN', name: 'Multi-TF Alignment', description: 'Confluence across BTC 1h, ETH 5m & Taker flow' },
+            { key: 'SWEEP_RECLAIM', name: 'Sweep & Reclaim', description: 'Institutional liquidity sweep & reclaim of swing extremes' },
+            { key: 'STOP_HUNT', name: 'Stop Loss Hunter', description: 'Microstructure snap-back after retail stop hunt wicks' },
+            { key: 'OI_TRAP', name: 'OI Trap Fade', description: 'Fade retail positioning trap when OI surges without price progress' },
+            { key: 'SESSION_OPEN', name: 'Session Open Momentum', description: 'Institutional volatility exploitation at London & US opens' },
+            { key: 'FUNDING_SQUEEZE', name: 'Funding Squeeze', description: 'Ride forced unwinds when overleveraged funding side turns' },
+            { key: 'LIQUIDATION_CASCADE', name: 'Liquidation Cascade', description: 'Ride cascading margin liquidations on high volume' },
+            { key: 'ABSORPTION_REVERSAL', name: 'Smart Money Absorption', description: 'Follow smart money absorption into tight compression' },
+            { key: 'RETAIL_FADE', name: 'Retail Sentiment Fade', description: 'Contrarian cascade when lopsided crowd gets caught' },
+            { key: 'WHALE_IMBALANCE', name: 'Whale Imbalance', description: 'Follow aggressive institutional taker flow imbalances' },
+            { key: 'MICRO_SCALP', name: 'Micro Scalp', description: 'Ultra-short 3-bar accelerating momentum scalp' },
+            { key: 'MOMENTUM_5M', name: '5M Momentum Surge', description: 'High-volume 5-minute directional momentum breakouts' },
+            { key: 'TAKER_SURGE', name: 'Taker Flow Surge', description: 'Surge in aggressive market taker orders dominating order book' },
+            { key: 'CVD_PRICE_DIV', name: 'CVD Divergence', description: 'Cumulative volume delta divergence vs price direction' },
+            { key: 'BTC_FOLLOW', name: 'BTC Trend Follower', description: 'Exploiting ETH lag during aggressive Bitcoin macro moves' },
+            { key: 'RANGE_BOUNCE', name: 'Range Boundary Bounce', description: 'Mean reversion fade at 20-candle consolidation boundaries' },
         ];
 
         const disabledSet = await this.getDisabledStrategies();
+        const healthMap = await this.getAllStrategyHealth();
 
         const { results } = await this.db.prepare(`
             SELECT 
                 CASE 
+                    WHEN reason LIKE '%SWEEP_RECLAIM%' THEN 'SWEEP_RECLAIM'
+                    WHEN reason LIKE '%STOP_HUNT%' THEN 'STOP_HUNT'
+                    WHEN reason LIKE '%OI_TRAP%' THEN 'OI_TRAP'
+                    WHEN reason LIKE '%SESSION_OPEN%' THEN 'SESSION_OPEN'
+                    WHEN reason LIKE '%FUNDING_SQUEEZE%' THEN 'FUNDING_SQUEEZE'
+                    WHEN reason LIKE '%LIQUIDATION_CASCADE%' THEN 'LIQUIDATION_CASCADE'
+                    WHEN reason LIKE '%ABSORPTION_REVERSAL%' THEN 'ABSORPTION_REVERSAL'
+                    WHEN reason LIKE '%RETAIL_FADE%' THEN 'RETAIL_FADE'
+                    WHEN reason LIKE '%WHALE_IMBALANCE%' THEN 'WHALE_IMBALANCE'
+                    WHEN reason LIKE '%MICRO_SCALP%' THEN 'MICRO_SCALP'
                     WHEN reason LIKE '%MOMENTUM_5M%' THEN 'MOMENTUM_5M'
-                    WHEN reason LIKE '%VWAP_CROSS%' THEN 'VWAP_CROSS'
-                    WHEN reason LIKE '%EMA_RIBBON%' THEN 'EMA_RIBBON'
-                    WHEN reason LIKE '%BOLLINGER_SQUEEZE%' THEN 'BOLLINGER_SQUEEZE'
-                    WHEN reason LIKE '%RSI_DIVERGENCE%' THEN 'RSI_DIVERGENCE'
-                    WHEN reason LIKE '%DELTA_FLIP%' THEN 'DELTA_FLIP'
-                    WHEN reason LIKE '%ABSORPTION%' THEN 'ABSORPTION'
-                    WHEN reason LIKE '%MEAN_REVERT_Z%' THEN 'MEAN_REVERT_Z'
-                    WHEN reason LIKE '%MOMENTUM_DIVERGE%' THEN 'MOMENTUM_DIVERGE'
-                    WHEN reason LIKE '%MULTI_TF_ALIGN%' THEN 'MULTI_TF_ALIGN'
+                    WHEN reason LIKE '%TAKER_SURGE%' THEN 'TAKER_SURGE'
+                    WHEN reason LIKE '%CVD_PRICE_DIV%' THEN 'CVD_PRICE_DIV'
+                    WHEN reason LIKE '%BTC_FOLLOW%' THEN 'BTC_FOLLOW'
+                    WHEN reason LIKE '%RANGE_BOUNCE%' THEN 'RANGE_BOUNCE'
                     ELSE 'OTHER'
                 END as strat_key,
                 COUNT(*) as total_trades,
@@ -290,11 +537,22 @@ export class D1Database {
             const firstProfitTime = row.first_profit_time || null;
             const lastProfitTime = row.last_profit_time || null;
 
+            const health = healthMap[strat.key] || {
+                status: 'WARM',
+                winRate: 0,
+                totalResolved: 0,
+                pendingCount: 0
+            };
+
             return {
                 key: strat.key,
                 name: strat.name,
                 description: strat.description,
                 enabled: !disabledSet.has(strat.key),
+                tournamentStatus: health.status,
+                shadowWinRate: health.winRate,
+                shadowResolved: health.totalResolved,
+                shadowPending: health.pendingCount,
                 totalTrades,
                 wins,
                 losses,
